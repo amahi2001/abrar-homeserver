@@ -110,6 +110,7 @@ in
     (pkgs.writeShellScriptBin "dx" ''
       exec ${deno-latest}/bin/deno x "$@"
     '')
+    rtk
     cloakbrowser.packages.x86_64-linux.default
   ];
 

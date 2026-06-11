@@ -15,7 +15,7 @@
     settings = {
       model = {
         base_url = "https://opencode.ai/zen/go/v1";
-        default = "glm-5.1";
+        default = "qwen3.7-plus";
         provider = "opencode-go";
       };
       toolsets = [ "all" ];
@@ -80,6 +80,10 @@
   systemd.services.hermes-agent.stopIfChanged = false;
   systemd.services.hermes-dashboard.restartIfChanged = false;
   systemd.services.hermes-dashboard.stopIfChanged = false;
+
+  # Add RTK to the systemd service PATHs
+  systemd.services.hermes-agent.path = [ pkgs.rtk ];
+  systemd.services.hermes-dashboard.path = [ pkgs.rtk ];
 
   # Separate dashboard service for Hermes Desktop app
   systemd.services.hermes-dashboard = {

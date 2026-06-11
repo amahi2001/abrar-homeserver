@@ -19,6 +19,22 @@ result-*
 .idea/
 .vscode/
 
+# Backup files
+*.bak
+*.bak.*
+
+# Root-level nix files (actual system files, repo uses nixos/ subdirectory)
+/configuration.nix
+/containers.nix
+/desktop.nix
+/flake.lock
+/flake.nix
+/hardware-configuration.nix
+/hermes.nix
+/tailscale.nix
+/update.nix
+/web.nix
+
 # Hardware config is machine-specific
 # Uncomment if you want to keep yours private:
 # nixos/hardware-configuration.nix

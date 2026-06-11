@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Exec(ls)",
+      "Exec(sudo cat)",
+      "Exec(sudo)",
+      "Exec(bun)",
+      "Exec(bunx)"
+    ]
+  }
+}
