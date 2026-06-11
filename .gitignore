@@ -1,0 +1,38 @@
+# Secrets — NEVER commit real credentials
+*.secret
+*.key
+*.pem
+env
+.env
+!.env.example
+!*.env.example
+!secrets/example/
+
+# NixOS build artifacts
+result
+result-*
+
+# OS / editor
+.DS_Store
+*~
+*.swp
+.idea/
+.vscode/
+
+# Hardware config is machine-specific
+# Uncomment if you want to keep yours private:
+# nixos/hardware-configuration.nix
+
+# AdGuard runtime data
+adguard/work/
+
+# Hermes runtime state
+hermes/state.db
+hermes/sessions/
+hermes/logs/
+hermes/kanban.db*
+hermes/cache/
+hermes/images/
+hermes/pastes/
+hermes/*.lock
+hermes/*.pid
