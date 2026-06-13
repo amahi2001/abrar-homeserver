@@ -118,7 +118,7 @@ async function main() {
 
   // Configure servers
   console.log("Configuring servers...");
-  await runBw(SRC_DIR, ["config", "server", "https://api.bitwarden.com"]);
+  await runBw(SRC_DIR, ["config", "server", "https://bitwarden.com"]);
   await runBw(DST_DIR, ["config", "server", VW_SERVER_URL]);
 
   // Unlock source (Bitwarden)
