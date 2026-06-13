@@ -57,19 +57,19 @@ function normalizeForComparison(item: any) {
   delete normalized.creationDate;
   delete normalized.collectionIds;
   delete normalized.organizationId;
-  
+
   if (normalized.fields) {
     normalized.fields = normalized.fields
       .map((f: any) => ({ name: f.name, value: f.value, type: f.type }))
       .sort((a: any, b: any) => (a.name || "").localeCompare(b.name || ""));
   }
-  
+
   if (normalized.login && normalized.login.uris) {
     normalized.login.uris = normalized.login.uris
       .map((u: any) => ({ uri: u.uri, match: u.match }))
       .sort((a: any, b: any) => (a.uri || "").localeCompare(b.uri || ""));
   }
-  
+
   return normalized;
 }
 
@@ -77,10 +77,10 @@ function prepareTargetItem(srcItem: any, targetId: string | null, targetFolderId
   const item = JSON.parse(JSON.stringify(srcItem));
   item.id = targetId;
   item.folderId = targetFolderId;
-  
+
   delete item.revisionDate;
   item.creationDate = null;
-  
+
   if (!item.fields) {
     item.fields = [];
   }
@@ -90,7 +90,7 @@ function prepareTargetItem(srcItem: any, targetId: string | null, targetFolderId
     value: srcItem.id,
     type: 0 // Text
   });
-  
+
   return item;
 }
 
@@ -105,11 +105,13 @@ async function main() {
   const BW_CLIENTID = Deno.env.get("BW_CLIENTID");
   const BW_CLIENTSECRET = Deno.env.get("BW_CLIENTSECRET");
   const BW_PASSWORD = Deno.env.get("BW_PASSWORD");
+  const VW_CLIENTID = Deno.env.get("VW_CLIENTID");
+  const VW_CLIENTSECRET = Deno.env.get("VW_CLIENTSECRET");
   const VW_EMAIL = Deno.env.get("VW_EMAIL");
   const VW_PASSWORD = Deno.env.get("VW_PASSWORD");
   const VW_SERVER_URL = Deno.env.get("VW_SERVER_URL") || "https://buildfleet.duckdns.org/vault";
 
-  if (!BW_CLIENTID || !BW_CLIENTSECRET || !BW_PASSWORD || !VW_EMAIL || !VW_PASSWORD) {
+  if (!BW_CLIENTID || !BW_CLIENTSECRET || !BW_PASSWORD || !VW_PASSWORD || (!VW_CLIENTID && !VW_EMAIL)) {
     console.error("Missing required environment variables!");
     Deno.exit(1);
   }
@@ -142,7 +144,11 @@ async function main() {
   // Unlock target (Vaultwarden)
   console.log("Logging into target (Vaultwarden)...");
   try {
-    await runBw(DST_DIR, ["login", VW_EMAIL, "--passwordenv", "VW_PASSWORD"], undefined, { VW_PASSWORD });
+    if (VW_CLIENTID && VW_CLIENTSECRET) {
+      await runBw(DST_DIR, ["login", "--apikey"], undefined, { BW_CLIENTID: VW_CLIENTID, BW_CLIENTSECRET: VW_CLIENTSECRET });
+    } else {
+      await runBw(DST_DIR, ["login", VW_EMAIL!, "--passwordenv", "VW_PASSWORD"], undefined, { VW_PASSWORD });
+    }
   } catch (e) {
     // Already logged in
   }
