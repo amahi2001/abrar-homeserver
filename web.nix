@@ -40,25 +40,12 @@
     virtualHosts."buildfleet.duckdns.org" = {
       enableACME = true;
       forceSSL = true;
-      locations."/vault" = {
+      locations."= /vault" = {
+        extraConfig = "return 301 https://buildfleet.duckdns.org/vault/;";
+      };
+      locations."/vault/" = {
         proxyPass = "http://127.0.0.1:8222";
         proxyWebsockets = true;
-      };
-      # Support Vaultwarden's web vault which requests assets from the root path
-      locations."/app" = {
-        proxyPass = "http://127.0.0.1:8222";
-      };
-      locations."/css" = {
-        proxyPass = "http://127.0.0.1:8222";
-      };
-      locations."/fonts" = {
-        proxyPass = "http://127.0.0.1:8222";
-      };
-      locations."/images" = {
-        proxyPass = "http://127.0.0.1:8222";
-      };
-      locations."~* \\.(css|js|json|png|jpg|jpeg|gif|ico|svg|woff|woff2|ttf|eot)$" = {
-        proxyPass = "http://127.0.0.1:8222";
       };
     };
   };
