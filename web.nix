@@ -40,6 +40,44 @@
     virtualHosts."buildfleet.duckdns.org" = {
       enableACME = true;
       forceSSL = true;
+      locations."/vault" = {
+        proxyPass = "http://127.0.0.1:8222";
+        proxyWebsockets = true;
+      };
+    };
+  };
+
+  # Vaultwarden password manager
+  services.vaultwarden = {
+    enable = true;
+    config = {
+      DOMAIN = "https://buildfleet.duckdns.org/vault";
+      SIGNUPS_ALLOWED = true;
+
+      ROCKET_ADDRESS = "127.0.0.1";
+      ROCKET_PORT = 8222;
+      ROCKET_LOG = "critical";
+    };
+  };
+
+  # Bitwarden to Vaultwarden synchronization service and timer
+  systemd.services.bitwarden-sync = {
+    description = "Bitwarden to Vaultwarden synchronization service";
+    path = with pkgs; [ bitwarden-cli deno ];
+    serviceConfig = {
+      Type = "oneshot";
+      ExecStart = "${pkgs.deno}/bin/deno run --allow-run --allow-read --allow-write --allow-env --allow-net /etc/nixos/scripts/bitwarden-sync.ts";
+      EnvironmentFile = "/var/lib/secrets/bitwarden-sync.env";
+      User = "root";
+    };
+  };
+
+  systemd.timers.bitwarden-sync = {
+    description = "Timer for Bitwarden to Vaultwarden synchronization";
+    wantedBy = [ "timers.target" ];
+    timerConfig = {
+      OnCalendar = "hourly";
+      Persistent = true;
     };
   };
 }

@@ -112,6 +112,7 @@ in
     '')
     rtk
     cloakbrowser.packages.x86_64-linux.default
+    bitwarden-cli
   ];
 
   # CPU frequency scaling
@@ -138,10 +139,15 @@ in
   services.cockpit = {
     enable = true;
     port = 9090;
+    settings = {
+      WebService = {
+        Origins = lib.mkForce "https://buildfleet-server.tailcb7cdb.ts.net:9090 https://100.91.234.17:9090";
+      };
+    };
   };
 
   # Firewall
-  networking.firewall.allowedTCPPorts = [ 22 80 443 53 8080 9090 ];
+  networking.firewall.allowedTCPPorts = [ 22 80 443 53 8080 ];
   networking.firewall.allowedUDPPorts = [ 53 ];
   networking.firewall.enable = true;
   networking.firewall.logRefusedConnections = true;
