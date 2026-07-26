@@ -1,15 +1,32 @@
 {
   "nodes": {
+    "caveman": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1783076931,
+        "narHash": "sha256-VqRHx3/4SSCnEh3cUJ/he5saIfwNhS0hOzoH/wwtU2o=",
+        "owner": "JuliusBrussee",
+        "repo": "caveman",
+        "rev": "0d95a81d35a9f2d123a5e9430d1cfc43d55f1bb0",
+        "type": "github"
+      },
+      "original": {
+        "owner": "JuliusBrussee",
+        "ref": "v1.9.1",
+        "repo": "caveman",
+        "type": "github"
+      }
+    },
     "cloakbrowser": {
       "inputs": {
         "nixpkgs": "nixpkgs"
       },
       "locked": {
-        "lastModified": 1784410216,
-        "narHash": "sha256-13cOBx4f4nouhp43wVMKl0P8mvtex/VSrhXz1Ao7L2Y=",
+        "lastModified": 1784770596,
+        "narHash": "sha256-4Ty5/RwW/+qHjLSYFZK4iUXHFujCT508sbATkHW/vZw=",
         "owner": "CloakHQ",
         "repo": "CloakBrowser",
-        "rev": "fd2b6024c6bf3dfe3c6b48b177aa79265a145295",
+        "rev": "36390b535988ae911c2b09f93acc3cf5ee080d8d",
         "type": "github"
       },
       "original": {
@@ -86,11 +103,11 @@
         "uv2nix": "uv2nix"
       },
       "locked": {
-        "lastModified": 1784614861,
-        "narHash": "sha256-V6E9mq3Np3rnxshjuP5k4kqyKinA6EhhfZCxidcWDtg=",
+        "lastModified": 1784772923,
+        "narHash": "sha256-BJ8ZSVu53uxWGcV/5sUzwoYQ63UWQtTaDk+5Xw0JeV0=",
         "owner": "NousResearch",
         "repo": "hermes-agent",
-        "rev": "646e71a9be070a8b8e05cf4fde7ddbad6ffa7fec",
+        "rev": "957ea640de2bda785205976a3907073016badc10",
         "type": "github"
       },
       "original": {
@@ -236,6 +253,7 @@
     },
     "root": {
       "inputs": {
+        "caveman": "caveman",
         "cloakbrowser": "cloakbrowser",
         "codex-cli": "codex-cli",
         "hermes-agent": "hermes-agent",
