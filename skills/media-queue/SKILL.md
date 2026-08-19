@@ -1,6 +1,6 @@
 ---
 name: media-queue
-description: Search configured Prowlarr indexers, apply the owner's movie, anime, language, source, and quality preferences, present numbered release choices, queue only user-selected numbers in Transmission through the server's VPN-isolated media pipeline, and report download-state changes. Use by default when a user asks to find, download, queue, or check the status of a movie, TV episode, season, anime, or other media release; do not use for an obviously non-media download.
+description: Search configured Prowlarr indexers, apply the owner's release preferences, queue only user-selected results through VPN-isolated Transmission, organize approved media with Sonarr or Radarr, publish organized libraries through Jellyfin, and diagnose download or playback failures. Use by default when a user asks to find, download, queue, organize, watch, stream, or check the status of a movie, TV episode, season, anime, or other media release; do not use for an obviously non-media download.
 ---
 
 # Media Queue
@@ -8,6 +8,15 @@ description: Search configured Prowlarr indexers, apply the owner's movie, anime
 Use `sudo media-queue` for every search, queue, and status operation. It is
 the only supported automation path: it checks VPN isolation before queueing and
 saves completed items to the manual media library.
+
+Keep the media flow explicit:
+
+1. Transmission downloads through Gluetun into
+   `/srv/data/media/library/manual`.
+2. Sonarr or Radarr hard-links approved completed media into `tv` or `movies`.
+3. Jellyfin publishes only the organized `tv` and `movies` libraries. A file
+   that exists only in `manual` is downloaded but not yet available in
+   Jellyfin.
 
 ## Default selection policy
 
@@ -75,6 +84,48 @@ that every result is a hard link before reporting success.
 sudo media-library stop sonarr
 sudo media-library stop radarr
 ```
+
+## Jellyfin playback and publishing
+
+Use Jellyfin as the preferred playback layer, especially on the NVIDIA Shield;
+do not default to VLC over SMB when the user asks how to watch organized media.
+Jellyfin is always on and reads these paths:
+
+- TV and anime: `/srv/data/media/library/tv`
+- Films: `/srv/data/media/library/movies`
+
+Use `http://192.168.1.89:8096` on trusted home Wi-Fi and
+`http://buildfleet-server.tailcb7cdb.ts.net:8096` over Tailscale. Port 8096 is
+restricted to those two interfaces and is not public. Jellyfin runs on the host
+network; it must never be moved into or routed through Gluetun.
+
+After an approved Sonarr/Radarr import, tell the user the item is published to
+the corresponding Jellyfin library. If it does not appear, check that the hard
+link exists under the organized path and let Jellyfin's library monitor detect
+it before considering a manual scan. Do not expose the `manual` or incomplete
+download directories to Jellyfin as a shortcut.
+
+For a Jellyfin player error, inspect evidence before changing settings:
+
+```bash
+systemctl is-active jellyfin
+curl --fail --silent http://127.0.0.1:8096/health
+sudo journalctl -u jellyfin --since "30 minutes ago" --no-pager
+sudo ls -1t /var/lib/jellyfin/log/FFmpeg.Transcode-*.log | head
+```
+
+ASS/SSA subtitles may require burn-in and therefore a GPU transcode even when
+the video codec otherwise supports Direct Play. If an FFmpeg log reports
+`CUDA_ERROR_NO_DEVICE`, inspect `systemctl show jellyfin -p DeviceAllow`. The
+declarative service must allow the DRM render node plus `/dev/nvidia0`,
+`/dev/nvidiactl`, and `/dev/nvidia-uvm`. Fix this only in `/etc/nixos/files.nix`,
+validate with `nixos-rebuild dry-build`, then apply with `nixos-rebuild switch`.
+Do not work around it by disabling the sandbox or hardware acceleration.
+
+Encoding policy is declarative because `forceEncodingConfig = true`; dashboard
+changes to transcoding settings are overwritten on service restart. Preserve
+the two-stream limit, NVDEC/NVENC acceleration, and throttled transcoding unless
+the user explicitly asks to change that policy.
 
 ## Workflow
 

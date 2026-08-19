@@ -1,4 +1,4 @@
 interface:
   display_name: "Media Queue"
-  short_description: "Queue media safely and organize local files"
-  default_prompt: "Use $media-queue to queue selected media through the VPN or organize approved local files with verified hard links."
+  short_description: "Queue, organize, and stream media safely"
+  default_prompt: "Use $media-queue to queue selected media through the VPN, publish it through the organized Jellyfin library, or diagnose playback."
