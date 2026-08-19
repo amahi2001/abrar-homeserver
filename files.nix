@@ -130,6 +130,13 @@ in
     "files"
     "media"
   ];
+  # Jellyfin reads only the completed, Servarr-organized library.  The
+  # downloads/incomplete area remains unavailable to it.
+  users.users.jellyfin.extraGroups = [
+    "media"
+    "render"
+    "video"
+  ];
 
   systemd.tmpfiles.rules = [
     "d /srv/data                    0755 root         root  -"
@@ -237,6 +244,50 @@ in
     };
   };
 
+  # Local-first media server for the Shield and remote Tailscale devices.
+  # Compatible clients Direct Play, so this service normally leaves the GPU
+  # idle.  NVENC/NVDEC is available only when a client genuinely needs a
+  # transcode (for example, remote bandwidth or codec compatibility).
+  services.jellyfin = {
+    enable = true;
+    openFirewall = false;
+    hardwareAcceleration = {
+      enable = true;
+      type = "nvenc";
+      device = "/dev/dri/by-path/pci-0000:08:00.0-render";
+    };
+    # Keep video-encoding policy reproducible across restarts instead of
+    # relying on mutable dashboard-only settings.
+    forceEncodingConfig = true;
+    transcoding = {
+      maxConcurrentStreams = 2;
+      enableHardwareEncoding = true;
+      enableToneMapping = true;
+      throttleTranscoding = true;
+      hardwareDecodingCodecs = {
+        h264 = true;
+        hevc = true;
+        hevc10bit = true;
+        mpeg2 = true;
+        vc1 = true;
+        vp8 = true;
+        vp9 = true;
+        av1 = true;
+      };
+      # The RTX 3060 supports HEVC, but not AV1, hardware encoding.
+      hardwareEncodingCodecs.hevc = true;
+    };
+  };
+
+  # The NixOS Jellyfin module grants the DRM render node, but NVIDIA's CUDA
+  # path also opens these character devices. Keep the sandbox closed to every
+  # other device while permitting only the nodes required for NVDEC/NVENC.
+  systemd.services.jellyfin.serviceConfig.DeviceAllow = [
+    "/dev/nvidia0 rw"
+    "/dev/nvidiactl rw"
+    "/dev/nvidia-uvm rw"
+  ];
+
   # A fast network-drive view for the two explicitly shared folders. SMB is
   # reachable only on the trusted home Wi-Fi and via Tailscale—never from the
   # public Internet.
@@ -285,14 +336,18 @@ in
   };
 
   networking.firewall.interfaces = {
-    # Remote access: authenticated SMB over the encrypted tailnet.
-    tailscale0.allowedTCPPorts = [ 445 ];
+    # Remote access: authenticated SMB and Jellyfin over the encrypted tailnet.
+    tailscale0.allowedTCPPorts = [
+      445
+      8096
+    ];
 
     # Local access and discovery only on the trusted 192.168.1.0/24 Wi-Fi.
     wlp6s0 = {
       allowedTCPPorts = [
         445
         5357
+        8096
       ];
       allowedUDPPorts = [
         137
