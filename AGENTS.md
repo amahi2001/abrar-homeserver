@@ -4,12 +4,20 @@ This directory contains the declarative NixOS configuration for buildfleet-serve
 
 ## File Structure
 
-- `configuration.nix` - Main system config (hardware, packages, networking, Docker, AdGuard, etc.)
+- `configuration.nix` - Host, users, packages, SSH, and base firewall
+- `containers.nix` - Docker, AdGuard Home, and guarded image updates
+- `desktop.nix` - Headless default, XFCE recovery UI, NVIDIA, and Bluetooth
+- `files.nix` - Nextcloud, Samba, Gluetun, and Transmission
+- `servarr.nix` - Prowlarr, FlareSolverr, and on-demand Sonarr/Radarr
 - `hermes.nix` - Hermes Agent + Dashboard service configuration (imported by configuration.nix)
+- `tailscale.nix` - Tailnet and exit-node configuration
+- `update.nix` - Guarded flake updates, system upgrades, and garbage collection
+- `web.nix` - DuckDNS, ACME, Nginx, and Vaultwarden
 - `hardware-configuration.nix` - Hardware-specific settings (auto-generated, don't edit)
 - `flake.nix` - Flake inputs: nixpkgs, hermes-agent, cloakbrowser
 - `flake.lock` - Pinned flake input versions
-- `.devin/` - Devin coding agent config + skill symlinks (see Devin Integration)
+- `.devin/` - Devin coding agent config + skill symlinks
+- `.agents/skills/` - Repository-scoped Codex skill symlinks (see Agent Integrations)
 - `.gitignore` - Standard Node.gitignore
 
 ## Hermes Agent Architecture
@@ -32,9 +40,9 @@ The dashboard requires:
 
 ### hermes.nix highlights
 
-- `extraPythonPackages` for platform adapters (currently: python-telegram-bot)
-- No `extraPackages` — agent tools come from systemPackages
-- No MCP servers declared declaratively (managed via `~/.hermes/config.yaml` or runtime)
+- `extraDependencyGroups` supplies provider and messaging integrations
+- Warden MCP is declared with credentials loaded from `/var/lib/hermes/env`
+- Agent tools come from system packages and declarative wrapper commands
 - No `api_server` config block — dashboard is a separate service
 - Dashboard runs: `hermes dashboard --host 0.0.0.0 --port 9119 --insecure --tui --no-open --skip-build`
 
@@ -119,7 +127,7 @@ Port 9119 is **NOT** in `allowedTCPPorts` (no LAN access). It's only open on Tai
 ```nix
 networking.firewall.allowedTCPPorts = [ 22 80 443 53 8080 ];  # no 9119
 networking.firewall.interfaces.tailscale0 = {
-  allowedTCPPorts = [ 9119 ];  # Tailscale only
+  allowedTCPPorts = [ 9119 9090 7878 8989 9696 ];  # Tailscale only
 };
 ```
 
@@ -129,7 +137,7 @@ networking.firewall.interfaces.tailscale0 = {
 - Tailscale IP: `100.91.234.17`
 - Dashboard URL: `http://buildfleet-server.tailcb7cdb.ts.net:9119`
 
-## Devin Integration
+## Agent Integrations
 
 The `.devin/` directory contains config for the Devin coding agent:
 
@@ -144,14 +152,17 @@ The tmpfiles rules create symlinks:
 /etc/nixos/.devin/skills/cloakbrowser-nixos-setup → /var/lib/hermes/.hermes/skills/devops/cloakbrowser-nixos-setup
 ```
 
-This lets Devin (and other coding agents) inherit NixOS-specific knowledge from Hermes skills.
+The same four links are declared under `.agents/skills/`, the repository-scoped
+skill location used by Codex. Codex also reads this `AGENTS.md` whenever it works
+inside `/etc/nixos`, so the operational context and the linked skills travel
+together. Both sets of links are managed by `tmpfiles.rules` in `hermes.nix`.
 
 ## Current Configuration
 
 ### Models (in hermes.nix)
-- Main: `glm-5.1` via `opencode-go` provider
+- Main: `gpt-5.6-luna` via `openai-codex` provider
 - Compression: `deepseek-v4-pro` via `opencode-go` provider
-- Provider base URL: `https://opencode.ai/zen/go/v1`
+- Main provider base URL: `https://chatgpt.com/backend-api/codex`
 
 ### Packages (in configuration.nix)
 - `deno` 2.8.2 (with `dx` wrapper) — replaces opencode binary
@@ -162,6 +173,12 @@ This lets Devin (and other coding agents) inherit NixOS-specific knowledge from 
 ### Other Services
 - **nginx** (port 443) — TLS termination for `buildfleet.duckdns.org`
 - **AdGuard Home** (Docker, ports 53/8080) — DNS ad blocking + admin UI
+- **Nextcloud** — file storage and synchronization
+- **Vaultwarden** — password manager at `/vault/`
+- **Gluetun + Transmission** — VPN-isolated download service
+- **Prowlarr + FlareSolverr** — media search/indexer services
+- **Sonarr + Radarr** — on-demand library organization
+- **Samba + WSD** — authenticated media/inbox shares on LAN and Tailscale
 - **Docker** — Container runtime
 - **Tailscale** — VPN mesh
 - **DuckDNS** — Dynamic DNS

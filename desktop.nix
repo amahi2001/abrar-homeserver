@@ -1,7 +1,17 @@
 # Desktop environment, GPU, and input
-{ config, pkgs, lib, ... }:
+{
+  config,
+  pkgs,
+  lib,
+  ...
+}:
 
 {
+  # Boot as a server: provide a local TTY for recovery, but do not start the
+  # graphical login, XFCE, or its background processes until explicitly asked.
+  # To restore the desktop locally: sudo systemctl isolate graphical.target
+  systemd.defaultUnit = lib.mkForce "multi-user.target";
+
   # XFCE desktop
   services.xserver = {
     enable = true;
@@ -33,7 +43,12 @@
   # Bluetooth
   hardware.bluetooth.enable = true;
   hardware.bluetooth.powerOnBoot = true;
-  services.blueman.enable = true;
+  # The BlueZ service itself is normally pulled in by graphical.target. Keep
+  # it available for paired input devices when booting directly to a TTY.
+  systemd.targets.bluetooth.wantedBy = [ "multi-user.target" ];
+  # BlueZ keeps paired input devices working; the graphical Blueman manager is
+  # unnecessary on a headless-by-default server.
+  services.blueman.enable = false;
 
   # Display power management
   services.xserver.displayManager.sessionCommands = ''

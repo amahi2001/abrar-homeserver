@@ -1,4 +1,11 @@
-{ config, pkgs, lib, cloakbrowser, ... }:
+{
+  config,
+  pkgs,
+  lib,
+  cloakbrowser,
+  codexCli,
+  ...
+}:
 
 let
   deno-latest = pkgs.stdenv.mkDerivation rec {
@@ -28,6 +35,8 @@ in
     ./desktop.nix
     ./web.nix
     ./containers.nix
+    ./files.nix
+    ./servarr.nix
     ./hermes.nix
     ./tailscale.nix
     ./update.nix
@@ -43,6 +52,9 @@ in
 
   # Networking
   networking.networkmanager.enable = true;
+  # Wi-Fi is the only remote access path, so favour connection reliability over
+  # the small savings from client-oriented Wi-Fi power saving.
+  networking.networkmanager.wifi.powersave = false;
 
   # Time zone and locale
   time.timeZone = "America/New_York";
@@ -63,8 +75,16 @@ in
   users.users.buildfleet = {
     isNormalUser = true;
     description = "Buildfleet";
-    extraGroups = [ "networkmanager" "wheel" "docker" "hermes" "nixconfig" ];
-    packages = with pkgs; [];
+    extraGroups = [
+      "networkmanager"
+      "wheel"
+      "docker"
+      "hermes"
+      "nixconfig"
+      "media"
+      "files"
+    ];
+    packages = with pkgs; [ ];
   };
 
   users.groups.nixconfig = {
@@ -77,7 +97,13 @@ in
     {
       groups = [ "wheel" ];
       commands = [
-        { command = "ALL"; options = [ "NOPASSWD" "SETENV" ]; }
+        {
+          command = "ALL";
+          options = [
+            "NOPASSWD"
+            "SETENV"
+          ];
+        }
       ];
     }
   ];
@@ -106,6 +132,9 @@ in
     btop
     lm_sensors
     bun
+    # Latest release from the dedicated Codex flake, not the older stable
+    # nixpkgs package. Updated by codex-cli-update.service.
+    codexCli.packages.x86_64-linux.default
     deno-latest
     (pkgs.writeShellScriptBin "dx" ''
       exec ${deno-latest}/bin/deno x "$@"
@@ -134,7 +163,7 @@ in
 
   # SSH
   services.openssh.enable = true;
-  
+
   # Cockpit - Web-based server management
   services.cockpit = {
     enable = true;
@@ -147,18 +176,28 @@ in
   };
 
   # Firewall
-  networking.firewall.allowedTCPPorts = [ 22 80 443 53 8080 ];
+  networking.firewall.allowedTCPPorts = [
+    22
+    80
+    443
+    53
+    8080
+  ];
   networking.firewall.allowedUDPPorts = [ 53 ];
   networking.firewall.enable = true;
   networking.firewall.logRefusedConnections = true;
 
-  # Shared nixos config directory permissions
+  # Keep the repository itself collaborative without recursively marking every
+  # tracked source file executable on each rebuild.
   systemd.tmpfiles.rules = [
-    "Z /etc/nixos 0775 root nixconfig -"
+    "d /etc/nixos 0775 root nixconfig -"
   ];
 
   # Nix
-  nix.settings.experimental-features = [ "nix-command" "flakes" ];
+  nix.settings.experimental-features = [
+    "nix-command"
+    "flakes"
+  ];
 
   system.stateVersion = "26.05";
 }

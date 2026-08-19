@@ -5,17 +5,20 @@
 {
   services.tailscale = {
     enable = true;
-    useRoutingFeatures = "server";  # enables IP forwarding + exit node support
+    useRoutingFeatures = "server"; # enables IP forwarding + exit node support
     openFirewall = true;
     extraSetFlags = [
-      "--advertise-exit-node"   # allow this server to be used as an exit node
-      "--accept-routes"        # accept subnet routes from other tailnet devices
+      "--advertise-exit-node" # allow this server to be used as an exit node
+      "--accept-routes" # accept subnet routes from other tailnet devices
     ];
   };
 
-  # Allow Tailscale traffic to reach Hermes dashboard
+  # Allow Tailscale traffic to reach Hermes dashboard and Cockpit
   networking.firewall.interfaces.tailscale0 = {
-    allowedTCPPorts = [ 9119 ];
+    allowedTCPPorts = [
+      9119
+      9090
+    ];
   };
 
   # Required for exit node traffic to route correctly

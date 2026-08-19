@@ -1,159 +1,114 @@
-# buildfleet-server 🖥️
+# buildfleet-server
 
-Declarative NixOS home server configuration. Fully reproducible — one `nixos-rebuild switch` away from a complete setup.
+Declarative NixOS configuration for the BuildFleet home server. The repository
+root is the live flake: `/etc/nixos#buildfleet-server`.
 
-## What's Running
+## Services
 
-| Service | Purpose | Port |
-|---------|---------|------|
-| **Hermes Agent** | AI assistant (Telegram bot + dashboard) | — (outbound) |
-| **Hermes Dashboard** | Web/TUI chat interface for Desktop app | 9119 (Tailscale) |
-| **AdGuard Home** | Network-wide DNS ad blocking | 53, 8080 |
-| **Nginx** | TLS reverse proxy | 443 |
-| **Tailscale** | Mesh VPN + exit node | — |
-| **DuckDNS** | Dynamic DNS for `buildfleet.duckdns.org` | — |
-| **XFCE Desktop** | Lightweight GUI for local access | — |
+| Service | Purpose | Exposure |
+| --- | --- | --- |
+| Hermes Agent | Telegram/CLI automation and media workflow | Outbound only |
+| Hermes Dashboard | Hermes Desktop web/TUI endpoint | Tailscale `:9119` |
+| Cockpit | Server administration | Tailscale `:9090` |
+| Nextcloud | File storage, sync, sharing, and WebDAV | Public HTTPS root |
+| Vaultwarden | Password manager | Public HTTPS `/vault/` |
+| AdGuard Home | Network DNS filtering and admin UI | DNS `:53`, LAN UI `:8080` |
+| Gluetun + Transmission | VPN-isolated downloads with a fail-closed network namespace | RPC on server loopback `:9091` |
+| Prowlarr | Search/indexer aggregation for Hermes | Tailscale `:9696` |
+| Sonarr / Radarr | On-demand TV/movie organization | Tailscale `:8989` / `:7878` while running |
+| Samba + WSD | Read-only media and writable inbox shares | Home Wi-Fi and Tailscale `:445` |
+| Tailscale | Remote administration and exit-node routing | Tailnet |
+| XFCE + Bluetooth | Local recovery console | Starts only when requested |
 
-## Architecture
+Transmission shares Gluetun's network namespace and cannot reach the network
+without Gluetun's VPN firewall. Its UI is intentionally loopback-only; access
+it remotely with an SSH tunnel. Completed manual downloads land under
+`/srv/data/media/library/manual` and are exposed by the authenticated
+`Media` Samba share.
 
-```
-Internet
-  │
-  ├── buildfleet.duckdns.org ──► Nginx (TLS/ACME)
-  │                                │
-  │                                └── (future: reverse proxy targets)
-  │
-  ├── DNS queries ───────────────► AdGuard Home (:53, :8080)
-  │
-  └── Tailscale mesh ───────────► Dashboard (:9119, Tailscale only)
-                                   Exit node for roaming devices
-```
+Sonarr and Radarr are stopped while idle. Hermes starts them only for explicit
+library-management work, imports with verified hard links so Transmission can
+continue seeding, and stops them afterward.
 
-## Repo Structure
+## Repository layout
 
-```
-├── nixos/                        # NixOS configuration modules
-│   ├── flake.nix                 # Flake inputs (nixpkgs, hermes-agent, cloakbrowser)
-│   ├── flake.lock                # Pinned input versions
-│   ├── configuration.nix         # Main config (packages, users, firewall, nix-ld)
-│   ├── hardware-configuration.nix# Auto-generated hardware config
-│   ├── hermes.nix                # Hermes Agent + Dashboard service config
-│   ├── containers.nix           # Docker + AdGuard Home container
-│   ├── desktop.nix               # XFCE desktop + NVIDIA GPU + Bluetooth
-│   ├── tailscale.nix             # Tailscale VPN exit node
-│   ├── update.nix                # Auto-update: flake update + auto-upgrade + GC
-│   └── web.nix                   # DuckDNS + ACME + Nginx
-├── adguard/
-│   ├── AdGuardHome.yaml.example  # AdGuard config template (passwords redacted)
-│   └── README.md                 # AdGuard setup notes
-├── hermes/
-│   └── config.yaml.example       # Hermes Agent runtime config template
-├── scripts/
-│   ├── gh-env.sh                 # Export GITHUB_TOKEN for shell sessions
-│   └── gh-token.sh               # Extract GitHub token from git-credentials
-├── secrets/example/              # Example env files (copy & fill in real values)
-│   ├── hermes.env.example        # All secret env vars for Hermes Agent
-│   ├── hermes-dashboard.env.example # Dashboard env vars
-│   ├── duckdns-token.txt.example # DuckDNS token
-│   ├── duckdns-token-value.example  # DuckDNS token (ACME challenge)
-│   ├── duckdns.secret.example    # DuckDNS token (NixOS module)
-│   └── google_client_secret.json.example # Google OAuth credentials
-└── .gitignore
+```text
+.
+├── flake.nix / flake.lock       # Inputs, formatter, and system build check
+├── configuration.nix            # Host, users, packages, SSH, firewall
+├── hardware-configuration.nix   # Machine hardware and filesystems
+├── desktop.nix                  # Headless default, XFCE, NVIDIA, Bluetooth
+├── containers.nix               # Docker and guarded AdGuard updates
+├── files.nix                    # Nextcloud, Samba, Gluetun, Transmission
+├── servarr.nix                  # Prowlarr, FlareSolverr, Sonarr, Radarr
+├── hermes.nix                   # Hermes agent, dashboard, tools, and skills
+├── tailscale.nix                # Tailnet and exit-node configuration
+├── update.nix                   # Guarded flake updates, upgrade, GC
+├── web.nix                      # DuckDNS, ACME, Nginx, Vaultwarden
+├── skills/media-queue/          # Hermes media search/queue/library workflow
+├── scripts/                     # Operational helpers
+└── secrets/example/             # Safe templates only
 ```
 
-## Quick Start (New Machine)
+Runtime state and credentials do not belong in Git. They live under
+`/var/lib`, principally:
 
-### 1. Install NixOS
+- `/var/lib/secrets/` for VPN, Nextcloud, DuckDNS, and sync credentials
+- `/var/lib/hermes/env` for Hermes provider and messaging credentials
+- `/var/lib/gluetun/` and `/var/lib/transmission-vpn/` for download services
+- `/srv/data/` for files and media
 
-Follow the [NixOS manual](https://nixos.org/manual/nixos/stable/#sec-installation) to get a base system running, then:
+## Deploy and validate
 
 ```bash
-# Clone this repo
-sudo git clone https://github.com/amahi2001/buildfleet-server.git /etc/nixos
 cd /etc/nixos
 
-# Review and edit hardware-configuration.nix for your hardware
-# (NixOS generates this on install — you may want to keep your own)
-```
-
-### 2. Set Up Secrets
-
-```bash
-# Create secrets directory
-sudo mkdir -p /var/lib/secrets
-
-# Copy and fill in each example file
-for f in secrets/example/*.example; do
-  realname=$(basename "$f" .example)
-  sudo cp "$f" "/var/lib/secrets/$realname"
-  sudo chmod 600 "/var/lib/secrets/$realname"
-done
-# Edit each file with your real values
-sudo vim /var/lib/secrets/*
-
-# Hermes env files
-sudo cp secrets/example/hermes.env.example /var/lib/hermes/env
-sudo cp secrets/example/hermes-dashboard.env.example /var/lib/hermes/.hermes/.env
-sudo chmod 600 /var/lib/hermes/env /var/lib/hermes/.hermes/.env
-# Edit with your real API keys and tokens
-```
-
-### 3. Build & Switch
-
-```bash
-# First build (downloads all dependencies — takes a while)
-sudo nixos-rebuild switch --flake /etc/nixos#buildfleet-server
-
-# Subsequent updates
+# The host mounts these paths read-only by default.
 sudo mount -o remount,rw /
-sudo mount -o remount,rw /run  # if needed
+sudo mount -o remount,rw /run
+
+# Format, evaluate/build the flake check, then deploy.
+nix fmt
+nix flake check
 sudo nixos-rebuild switch --flake /etc/nixos#buildfleet-server
 ```
 
-### 4. Post-Install
+For a non-deploying system validation:
 
-- **AdGuard Home**: Visit `http://<server-ip>:3000` on first run to set up admin password, then configure DNS filtering lists
-- **Tailscale**: Run `sudo tailscale up --advertise-exit-node` to join your tailnet and enable exit node
-- **Hermes Agent**: Starts automatically. Configure Telegram bot via `@BotFather` and set `TELEGRAM_BOT_TOKEN` in `/var/lib/hermes/env`
-- **Hermes Dashboard**: Access at `http://<tailscale-ip>:9119` from your tailnet
+```bash
+sudo nixos-rebuild dry-build --flake /etc/nixos#buildfleet-server
+```
 
-## Auto-Updates
+## Change tracking
 
-The `update.nix` module sets up three layers:
+Make administrator changes on a short-lived branch and review them in a pull
+request. Before pushing:
 
-1. **Sun 03:00 ET** — `nix flake update` bumps all flake.lock inputs (with git checkpoint)
-2. **Mon 04:00 ET** — `system.autoUpgrade` rebuilds from updated flake (with auto-reboot)
-3. **Sat 02:00 ET** — `nix.gc` collects garbage older than 7 days
+```bash
+git diff --check
+nix flake check
+nix run nixpkgs#gitleaks -- dir --redact --no-banner .
+```
 
-Rollback: `sudo nix-env --rollback -p /nix/var/nix/profiles/system` or select a previous generation from GRUB.
+Automatic input updates run only when the live checkout is on a clean `main`
+branch. Each updater validates the resulting system before creating one
+lock-file-only commit. It skips review branches and dirty worktrees, preventing
+timer-generated commits from mixing with manual server work.
 
-## Key Design Decisions
+The repository is public. Never place real credentials in examples, commits,
+issues, or pull-request text. The ignore rules are a safety net, not a substitute
+for the secret scan.
 
-- **Declarative everything** — AdGuard in Docker (via `containers.nix`), not bare-metal, for clean updates
-- **Tailscale-only dashboard** — Port 9119 not exposed to LAN; only reachable inside the mesh
-- **Self-interruption prevention** — `restartIfChanged = false` on hermes-agent so rebuilds don't kill active sessions
-- **Passwordless sudo** — `NOPASSWD + SETENV` for wheel group, with `NoNewPrivileges = false` on Hermes services
-- **Nix store paths for cloakbrowser** — Binary path updates after each rebuild (tracked in hermes config)
+## Recovery
 
-## Hardware
-
-- **CPU**: AMD (KVM-AMD virtualization enabled)
-- **GPU**: NVIDIA RTX 3060 (proprietary driver, modesetting enabled)
-- **Network**: Ethernet + WiFi (NetworkManager)
-- **Storage**: ext4 root, swap partition
-
-## Firewall
-
-| Port | Protocol | Purpose | Scope |
-|------|----------|---------|-------|
-| 22 | TCP | SSH | LAN + WAN |
-| 53 | TCP/UDP | AdGuard DNS | LAN + WAN |
-| 80 | TCP | ACME HTTP challenge | WAN |
-| 443 | TCP | Nginx (HTTPS) | WAN |
-| 3000 | TCP | AdGuard initial setup | LAN |
-| 8080 | TCP | AdGuard admin UI | LAN |
-| 9119 | TCP | Hermes Dashboard | Tailscale only |
+- Start the local GUI: `sudo systemctl isolate graphical.target`
+- Return to headless mode: `sudo systemctl isolate multi-user.target`
+- Roll back a deployment: select an older generation in GRUB or run
+  `sudo nixos-rebuild switch --rollback`
+- Inspect services: `systemctl status hermes-agent docker-gluetun docker-transmission-vpn prowlarr`
+- Inspect timers: `systemctl list-timers codex-cli-update nixos-flake-update nixos-upgrade`
 
 ## License
 
-This configuration is provided as-is for reference. Feel free to fork and adapt for your own home server setup.
+This configuration is provided as-is for reference. Adapt it to your own
+hardware, network, accounts, and threat model.

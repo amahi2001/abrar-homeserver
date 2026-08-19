@@ -20,9 +20,11 @@
     };
     certs."buildfleet.duckdns.org" = {
       domain = "buildfleet.duckdns.org";
-      extraDomainNames = [];
+      extraDomainNames = [ ];
       dnsProvider = "duckdns";
-      credentialFiles = { "DUCKDNS_TOKEN_FILE" = "/var/lib/secrets/duckdns-token-value"; };
+      credentialFiles = {
+        "DUCKDNS_TOKEN_FILE" = "/var/lib/secrets/duckdns-token-value";
+      };
       dnsPropagationCheck = true;
       reloadServices = [ "nginx" ];
       webroot = null;
@@ -55,7 +57,9 @@
     enable = true;
     config = {
       DOMAIN = "https://buildfleet.duckdns.org/vault";
-      SIGNUPS_ALLOWED = true;
+      # The administrative account already exists; keep public registration
+      # closed on this Internet-facing endpoint.
+      SIGNUPS_ALLOWED = false;
 
       ROCKET_ADDRESS = "127.0.0.1";
       ROCKET_PORT = 8222;
@@ -66,7 +70,10 @@
   # Bitwarden to Vaultwarden synchronization service and timer
   systemd.services.bitwarden-sync = {
     description = "Bitwarden to Vaultwarden synchronization service";
-    path = with pkgs; [ bitwarden-cli deno ];
+    path = with pkgs; [
+      bitwarden-cli
+      deno
+    ];
     serviceConfig = {
       Type = "oneshot";
       ExecStart = "${pkgs.deno}/bin/deno run --allow-run --allow-read --allow-write --allow-env --allow-net /etc/nixos/scripts/bitwarden-sync.ts";
@@ -76,10 +83,10 @@
   };
 
   systemd.timers.bitwarden-sync = {
-    description = "Timer for Bitwarden to Vaultwarden synchronization";
+    description = "Daily timer for Bitwarden to Vaultwarden synchronization";
     wantedBy = [ "timers.target" ];
     timerConfig = {
-      OnCalendar = "hourly";
+      OnCalendar = "*-*-* 01:00:00 America/New_York";
       Persistent = true;
     };
   };

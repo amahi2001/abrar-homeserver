@@ -1,79 +1,150 @@
-# NixOS auto-update module (best-practice approach)
+# Guarded NixOS update policy.
 #
-# Three layers:
-#   1. nixos-flake-update timer: bumps all flake.lock inputs weekly (Sun 03:00)
-#   2. system.autoUpgrade: rebuilds from updated flake weekly (Mon 04:00)
-#   3. nix.gc + nix.optimise: garbage collection and store optimisation
+# Daily: update only the independently pinned Codex CLI input.
+# Sunday: update all flake inputs and dry-build the resulting system.
+# Monday: deploy the already-validated lock file with system.autoUpgrade.
 #
-# Why separate timers instead of one script?
-#   - system.autoUpgrade is maintained by NixOS upstream, handles failures
-#     gracefully (won't switch if build fails), supports allowReboot for
-#     kernel updates, and auto-rolls back via GRUB generations.
-#   - nix flake update must run BEFORE the rebuild but has different failure
-#     modes (network issues, bad input), so it's a separate unit.
-#   - Sunday flake-update → Monday rebuild gives a ~25h window to rollback
-#     flake.lock if an input breaks.
-#
-# Rollback:
-#   cd /etc/nixos && sudo git checkout -- flake.lock
-#   sudo nixos-rebuild switch --flake /etc/nixos#buildfleet-server
-#   Or from GRUB: select a previous generation.
-#
-# Check status:
-#   systemctl list-timers nixos-*
-#   journalctl -u nixos-flake-update
-#   journalctl -u nixos-upgrade
-{ config, pkgs, lib, ... }:
+# Update jobs intentionally run only from a clean main checkout. This prevents
+# timers from committing into an agent/review branch or mixing lock updates
+# with an administrator's in-progress configuration work.
+{ pkgs, ... }:
 
 let
+  gitPreflight = ''
+    if ! "$GIT" -C "$FLAKE_DIR" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+      echo "[$LOG_TAG] /etc/nixos is not a Git worktree; skipping automatic update."
+      exit 0
+    fi
+
+    branch="$("$GIT" -C "$FLAKE_DIR" symbolic-ref --quiet --short HEAD || true)"
+    if [ "$branch" != "main" ]; then
+      echo "[$LOG_TAG] Checkout is on '$branch', not main; skipping automatic update."
+      exit 0
+    fi
+
+    if [ -n "$("$GIT" -C "$FLAKE_DIR" status --porcelain --untracked-files=normal)" ]; then
+      echo "[$LOG_TAG] Worktree has uncommitted changes; skipping automatic update."
+      exit 0
+    fi
+  '';
+
+  codexCliUpdate = pkgs.writeShellScript "codex-cli-update" ''
+    set -euo pipefail
+
+    FLAKE_DIR="/etc/nixos"
+    GIT="${pkgs.git}/bin/git"
+    LOG_TAG="codex-cli-update"
+    ${gitPreflight}
+
+    lock_backup="$(${pkgs.coreutils}/bin/mktemp)"
+    cleanup() {
+      ${pkgs.coreutils}/bin/rm -f "$lock_backup"
+    }
+    trap cleanup EXIT
+
+    ${pkgs.coreutils}/bin/cp "$FLAKE_DIR/flake.lock" "$lock_backup"
+    ${pkgs.nix}/bin/nix flake update codex-cli --flake "$FLAKE_DIR"
+
+    if ${pkgs.diffutils}/bin/cmp -s "$lock_backup" "$FLAKE_DIR/flake.lock"; then
+      echo "[$LOG_TAG] Codex CLI input is already current."
+      exit 0
+    fi
+
+    if ! ${pkgs.nixos-rebuild}/bin/nixos-rebuild dry-build \
+      --flake "$FLAKE_DIR#buildfleet-server"; then
+      echo "[$LOG_TAG] Validation failed; restoring the previous lock file."
+      ${pkgs.coreutils}/bin/cp "$lock_backup" "$FLAKE_DIR/flake.lock"
+      exit 1
+    fi
+
+    "$GIT" -C "$FLAKE_DIR" \
+      -c user.name="NixOS Codex Updater" \
+      -c user.email="codex-updater@localhost" \
+      add flake.lock
+    if ! "$GIT" -C "$FLAKE_DIR" \
+      -c user.name="NixOS Codex Updater" \
+      -c user.email="codex-updater@localhost" \
+      commit --only flake.lock -m "chore: update Codex CLI"; then
+      echo "[$LOG_TAG] WARNING: validated lock file was not committed."
+    fi
+  '';
+
   nixosFlakeUpdate = pkgs.writeShellScript "nixos-flake-update" ''
     set -euo pipefail
 
     FLAKE_DIR="/etc/nixos"
+    GIT="${pkgs.git}/bin/git"
     LOG_TAG="nixos-flake-update"
+    ${gitPreflight}
 
-    echo "[$LOG_TAG] Starting flake update at $(date)"
-    cd "$FLAKE_DIR"
+    lock_backup="$(${pkgs.coreutils}/bin/mktemp)"
+    cleanup() {
+      ${pkgs.coreutils}/bin/rm -f "$lock_backup"
+    }
+    trap cleanup EXIT
 
-    # Git checkpoint for easy rollback
-    if git rev-parse --is-inside-work-tree > /dev/null 2>&1; then
-      ${pkgs.git}/bin/git add -A
-      ${pkgs.git}/bin/git commit -m "pre-flake-update checkpoint $(date +%Y-%m-%d_%H-%M)" || true
-      echo "[$LOG_TAG] Git checkpoint created"
-    else
-      echo "[$LOG_TAG] WARNING: /etc/nixos is not a git repo — skipping checkpoint"
-    fi
-
-    # Update all flake inputs (nixpkgs, hermes-agent, cloakbrowser, etc.)
-    echo "[$LOG_TAG] Running nix flake update..."
+    ${pkgs.coreutils}/bin/cp "$FLAKE_DIR/flake.lock" "$lock_backup"
     ${pkgs.nix}/bin/nix flake update --flake "$FLAKE_DIR"
 
-    # Commit updated lockfile
-    if git rev-parse --is-inside-work-tree > /dev/null 2>&1; then
-      ${pkgs.git}/bin/git add flake.lock
-      ${pkgs.git}/bin/git commit -m "post-flake-update $(date +%Y-%m-%d_%H-%M)" || true
+    if ${pkgs.diffutils}/bin/cmp -s "$lock_backup" "$FLAKE_DIR/flake.lock"; then
+      echo "[$LOG_TAG] Flake inputs are already current."
+      exit 0
     fi
 
-    echo "[$LOG_TAG] Flake update completed at $(date)"
+    if ! ${pkgs.nixos-rebuild}/bin/nixos-rebuild dry-build \
+      --flake "$FLAKE_DIR#buildfleet-server"; then
+      echo "[$LOG_TAG] Validation failed; restoring the previous lock file."
+      ${pkgs.coreutils}/bin/cp "$lock_backup" "$FLAKE_DIR/flake.lock"
+      exit 1
+    fi
+
+    "$GIT" -C "$FLAKE_DIR" \
+      -c user.name="NixOS Auto Updater" \
+      -c user.email="nixos-updater@localhost" \
+      add flake.lock
+    if ! "$GIT" -C "$FLAKE_DIR" \
+      -c user.name="NixOS Auto Updater" \
+      -c user.email="nixos-updater@localhost" \
+      commit --only flake.lock -m "chore: update NixOS flake inputs"; then
+      echo "[$LOG_TAG] WARNING: validated lock file was not committed."
+    fi
   '';
 in
 {
-  # --- 1. Flake input update (runs Sunday 03:00 ET) ---
-  # Bumps all inputs in flake.lock so the next auto-upgrade picks up new versions.
-  systemd.services.nixos-flake-update = {
-    description = "Update all NixOS flake inputs";
+  systemd.services.codex-cli-update = {
+    description = "Update and validate the OpenAI Codex CLI flake input";
     after = [ "network-online.target" ];
     wants = [ "network-online.target" ];
-    path = with pkgs; [ nix git coreutils ];
+    serviceConfig = {
+      Type = "oneshot";
+      ExecStart = codexCliUpdate;
+      TimeoutStartSec = "30min";
+    };
+  };
+
+  systemd.timers.codex-cli-update = {
+    description = "Daily guarded Codex CLI update";
+    wantedBy = [ "timers.target" ];
+    timerConfig = {
+      OnCalendar = "*-*-* 04:30:00 America/New_York";
+      Persistent = true;
+      RandomizedDelaySec = "15min";
+    };
+  };
+
+  systemd.services.nixos-flake-update = {
+    description = "Update and validate all NixOS flake inputs";
+    after = [ "network-online.target" ];
+    wants = [ "network-online.target" ];
     serviceConfig = {
       Type = "oneshot";
       ExecStart = nixosFlakeUpdate;
-      TimeoutStartSec = "15min";
+      TimeoutStartSec = "60min";
     };
   };
 
   systemd.timers.nixos-flake-update = {
-    description = "Weekly flake input update (runs before auto-upgrade)";
+    description = "Weekly guarded NixOS flake update";
     wantedBy = [ "timers.target" ];
     timerConfig = {
       OnCalendar = "Sun *-*-* 03:00:00 America/New_York";
@@ -82,26 +153,19 @@ in
     };
   };
 
-  # --- 2. NixOS auto-upgrade (runs Monday 04:00 ET) ---
-  # Uses the built-in NixOS module — handles build failures gracefully,
-  # won't switch if build fails, and reboots automatically when kernel/boot changes.
   system.autoUpgrade = {
     enable = true;
-    flake = "path:/etc/nixos";
-    flags = [ "--flake" "/etc/nixos#buildfleet-server" ];
+    flake = "/etc/nixos#buildfleet-server";
     dates = "Mon *-*-* 04:00:00 America/New_York";
     allowReboot = true;
     persistent = true;
   };
 
-  # --- 3. Garbage collection ---
-  # Keeps last 7 days of old generations, runs weekly (Sat 02:00).
   nix.gc = {
     automatic = true;
     dates = "Sat *-*-* 02:00:00 America/New_York";
     options = "--delete-older-than 7d";
   };
 
-  # --- 4. Store optimisation (deduplication) ---
   nix.optimise.automatic = true;
 }
