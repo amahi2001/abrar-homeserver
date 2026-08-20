@@ -38,6 +38,8 @@ MANAGERS = {
     },
 }
 
+MANUAL_ROOT = Path("/srv/data/media/library/manual")
+
 
 def require_root():
     if os.geteuid() != 0:
@@ -143,14 +145,52 @@ def scan_import(manager, folder):
     })
 
 
-def prepare_files(manager, files, record):
-    accepted = [item for item in files if not item.get("rejections")]
+def scan_source(manager, source):
+    scan_root = source if source.is_dir() else source.parent
+    candidates = scan_import(manager, scan_root)
+    selected = []
+    for item in candidates:
+        item_path = Path(item.get("path", "")).resolve()
+        if (source.is_file() and item_path == source) or (
+            source.is_dir() and item_path.is_relative_to(source)
+        ):
+            selected.append(item)
+    if not selected:
+        raise LibraryError("Sonarr/Radarr did not identify any media at that source path.")
+    return selected
+
+
+def replacement_rejections_only(item):
+    allowed = (
+        "not an upgrade for existing episode file",
+        "not an upgrade for existing movie file",
+        "movie file with same quality already exists",
+    )
+    rejections = item.get("rejections") or []
+    return rejections and all(
+        any(str(rejection.get("reason", "")).lower().startswith(prefix) for prefix in allowed)
+        for rejection in rejections
+    )
+
+
+def prepare_files(manager, files, record, replace_existing=False):
+    rejected_items = [item for item in files if item.get("rejections")]
+    if replace_existing and any(not replacement_rejections_only(item) for item in rejected_items):
+        raise LibraryError("The media has a rejection unrelated to replacing an existing file.")
+    accepted = files if replace_existing else [item for item in files if not item.get("rejections")]
     if not accepted:
-        raise LibraryError("No accepted media files were found in that folder.")
-    rejected = len(files) - len(accepted)
-    if rejected:
-        raise LibraryError(f"{rejected} file(s) were rejected; refusing a partial import.")
+        reasons = "; ".join(
+            rejection.get("reason", "unknown rejection")
+            for item in rejected_items
+            for rejection in item.get("rejections", [])
+        )
+        raise LibraryError(f"No accepted media files were found: {reasons}")
+    if rejected_items and not replace_existing:
+        raise LibraryError(
+            f"{len(rejected_items)} file(s) were rejected; refusing a partial import."
+        )
     for item in accepted:
+        item.pop("rejections", None)
         if manager == "tv":
             series = item.get("series") or {}
             episodes = item.get("episodes") or []
@@ -195,27 +235,42 @@ def verify_hardlinks(source_files, library_path):
 def organize(args):
     manager = args.kind
     require_active(manager)
-    folder = Path(args.path).resolve()
-    if not folder.is_dir():
-        raise LibraryError("The source path must be an existing directory.")
+    source = Path(args.path).resolve()
+    if not source.exists() or not (source.is_file() or source.is_dir()):
+        raise LibraryError("The source path must be an existing file or directory.")
+    if not source.is_relative_to(MANUAL_ROOT):
+        raise LibraryError("The source path must be inside the completed manual library.")
     lookup = matching_lookup(manager, args.title, args.year)
     record = existing_record(manager, lookup)
     if args.dry_run:
         state = "existing record" if record else "new unmonitored record"
+        replacement = " forced replacement" if args.replace_existing else ""
+        if args.replace_existing:
+            if record is None:
+                raise LibraryError("Replacement requires an existing Sonarr/Radarr record.")
+            prepare_files(manager, scan_source(manager, source), record, True)
         print(
             f"Plan: {MANAGERS[manager]['name']} → {lookup['title']} ({lookup.get('year', '?')}); "
-            f"{state}; source={folder}; mode=hard-link copy."
+            f"{state}; source={source}; mode=hard-link copy{replacement}."
         )
         return
     if not args.confirm:
         raise LibraryError("Importing requires --confirm after reviewing the plan.")
     if record is None:
+        if args.replace_existing:
+            raise LibraryError("Replacement requires an existing Sonarr/Radarr record.")
         record = add_record(manager, lookup)
-    files = prepare_files(manager, scan_import(manager, folder), record)
+    files = prepare_files(
+        manager,
+        scan_source(manager, source),
+        record,
+        args.replace_existing,
+    )
     source_files = [Path(item["path"]) for item in files]
     command = api(manager, "/command", "POST", {
         "name": "ManualImport",
         "importMode": "copy",
+        "replaceExistingFiles": args.replace_existing,
         "files": files,
     })
     wait_for_command(manager, command["id"])
@@ -237,6 +292,11 @@ def parse_args():
         organize_parser.add_argument("--year", type=int, required=(kind == "movie"))
         organize_parser.add_argument("--dry-run", action="store_true", help="validate the exact library match without changing it")
         organize_parser.add_argument("--confirm", action="store_true", help="required to add/import after reviewing a dry run")
+        organize_parser.add_argument(
+            "--replace-existing",
+            action="store_true",
+            help="explicitly replace an existing episode/movie rejected only as not an upgrade",
+        )
     return parser.parse_args()
 
 

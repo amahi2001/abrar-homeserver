@@ -13,7 +13,10 @@ Keep the media flow explicit:
 
 1. Transmission downloads through Gluetun into
    `/srv/data/media/library/manual`.
-2. Sonarr or Radarr hard-links approved completed media into `tv` or `movies`.
+2. The systemd `media-organizer` timer discovers every completed torrent,
+   including downloads added manually in Transmission. It starts Sonarr for
+   TV/anime or Radarr for films, hard-links the media into `tv` or `movies`,
+   then stops the manager again.
 3. Jellyfin publishes only the organized `tv` and `movies` libraries. A file
    that exists only in `manual` is downloaded but not yet available in
    Jellyfin.
@@ -44,10 +47,20 @@ result or queue anything until the user replies with its number(s).
 ## On-demand library managers
 
 Sonarr and Radarr are intentionally stopped while idle. Keep one-off searches
-and downloads on `media-queue`; do not start either manager for those requests.
+and downloads on `media-queue`; do not start either manager immediately after
+queueing. The independent `media-organizer` timer starts the matching manager
+only after Transmission reports completion, imports the media, and stops it.
 
-When the user explicitly asks to track, manage, organize, or maintain existing
-files in the media library, start only the matching manager:
+Check the automatic pipeline with:
+
+```bash
+sudo media-organizer status
+systemctl status media-organizer.timer --no-pager
+```
+
+Use the manual flow only when automatic classification reports `needs-review`,
+or when the user explicitly asks to replace, track, or repair existing library
+content. Start only the matching manager:
 
 ```bash
 sudo media-library start sonarr  # TV shows and anime
@@ -84,6 +97,10 @@ that every result is a hard link before reporting success.
 sudo media-library stop sonarr
 sudo media-library stop radarr
 ```
+
+For a user-confirmed replacement of a corrupt existing episode/movie, use the
+same dry-run and confirmation sequence with `--replace-existing`. Never let the
+automatic timer force a quality downgrade or overwrite by itself.
 
 ## Jellyfin playback and publishing
 
@@ -153,11 +170,14 @@ the user explicitly asks to change that policy.
    The CLI resolves either a torrent descriptor or a magnet redirect entirely
    through the Gluetun namespace, then adds it to Transmission at
    `/srv/data/media/library/manual` after completion.
-3. After queueing, tell the user the download is being watched. A persistent
-   five-minute Telegram watcher reports a changed terminal/problem state:
+3. After queueing, tell the user the download and automatic organization are
+   being watched. A persistent five-minute Telegram watcher discovers both
+   tool-queued and manually added Transmission downloads, and reports a changed
+   terminal/problem state:
    completed, paused (including with no connected peers), waiting for peers,
-   removed, failed, or resumed. It is
-   quiet while a download continues normally. Report current status on demand:
+   removed, failed, resumed, organized for Jellyfin, or requiring organization
+   review. It is quiet while a download continues normally. Report current
+   status on demand:
 
    ```bash
    sudo media-queue status
@@ -183,6 +203,7 @@ sudo media-queue search "<title>" [--limit 10]
 sudo media-queue queue --query "<title and release terms>" --index <number> [<number> ...] --confirm [--dry-run]
 sudo media-queue status
 sudo media-queue watch
+sudo media-organizer status
 ```
 
 Use `--dry-run` to validate a specific result and all network guardrails without

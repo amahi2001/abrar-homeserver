@@ -77,6 +77,19 @@ let
     '';
   };
 
+  mediaOrganizer = pkgs.writeShellApplication {
+    name = "media-organizer";
+    runtimeInputs = [
+      pkgs.docker
+      pkgs.python3
+      pkgs.systemd
+      mediaLibrary
+    ];
+    text = ''
+      exec ${pkgs.python3}/bin/python ${./skills/media-queue/scripts/media_organizer.py} "$@"
+    '';
+  };
+
   transmissionVpnSettings = pkgs.writeText "transmission-vpn-settings.json" (
     builtins.toJSON {
       # Keep manual/Hermes downloads out of the media-library root. Servarr
@@ -104,6 +117,7 @@ in
   environment.systemPackages = [
     mediaQueue
     mediaLibrary
+    mediaOrganizer
   ];
 
   users.groups = {
@@ -150,6 +164,7 @@ in
     "d /var/lib/gluetun             0700 root         root  -"
     "d /var/lib/transmission-vpn    0750 transmission media -"
     "d /var/lib/media-queue         0700 root         root  -"
+    "d /var/lib/media-queue/events  0700 root         root  -"
   ];
 
   # Disable the native service: unlike the container below it has the host's
@@ -219,6 +234,35 @@ in
     serviceConfig.ExecStartPre = lib.mkBefore [
       "+${pkgs.coreutils}/bin/install -D -m 0640 -o transmission -g media ${transmissionVpnSettings} /var/lib/transmission-vpn/settings.json"
     ];
+  };
+
+  # Poll completed torrents independently of Hermes so downloads added through
+  # either media-queue or Transmission's UI are organized. Sonarr/Radarr are
+  # started only for an import and stopped again to preserve low idle memory.
+  systemd.services.media-organizer = {
+    description = "Organize completed Transmission media for Jellyfin";
+    after = [ "docker-transmission-vpn.service" ];
+    wants = [ "docker-transmission-vpn.service" ];
+    serviceConfig = {
+      Type = "oneshot";
+      ExecStart = "${mediaOrganizer}/bin/media-organizer run";
+      UMask = "0077";
+      Nice = 10;
+      IOSchedulingClass = "idle";
+      IOSchedulingPriority = 7;
+      TimeoutStartSec = "10min";
+    };
+  };
+
+  systemd.timers.media-organizer = {
+    description = "Watch Transmission for completed media";
+    wantedBy = [ "timers.target" ];
+    timerConfig = {
+      OnBootSec = "2min";
+      OnUnitActiveSec = "2min";
+      RandomizedDelaySec = "15s";
+      Persistent = true;
+    };
   };
 
   # Google Drive-like UI, desktop/mobile sync, sharing, and WebDAV. The

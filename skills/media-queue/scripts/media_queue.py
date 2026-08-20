@@ -20,6 +20,7 @@ TRANSMISSION_DOWNLOAD_DIR = "/downloads/library/manual"
 TEMP_TORRENT = "/tmp/media-queue.torrent"
 WATCH_STATE = Path("/var/lib/media-queue/watch-state.json")
 SEARCH_CACHE = Path("/var/lib/media-queue/search-cache.json")
+ORGANIZER_EVENT_DIR = Path("/var/lib/media-queue/events")
 TRANSMISSION = ["docker", "exec", "transmission-vpn", "transmission-remote", "127.0.0.1:9091"]
 
 
@@ -90,7 +91,14 @@ def search_results(query, limit):
     })
     if not isinstance(data, list):
         raise QueueError("Prowlarr returned an unexpected search response.")
-    return [item for item in data if item.get("protocol") == "torrent" and item.get("downloadUrl")]
+    # Some indexers, notably Nyaa.si, expose a magnetUrl rather than a
+    # Prowlarr downloadUrl. Keep both forms; queue_results validates and adds
+    # either one inside Transmission's Gluetun namespace.
+    return [
+        item for item in data
+        if item.get("protocol") == "torrent"
+        and (item.get("downloadUrl") or item.get("magnetUrl"))
+    ]
 
 
 def readable_size(value):
@@ -162,6 +170,15 @@ def validate_download_url(value):
     parsed = urlparse(value)
     if parsed.scheme != "http" or parsed.netloc != PROWLARR_DOCKER_GATEWAY:
         raise QueueError("Prowlarr did not return a private Docker-bridge download URL.")
+
+
+def normalize_prowlarr_download_url(value):
+    # Prowlarr may return localhost in magnetUrl; Transmission reaches it
+    # through the Docker bridge gateway inside the protected namespace.
+    if value.startswith("http://127.0.0.1:9696"):
+        value = "http://" + PROWLARR_DOCKER_GATEWAY + value[len("http://127.0.0.1:9696"): ]
+    validate_download_url(value)
+    return value
 
 
 def validate_magnet_uri(value):
@@ -240,7 +257,15 @@ def record_watched_torrents(before_ids, results):
 def queue_results(results, dry_run):
     network_guardrails()
     for result in results:
-        validate_download_url(result["downloadUrl"])
+        if result.get("downloadUrl"):
+            validate_download_url(result["downloadUrl"])
+        elif result.get("magnetUrl"):
+            if result["magnetUrl"].startswith("magnet:"):
+                validate_magnet_uri(result["magnetUrl"])
+            else:
+                normalize_prowlarr_download_url(result["magnetUrl"])
+        else:
+            raise QueueError("The selected indexer did not provide a usable torrent or magnet link.")
     if dry_run:
         for result in results:
             print(f"Guardrails passed. Would queue: {result.get('title', 'selected result')}")
@@ -248,9 +273,12 @@ def queue_results(results, dry_run):
     before_ids = {torrent.get("id") for torrent in transmission_torrents()}
     try:
         for result in results:
-            download_url = result["downloadUrl"]
+            if result.get("magnetUrl") and not result.get("downloadUrl"):
+                download_url = normalize_prowlarr_download_url(result["magnetUrl"])
+            else:
+                download_url = result["downloadUrl"]
             descriptor = subprocess.run([
-                "docker", "exec", "-e", f"MEDIA_QUEUE_DOWNLOAD_URL={result['downloadUrl']}",
+                "docker", "exec", "-e", f"MEDIA_QUEUE_DOWNLOAD_URL={download_url}",
                 "transmission-vpn", "sh", "-ceu",
                 f"umask 077; rm -f {TEMP_TORRENT}; "
                 f"wget -q --timeout=30 --tries=1 -O {TEMP_TORRENT} \"$MEDIA_QUEUE_DOWNLOAD_URL\"; "
@@ -277,6 +305,7 @@ def queue_results(results, dry_run):
     for result in results:
         print(f"Queued through VPN-isolated Transmission: {result.get('title', 'selected result')}")
     print("Final location: /srv/data/media/library/manual")
+    print("After completion, the automatic organizer will publish recognized media to Jellyfin.")
     if watched:
         print(f"Watching {watched} newly queued item(s) for paused, no-peer, failed, and completed states.")
 
@@ -316,20 +345,56 @@ def watch_message(name, state, torrent):
     return f"Media download resumed: {name}"
 
 
+def drain_organizer_events():
+    messages = []
+    try:
+        events = sorted(ORGANIZER_EVENT_DIR.glob("*.json"))
+    except OSError:
+        return messages
+    for event in events:
+        try:
+            data = json.loads(event.read_text(encoding="utf-8"))
+            message = data.get("message")
+            if isinstance(message, str) and message:
+                messages.append(message)
+        except (OSError, json.JSONDecodeError):
+            pass
+        try:
+            event.unlink()
+        except OSError:
+            pass
+    return messages
+
+
 def watch_downloads():
     state = load_watch_state()
+    messages = drain_organizer_events()
     try:
         network_guardrails()
     except QueueError as error:
         if state.get("pipeline") != "failed":
-            print(f"Media download watcher stopped by a VPN guardrail: {error}")
+            messages.append(f"Media download watcher stopped by a VPN guardrail: {error}")
         state["pipeline"] = "failed"
         save_watch_state(state)
+        print("\n".join(messages))
         return
     recovered = state.get("pipeline") == "failed"
     state["pipeline"] = "healthy"
     torrents = {str(torrent.get("id")): torrent for torrent in transmission_torrents()}
-    messages = ["Media download watcher restored its protected connection."] if recovered else []
+    if recovered:
+        messages.append("Media download watcher restored its protected connection.")
+    now = time.time()
+    for torrent_id, torrent in torrents.items():
+        if torrent_id in state["watched"]:
+            continue
+        current = torrent_state(torrent)
+        recently_added = now - float(torrent.get("added_date", 0)) < 30 * 60
+        state["watched"][torrent_id] = {
+            "name": torrent.get("name", "queued media"),
+            # Notify when a manually added torrent completes between polls, but
+            # silently baseline older torrents that predate this watcher.
+            "state": None if recently_added else current,
+        }
     alert_states = {"completed", "paused", "paused-no-peers", "waiting-for-peers", "failed"}
     for torrent_id, watched in list(state["watched"].items()):
         torrent = torrents.get(torrent_id)
@@ -367,7 +432,10 @@ def parse_args():
     queue.add_argument("--index", type=int, nargs="+", required=True)
     queue.add_argument("--confirm", action="store_true", help="required after the user selects displayed result numbers")
     queue.add_argument("--dry-run", action="store_true", help="validate without queueing")
-    subparsers.add_parser("watch", help="emit changed states for items queued by this tool")
+    subparsers.add_parser(
+        "watch",
+        help="emit changed states for all Transmission items and organizer events",
+    )
     return parser.parse_args()
 
 

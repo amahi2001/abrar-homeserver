@@ -163,6 +163,10 @@ in
   systemd.services.hermes-agent.serviceConfig.SupplementaryGroups = [ "wheel" ];
   systemd.services.hermes-agent.serviceConfig.NoNewPrivileges = lib.mkForce false;
   systemd.services.hermes-agent.serviceConfig.ExecStart = lib.mkForce hermesGateway;
+  # The media watcher persists its notification state here. Keep the gateway
+  # sandbox read-only elsewhere while permitting this single root-owned path.
+  systemd.services.hermes-agent.serviceConfig.ReadWritePaths =
+    lib.mkAfter [ "/var/lib/media-queue" ];
 
   # Self-Interruption Prevention
   systemd.services.hermes-agent.restartIfChanged = false;
