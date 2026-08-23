@@ -224,6 +224,7 @@ in
     "d /var/lib/hermes/.hermes/skills/productivity 0755 hermes hermes -"
     "d /var/lib/hermes/.hermes/skills/media 0755 hermes hermes -"
     "L+ /var/lib/hermes/.hermes/skills/media/media-queue - - - - /etc/nixos/skills/media-queue"
+    "L+ /var/lib/hermes/.hermes/skills/media/media-cleanup - - - - /etc/nixos/skills/media-cleanup"
     "d /var/lib/hermes/.hermes/scripts 0755 hermes hermes -"
     # A real local copy is required: Hermes rejects scheduler scripts that
     # resolve through a symlink outside ~/.hermes/scripts.

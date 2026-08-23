@@ -28,7 +28,9 @@ MEDIA_SUFFIXES = {
     ".mp4", ".mpeg", ".mpg", ".mts", ".ts", ".webm", ".wmv",
 }
 TRANSMISSION = [
-    "docker", "exec", "transmission-vpn", "transmission-remote", "127.0.0.1:9091",
+    "docker", "exec", "transmission-vpn", "sh", "-ceu",
+    'export TR_AUTH="$USER:$PASS"; exec transmission-remote 127.0.0.1:9091 --authenv "$@"',
+    "--",
 ]
 
 
@@ -297,6 +299,17 @@ def retry(key):
     save_private_json(STATE_FILE, state)
 
 
+def forget(key):
+    if not re.fullmatch(r"[0-9a-f]{40}", key, re.IGNORECASE):
+        raise OrganizerError("Use the exact 40-character torrent hash from a confirmed stale record.")
+    state = load_state()
+    if key not in state["items"]:
+        raise OrganizerError("No organizer state exists for that torrent hash.")
+    del state["items"][key]
+    save_private_json(STATE_FILE, state)
+    print(f"Removed organizer history for torrent hash {key}.")
+
+
 def self_test():
     fixtures = {
         "One Punch Man - S03E05 - Monster King.mkv": ("tv", "One Punch Man", None),
@@ -319,6 +332,8 @@ def parse_args():
     subparsers.add_parser("status")
     retry_parser = subparsers.add_parser("retry")
     retry_parser.add_argument("hash", help="torrent hash or 'all'")
+    forget_parser = subparsers.add_parser("forget")
+    forget_parser.add_argument("hash", help="exact torrent hash whose stale organizer history should be removed")
     subparsers.add_parser("self-test")
     return parser.parse_args()
 
@@ -333,6 +348,8 @@ def main():
         show_status()
     elif args.command == "retry":
         retry(args.hash)
+    elif args.command == "forget":
+        forget(args.hash)
     elif args.command == "self-test":
         self_test()
 

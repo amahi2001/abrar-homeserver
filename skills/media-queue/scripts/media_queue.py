@@ -21,7 +21,11 @@ TEMP_TORRENT = "/tmp/media-queue.torrent"
 WATCH_STATE = Path("/var/lib/media-queue/watch-state.json")
 SEARCH_CACHE = Path("/var/lib/media-queue/search-cache.json")
 ORGANIZER_EVENT_DIR = Path("/var/lib/media-queue/events")
-TRANSMISSION = ["docker", "exec", "transmission-vpn", "transmission-remote", "127.0.0.1:9091"]
+TRANSMISSION = [
+    "docker", "exec", "transmission-vpn", "sh", "-ceu",
+    'export TR_AUTH="$USER:$PASS"; exec transmission-remote 127.0.0.1:9091 --authenv "$@"',
+    "--",
+]
 
 
 class QueueError(RuntimeError):

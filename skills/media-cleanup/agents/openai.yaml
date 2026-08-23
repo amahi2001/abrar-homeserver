@@ -1,0 +1,4 @@
+interface:
+  display_name: "Media Cleanup"
+  short_description: "Safely remove torrents and organized media"
+  default_prompt: "Use $media-cleanup to inspect and safely clean up downloaded media."

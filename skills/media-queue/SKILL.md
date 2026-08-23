@@ -208,3 +208,7 @@ sudo media-organizer status
 
 Use `--dry-run` to validate a specific result and all network guardrails without
 adding it. The implementation is in `scripts/media_queue.py`.
+
+For requests to remove, unseed, archive, purge, or free space from downloaded
+media, switch to the `media-cleanup` skill and its guarded CLI. Do not use
+Transmission's delete-data action directly.

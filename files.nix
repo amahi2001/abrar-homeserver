@@ -90,6 +90,19 @@ let
     '';
   };
 
+  mediaCleanup = pkgs.writeShellApplication {
+    name = "media-cleanup";
+    runtimeInputs = [
+      pkgs.docker
+      pkgs.python3
+      pkgs.systemd
+      mediaLibrary
+    ];
+    text = ''
+      exec ${pkgs.python3}/bin/python ${./skills/media-cleanup/scripts/media_cleanup.py} "$@"
+    '';
+  };
+
   transmissionVpnSettings = pkgs.writeText "transmission-vpn-settings.json" (
     builtins.toJSON {
       # Keep manual/Hermes downloads out of the media-library root. Servarr
@@ -102,7 +115,10 @@ let
       "port-forwarding-enabled" = false;
       "rpc-bind-address" = "0.0.0.0";
       "rpc-port" = 9091;
-      "rpc-authentication-required" = false;
+      # Tailscale Serve is the only host-level entry point, but require a
+      # separate RPC login as defense in depth for other tailnet members.
+      "rpc-authentication-required" = true;
+      "rpc-username" = "buildfleet";
       "rpc-whitelist-enabled" = false;
       "rpc-host-whitelist-enabled" = false;
       "rename-partial-files" = true;
@@ -112,12 +128,34 @@ let
       "lpd-enabled" = false;
     }
   );
+
+  transmissionVpnSettingsSetup = pkgs.writeShellScript "transmission-vpn-settings-setup" ''
+    set -euo pipefail
+    umask 077
+
+    secret=/var/lib/secrets/transmission-rpc-password
+    environment=/var/lib/secrets/transmission-rpc.env
+    settings=/var/lib/transmission-vpn/settings.json
+
+    if [ ! -s "$secret" ]; then
+      ${pkgs.openssl}/bin/openssl rand -base64 32 > "$secret"
+    fi
+
+    ${pkgs.coreutils}/bin/install -D -m 0600 -o root -g root /dev/null "$environment"
+    {
+      echo "USER=buildfleet"
+      echo "PASS=$(<"$secret")"
+    } > "$environment"
+
+    ${pkgs.coreutils}/bin/install -D -m 0600 -o transmission -g transmission ${transmissionVpnSettings} "$settings"
+  '';
 in
 {
   environment.systemPackages = [
     mediaQueue
     mediaLibrary
     mediaOrganizer
+    mediaCleanup
   ];
 
   users.groups = {
@@ -161,7 +199,9 @@ in
     "d /srv/data/media/library/manual 2775 transmission media -"
     "d /srv/data/media/library/movies 2775 transmission media -"
     "d /srv/data/media/library/tv     2775 transmission media -"
+    "d /srv/data/media/.media-cleanup-trash 0700 root root -"
     "d /var/lib/gluetun             0700 root         root  -"
+    "d /var/lib/secrets             0700 root         root  -"
     "d /var/lib/transmission-vpn    0750 transmission media -"
     "d /var/lib/media-queue         0700 root         root  -"
     "d /var/lib/media-queue/events  0700 root         root  -"
@@ -203,6 +243,7 @@ in
       image = "lscr.io/linuxserver/transmission@sha256:7356451f32395838628b241f33bcd7130df9302777fc23f80cbc7ca8b4997c02";
       autoStart = true;
       dependsOn = [ "gluetun" ];
+      environmentFiles = [ "/var/lib/secrets/transmission-rpc.env" ];
       # Sharing Gluetun's namespace is the key guarantee: Transmission has no
       # route to the host network that could bypass the VPN firewall.
       extraOptions = [ "--network=container:gluetun" ];
@@ -223,7 +264,8 @@ in
   };
 
   # Keep an immutable declarative baseline for the container on each start;
-  # the image may add its own non-security defaults around it.
+  # the image may add its own non-security defaults around it.  The RPC
+  # password is generated once at activation and stays outside the Nix store.
   systemd.services.docker-transmission-vpn = {
     after = [ "docker-gluetun.service" ];
     requires = [ "docker-gluetun.service" ];
@@ -232,7 +274,7 @@ in
     # fail-closed relationship explicit at the service-manager layer.
     bindsTo = [ "docker-gluetun.service" ];
     serviceConfig.ExecStartPre = lib.mkBefore [
-      "+${pkgs.coreutils}/bin/install -D -m 0640 -o transmission -g media ${transmissionVpnSettings} /var/lib/transmission-vpn/settings.json"
+      "+${transmissionVpnSettingsSetup}"
     ];
   };
 
@@ -295,6 +337,92 @@ in
   services.jellyfin = {
     enable = true;
     openFirewall = false;
+    # Jellyfin 10.11.11 can replace an HLS remux job while another concurrent
+    # segment response is still reading its output. Pin the upstream job-locking
+    # fix and atomically publish completed HLS files until both are in a stable
+    # release.
+    package = pkgs.jellyfin.overrideAttrs (old: {
+      patches = (old.patches or [ ]) ++ [
+        (pkgs.fetchurl {
+          url = "https://github.com/jellyfin/jellyfin/commit/e2586eed9b04d501cd5805711cb6ad5553c1816b.patch";
+          hash = "sha256-Nmhwg9Hlja5mHlkRqYHACSuZJlGdlIVlC9xa+6RCN1E=";
+        })
+        (pkgs.writeText "jellyfin-hls-atomic-segments.patch" ''
+          diff --git a/Jellyfin.Api/Controllers/DynamicHlsController.cs b/Jellyfin.Api/Controllers/DynamicHlsController.cs
+          --- a/Jellyfin.Api/Controllers/DynamicHlsController.cs
+          +++ b/Jellyfin.Api/Controllers/DynamicHlsController.cs
+          @@ -1617,7 +1617,9 @@ public class DynamicHlsController : BaseJellyfinApiController
+                   var segmentFormat = string.Empty;
+                   var segmentContainer = outputExtension.TrimStart('.');
+                   var inputModifier = _encodingHelper.GetInputModifier(state, _encodingOptions, segmentContainer);
+          -        var hlsArguments = $"-hls_playlist_type {(isEventPlaylist ? "event" : "vod")} -hls_list_size 0";
+          +        // Publish segments and playlists only after FFmpeg has finished writing them. This also
+          +        // prevents replacement HLS jobs from growing a file while it is being served to a client.
+          +        var hlsArguments = $"-hls_flags temp_file -hls_playlist_type {(isEventPlaylist ? "event" : "vod")} -hls_list_size 0";
+
+                   if (string.Equals(segmentContainer, "ts", StringComparison.OrdinalIgnoreCase))
+                   {
+        '')
+        (pkgs.writeText "jellyfin-direct-play-error-reencode.patch" ''
+          diff --git a/MediaBrowser.Controller/MediaEncoding/EncodingHelper.cs b/MediaBrowser.Controller/MediaEncoding/EncodingHelper.cs
+          --- a/MediaBrowser.Controller/MediaEncoding/EncodingHelper.cs
+          +++ b/MediaBrowser.Controller/MediaEncoding/EncodingHelper.cs
+          @@ -25,5 +25,6 @@ using MediaBrowser.Model.Dlna;
+           using MediaBrowser.Model.Dto;
+           using MediaBrowser.Model.Entities;
+           using MediaBrowser.Model.MediaInfo;
+          +using MediaBrowser.Model.Session;
+           using Microsoft.Extensions.Configuration;
+           using IConfigurationManager = MediaBrowser.Common.Configuration.IConfigurationManager;
+          @@ -2340,6 +2341,14 @@ namespace MediaBrowser.Controller.MediaEncoding
+                   {
+                       var request = state.BaseRequest;
+          ${" "}
+          +            // A client reporting DirectPlayError has already failed to decode the original
+          +            // video path. Re-encoding the video makes the HLS fallback self-contained instead
+          +            // of copying the same elementary stream into a different container.
+          +            if ((state.TranscodeReasons & TranscodeReason.DirectPlayError) != 0)
+          +            {
+          +                return false;
+          +            }
+          +
+                       if (!request.AllowVideoStreamCopy)
+                       {
+                           return false;
+        '')
+        (pkgs.writeText "jellyfin-mulan-androidtv-transcode.patch" ''
+          diff --git a/Jellyfin.Api/Helpers/MediaInfoHelper.cs b/Jellyfin.Api/Helpers/MediaInfoHelper.cs
+          --- a/Jellyfin.Api/Helpers/MediaInfoHelper.cs
+          +++ b/Jellyfin.Api/Helpers/MediaInfoHelper.cs
+          @@ -212,6 +212,25 @@ public class MediaInfoHelper
+          ${" "}
+                   var user = _userManager.GetUserById(userId) ?? throw new ResourceNotFoundException();
+          ${" "}
+          +        // This H.264 stream deterministically crashes the Fire TV decoder at 00:52:29.
+          +        // Skip the client's Direct Play attempt so playback starts on the verified NVENC path.
+          +        if (string.Equals(profile.Name, "AndroidTV-Default", StringComparison.Ordinal)
+          +            && string.Equals(
+          +                mediaSource.Path,
+          +                "/srv/data/media/library/movies/Mulan (1998)/Mulan.1998.1080p.BRrip.x264.GAZ.YIFY.mp4",
+          +                StringComparison.Ordinal))
+          +        {
+          +            _logger.LogInformation("Forcing video transcode for known Android TV decoder-incompatible media: {Path}", mediaSource.Path);
+          +            options.EnableDirectPlay = false;
+          +            options.EnableDirectStream = false;
+          +            options.AllowVideoStreamCopy = false;
+          +            mediaSource.SupportsDirectPlay = false;
+          +            mediaSource.SupportsDirectStream = false;
+          +            enableDirectPlay = false;
+          +            enableDirectStream = false;
+          +            allowVideoStreamCopy = false;
+          +        }
+          +
+                   if (!enableDirectPlay)
+                   {
+                       mediaSource.SupportsDirectPlay = false;
+        '')
+      ];
+    });
     hardwareAcceleration = {
       enable = true;
       type = "nvenc";
