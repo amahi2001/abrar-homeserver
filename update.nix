@@ -2,11 +2,12 @@
 #
 # Daily: update only the independently pinned Codex CLI input.
 # Sunday: update all flake inputs and dry-build the resulting system.
+# Sunday later: update to the latest stable Hermes release, deploy, and verify
+# it independently, even when unrelated work keeps the general updater guarded.
 # Monday: deploy the already-validated lock file with system.autoUpgrade.
 #
-# Update jobs intentionally run only from a clean main checkout. This prevents
-# timers from committing into an agent/review branch or mixing lock updates
-# with an administrator's in-progress configuration work.
+# The general and Codex update jobs require a clean main checkout. The Hermes
+# job updates only its input and preserves any pre-existing lock-file edits.
 { pkgs, ... }:
 
 let
@@ -109,6 +110,122 @@ let
       echo "[$LOG_TAG] WARNING: validated lock file was not committed."
     fi
   '';
+
+  hermesFlakeUpdate = pkgs.writeShellScript "hermes-flake-update" ''
+    set -euo pipefail
+    export PATH="${pkgs.git}/bin:$PATH"
+
+    FLAKE_DIR="/etc/nixos"
+    GIT="${pkgs.git}/bin/git"
+    LOG_TAG="hermes-flake-update"
+
+    exec 9>/run/lock/hermes-flake-update.lock
+    ${pkgs.util-linux}/bin/flock -n 9 || {
+      echo "[$LOG_TAG] Another Hermes update is running."
+      exit 1
+    }
+
+    branch="$("$GIT" -C "$FLAKE_DIR" symbolic-ref --quiet --short HEAD || true)"
+    if [ "$branch" != "main" ]; then
+      echo "[$LOG_TAG] Checkout is on '$branch', not main; refusing to update."
+      exit 1
+    fi
+    if [ -n "$("$GIT" -C "$FLAKE_DIR" status --porcelain -- flake.nix)" ]; then
+      echo "[$LOG_TAG] flake.nix is being edited; refusing to update its lock file."
+      exit 1
+    fi
+
+    release_tag="$(${pkgs.curl}/bin/curl --fail --silent --show-error \
+      --retry 3 --max-time 30 \
+      -H 'Accept: application/vnd.github+json' \
+      https://api.github.com/repos/NousResearch/hermes-agent/releases/latest \
+      | ${pkgs.jq}/bin/jq -er '.tag_name')"
+    if ! [[ "$release_tag" =~ ^v[0-9]{4}\.[0-9]{1,2}\.[0-9]{1,2}$ ]]; then
+      echo "[$LOG_TAG] Unexpected release tag: $release_tag"
+      exit 1
+    fi
+    release_url="tarball+https://codeload.github.com/NousResearch/hermes-agent/tar.gz/refs/tags/$release_tag"
+    desired_line="    hermes-agent.url = \"$release_url\";"
+    current_line="$(${pkgs.gnugrep}/bin/grep -E '^    hermes-agent\.url = "' "$FLAKE_DIR/flake.nix")"
+    if [ -z "$current_line" ] || [ "$(echo "$current_line" | ${pkgs.coreutils}/bin/wc -l)" -ne 1 ]; then
+      echo "[$LOG_TAG] Cannot identify a unique Hermes flake input; refusing to edit."
+      exit 1
+    fi
+
+    backup_dir="$(${pkgs.coreutils}/bin/mktemp -d)"
+    trap '${pkgs.coreutils}/bin/rm -r "$backup_dir"' EXIT
+    ${pkgs.coreutils}/bin/cp "$FLAKE_DIR/flake.nix" "$backup_dir/flake.nix"
+    ${pkgs.coreutils}/bin/cp "$FLAKE_DIR/flake.lock" "$backup_dir/flake.lock"
+
+    lock_was_clean=1
+    if [ -n "$("$GIT" -C "$FLAKE_DIR" status --porcelain -- flake.lock)" ]; then
+      lock_was_clean=0
+    fi
+
+    if [ "$current_line" != "$desired_line" ]; then
+      ${pkgs.gnused}/bin/sed -i \
+        's|^    hermes-agent\.url = ".*";$|    hermes-agent.url = "'"$release_url"'";|' \
+        "$FLAKE_DIR/flake.nix"
+      echo "[$LOG_TAG] Selected stable Hermes release $release_tag."
+    fi
+
+    if ! ${pkgs.nix}/bin/nix flake update hermes-agent --flake "$FLAKE_DIR"; then
+      echo "[$LOG_TAG] Lock update failed; restoring both flake files."
+      ${pkgs.coreutils}/bin/cp "$backup_dir/flake.nix" "$FLAKE_DIR/flake.nix"
+      ${pkgs.coreutils}/bin/cp "$backup_dir/flake.lock" "$FLAKE_DIR/flake.lock"
+      exit 1
+    fi
+
+    if ! ${pkgs.nixos-rebuild}/bin/nixos-rebuild dry-build \
+      --flake "$FLAKE_DIR#buildfleet-server"; then
+      ${pkgs.coreutils}/bin/cp "$backup_dir/flake.nix" "$FLAKE_DIR/flake.nix"
+      ${pkgs.coreutils}/bin/cp "$backup_dir/flake.lock" "$FLAKE_DIR/flake.lock"
+      echo "[$LOG_TAG] Validation failed; restored both flake files."
+      exit 1
+    fi
+
+    expected="$(${pkgs.nix}/bin/nix eval --raw \
+      "$FLAKE_DIR#nixosConfigurations.buildfleet-server.config.services.hermes-agent.package.version")"
+    if ${pkgs.diffutils}/bin/cmp -s "$backup_dir/flake.nix" "$FLAKE_DIR/flake.nix" \
+      && ${pkgs.diffutils}/bin/cmp -s "$backup_dir/flake.lock" "$FLAKE_DIR/flake.lock" \
+      && ${pkgs.systemd}/bin/systemctl is-active --quiet hermes-agent.service hermes-dashboard.service \
+      && [ "$(${pkgs.curl}/bin/curl --fail --silent --max-time 5 http://127.0.0.1:9119/api/status | ${pkgs.jq}/bin/jq -r .version)" = "$expected" ]; then
+      echo "[$LOG_TAG] Hermes is already current at $expected."
+      exit 0
+    fi
+
+    if ! ${pkgs.nixos-rebuild}/bin/nixos-rebuild switch \
+      --flake "$FLAKE_DIR#buildfleet-server"; then
+      echo "[$LOG_TAG] NixOS switch reported an error; checking Hermes health before deciding the result."
+    fi
+    ${pkgs.systemd}/bin/systemctl restart hermes-dashboard.service hermes-agent.service
+
+    actual="$(${pkgs.curl}/bin/curl --fail --silent --show-error \
+      --retry 15 --retry-connrefused --retry-delay 2 --max-time 5 \
+      http://127.0.0.1:9119/api/status | ${pkgs.jq}/bin/jq -r .version)"
+    if [ "$actual" != "$expected" ]; then
+      echo "[$LOG_TAG] Backend reports $actual; expected $expected."
+      exit 1
+    fi
+    ${pkgs.systemd}/bin/systemctl is-active --quiet hermes-agent.service hermes-dashboard.service
+    echo "[$LOG_TAG] Hermes gateway and Desktop backend are running $actual."
+
+    if ! ${pkgs.diffutils}/bin/cmp -s "$backup_dir/flake.nix" "$FLAKE_DIR/flake.nix" \
+      || ! ${pkgs.diffutils}/bin/cmp -s "$backup_dir/flake.lock" "$FLAKE_DIR/flake.lock"; then
+      if [ "$lock_was_clean" -eq 1 ]; then
+        "$GIT" -C "$FLAKE_DIR" \
+          -c user.name="NixOS Hermes Updater" \
+          -c user.email="hermes-updater@localhost" \
+          add flake.nix flake.lock
+        "$GIT" -C "$FLAKE_DIR" \
+          -c user.name="NixOS Hermes Updater" \
+          -c user.email="hermes-updater@localhost" \
+          commit --only flake.nix flake.lock -m "chore: update Hermes Agent to $release_tag"
+      else
+        echo "[$LOG_TAG] Preserved pre-existing uncommitted flake.lock changes; no automatic commit."
+      fi
+    fi
+  '';
 in
 {
   systemd.services.codex-cli-update = {
@@ -148,6 +265,27 @@ in
     wantedBy = [ "timers.target" ];
     timerConfig = {
       OnCalendar = "Sun *-*-* 03:00:00 America/New_York";
+      Persistent = true;
+      RandomizedDelaySec = "15min";
+    };
+  };
+
+  systemd.services.hermes-flake-update = {
+    description = "Update, deploy, and verify the Nix-managed Hermes backend";
+    after = [ "network-online.target" ];
+    wants = [ "network-online.target" ];
+    serviceConfig = {
+      Type = "oneshot";
+      ExecStart = hermesFlakeUpdate;
+      TimeoutStartSec = "4h";
+    };
+  };
+
+  systemd.timers.hermes-flake-update = {
+    description = "Weekly Hermes update and deployment";
+    wantedBy = [ "timers.target" ];
+    timerConfig = {
+      OnCalendar = "Sun *-*-* 05:00:00 America/New_York";
       Persistent = true;
       RandomizedDelaySec = "15min";
     };

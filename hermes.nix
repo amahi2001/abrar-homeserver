@@ -27,6 +27,18 @@ let
 
     exec ${config.services.hermes-agent.package}/bin/hermes gateway
   '';
+
+  # Use the same flake-pinned Hermes package as the messaging gateway. The
+  # dashboard was previously launched from hermes' unrelated Nix profile,
+  # which remained on 0.16.0 after system upgrades.
+  hermesDashboard = pkgs.writeShellScript "hermes-dashboard" ''
+    set -euo pipefail
+    : "''${HERMES_DASHBOARD_SESSION_TOKEN:?Set HERMES_DASHBOARD_SESSION_TOKEN in /var/lib/hermes/env}"
+    export HERMES_DASHBOARD_BASIC_AUTH_USERNAME=hermes
+    export HERMES_DASHBOARD_BASIC_AUTH_PASSWORD="$HERMES_DASHBOARD_SESSION_TOKEN"
+    export HERMES_DASHBOARD_BASIC_AUTH_SECRET="$(${pkgs.coreutils}/bin/printf 'hermes-dashboard-session:%s' "$HERMES_DASHBOARD_SESSION_TOKEN" | ${pkgs.coreutils}/bin/sha256sum | ${pkgs.coreutils}/bin/cut -d ' ' -f 1)"
+    exec ${config.services.hermes-agent.package}/bin/hermes dashboard --host 0.0.0.0 --port 9119 --no-open --skip-build
+  '';
 in
 {
   # Add hermes user to nixconfig group (hermes user is created by hermes-agent module)
@@ -171,8 +183,9 @@ in
   # Self-Interruption Prevention
   systemd.services.hermes-agent.restartIfChanged = false;
   systemd.services.hermes-agent.stopIfChanged = false;
-  systemd.services.hermes-dashboard.restartIfChanged = false;
-  systemd.services.hermes-dashboard.stopIfChanged = false;
+  # A package change must replace the running Desktop backend.
+  systemd.services.hermes-dashboard.restartIfChanged = true;
+  systemd.services.hermes-dashboard.stopIfChanged = true;
 
   # Add RTK to the systemd service PATHs
   systemd.services.hermes-agent.path = [
@@ -208,7 +221,7 @@ in
         "API_SERVER_KEY=" # No auth required - Tailscale secures it
       ];
       EnvironmentFile = "/var/lib/hermes/env";
-      ExecStart = "/var/lib/hermes/.nix-profile/bin/hermes dashboard --host 0.0.0.0 --port 9119 --insecure --no-open --skip-build";
+      ExecStart = hermesDashboard;
       Restart = "always";
       RestartSec = 5;
     };
