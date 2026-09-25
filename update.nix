@@ -131,8 +131,14 @@ let
       exit 1
     fi
     if [ -n "$("$GIT" -C "$FLAKE_DIR" status --porcelain -- flake.nix)" ]; then
-      echo "[$LOG_TAG] flake.nix is being edited; refusing to update its lock file."
-      exit 1
+      # A previous run may have advanced only the Hermes URL while preserving
+      # an administrator's dirty lock file. Accept exactly that one-line edit.
+      if ! ${pkgs.diffutils}/bin/cmp -s \
+        <("$GIT" -C "$FLAKE_DIR" show HEAD:flake.nix | ${pkgs.gnused}/bin/sed -E 's|^    hermes-agent\.url = ".*";$|    hermes-agent.url = "<hermes>";|') \
+        <(${pkgs.gnused}/bin/sed -E 's|^    hermes-agent\.url = ".*";$|    hermes-agent.url = "<hermes>";|' "$FLAKE_DIR/flake.nix"); then
+        echo "[$LOG_TAG] flake.nix has non-Hermes edits; refusing to update it."
+        exit 1
+      fi
     fi
 
     release_tag="$(${pkgs.curl}/bin/curl --fail --silent --show-error \
