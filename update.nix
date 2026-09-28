@@ -31,6 +31,7 @@ let
 
   codexCliUpdate = pkgs.writeShellScript "codex-cli-update" ''
     set -euo pipefail
+    export PATH="${pkgs.git}/bin:$PATH"
 
     FLAKE_DIR="/etc/nixos"
     GIT="${pkgs.git}/bin/git"
@@ -44,7 +45,11 @@ let
     trap cleanup EXIT
 
     ${pkgs.coreutils}/bin/cp "$FLAKE_DIR/flake.lock" "$lock_backup"
-    ${pkgs.nix}/bin/nix flake update codex-cli --flake "$FLAKE_DIR"
+    if ! ${pkgs.nix}/bin/nix flake update codex-cli --flake "$FLAKE_DIR"; then
+      echo "[$LOG_TAG] Lock update failed; restoring the previous lock file."
+      ${pkgs.coreutils}/bin/cp "$lock_backup" "$FLAKE_DIR/flake.lock"
+      exit 1
+    fi
 
     if ${pkgs.diffutils}/bin/cmp -s "$lock_backup" "$FLAKE_DIR/flake.lock"; then
       echo "[$LOG_TAG] Codex CLI input is already current."
@@ -72,6 +77,7 @@ let
 
   nixosFlakeUpdate = pkgs.writeShellScript "nixos-flake-update" ''
     set -euo pipefail
+    export PATH="${pkgs.git}/bin:$PATH"
 
     FLAKE_DIR="/etc/nixos"
     GIT="${pkgs.git}/bin/git"
@@ -85,7 +91,11 @@ let
     trap cleanup EXIT
 
     ${pkgs.coreutils}/bin/cp "$FLAKE_DIR/flake.lock" "$lock_backup"
-    ${pkgs.nix}/bin/nix flake update --flake "$FLAKE_DIR"
+    if ! ${pkgs.nix}/bin/nix flake update --flake "$FLAKE_DIR"; then
+      echo "[$LOG_TAG] Lock update failed; restoring the previous lock file."
+      ${pkgs.coreutils}/bin/cp "$lock_backup" "$FLAKE_DIR/flake.lock"
+      exit 1
+    fi
 
     if ${pkgs.diffutils}/bin/cmp -s "$lock_backup" "$FLAKE_DIR/flake.lock"; then
       echo "[$LOG_TAG] Flake inputs are already current."
