@@ -9,3 +9,6 @@
 #
 # The example config is provided as adguard/AdGuardHome.yaml.example
 # Copy it to /var/lib/adguardhome/conf/AdGuardHome.yaml and set a real password.
+# containers.nix manages only upstream_dns and fallback_dns before container start:
+# Quad9 unfiltered DNS over TLS, with Cloudflare DNS over HTTPS as fallback.
+# Other settings, filters, and credentials remain managed through the AdGuard UI.

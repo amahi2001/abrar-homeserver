@@ -1,5 +1,5 @@
 # Public-facing web stack: ACME, Nginx, DuckDNS
-{ config, pkgs, ... }:
+{ config, pkgs, lib, ... }:
 
 {
   # DuckDNS dynamic DNS
@@ -7,6 +7,38 @@
     enable = true;
     domains = [ "buildfleet" ];
     tokenFile = "/var/lib/secrets/duckdns-token.txt";
+  };
+
+  # Retry transient provider failures within the five-minute update interval.
+  # Keep the token in the credential file and curl's stdin, never its argv.
+  systemd.services.duckdns = {
+    after = [ "network-online.target" ];
+    wants = [ "network-online.target" ];
+    serviceConfig = {
+      Type = lib.mkForce "oneshot";
+      TimeoutStartSec = "180s";
+    };
+    script = lib.mkForce ''
+      set -euo pipefail
+      token="$(${pkgs.systemd}/bin/systemd-creds cat DUCKDNS_TOKEN_FILE)"
+      domains=${lib.escapeShellArg (lib.concatStringsSep "," config.services.duckdns.domains)}
+
+      if ! response="$(${pkgs.curl}/bin/curl --fail --silent --show-error \
+        --connect-timeout 10 --max-time 20 \
+        --retry 4 --retry-delay 5 --retry-max-time 120 \
+        --config - <<< "url = \"https://www.duckdns.org/update?verbose=true&domains=$domains&token=$token&ip=\"")"; then
+        echo "DuckDNS update failed after bounded retries; the next timer run will retry."
+        exit 1
+      fi
+      unset token
+
+      read -r result <<< "$response"
+      if [ "$result" != "OK" ]; then
+        echo "DuckDNS rejected the update; check the configured domains and credential."
+        exit 1
+      fi
+      echo "DuckDNS update succeeded."
+    '';
   };
 
   # ACME / Let's Encrypt (DuckDNS DNS challenge)
