@@ -8,8 +8,8 @@ let
     if [ -f "$config" ]; then
       # Preserve UI settings and credentials while managing upstreams in Nix.
       ${pkgs.yq-go}/bin/yq -i '
-        .dns.upstream_dns = ["tls://dns10.quad9.net"] |
-        .dns.fallback_dns = ["https://cloudflare-dns.com/dns-query"]
+        .dns.upstream_dns = ["https://cloudflare-dns.com/dns-query"] |
+        .dns.fallback_dns = ["tls://dns10.quad9.net"]
       ' "$config"
     fi
   '';
