@@ -89,12 +89,14 @@ def require_active(manager):
         )
 
 
-def matching_lookup(manager, title, year):
+def matching_lookup(manager, title, year, tmdb_id=None):
     resource = MANAGERS[manager]["resource"]
     candidates = api(manager, f"/{resource}/lookup", query={"term": title})
     matches = [item for item in candidates if normalized(item.get("title")) == normalized(title)]
     if year is not None:
         matches = [item for item in matches if item.get("year") == year]
+    if tmdb_id is not None:
+        matches = [item for item in matches if item.get("tmdbId") == tmdb_id]
     if len(matches) != 1:
         summary = ", ".join(
             f"{item.get('title', 'unknown')} ({item.get('year', '?')})"
@@ -240,7 +242,9 @@ def organize(args):
         raise LibraryError("The source path must be an existing file or directory.")
     if not source.is_relative_to(MANUAL_ROOT):
         raise LibraryError("The source path must be inside the completed manual library.")
-    lookup = matching_lookup(manager, args.title, args.year)
+    # TMDB IDs disambiguate Radarr movies only; Sonarr's TV parser does not
+    # define this optional argument.
+    lookup = matching_lookup(manager, args.title, args.year, getattr(args, "tmdb_id", None))
     record = existing_record(manager, lookup)
     if args.dry_run:
         state = "existing record" if record else "new unmonitored record"
@@ -290,6 +294,8 @@ def parse_args():
         organize_parser.add_argument("--path", required=True, help="completed-media directory under the library")
         organize_parser.add_argument("--title", required=True, help="exact Sonarr/Radarr title")
         organize_parser.add_argument("--year", type=int, required=(kind == "movie"))
+        if kind == "movie":
+            organize_parser.add_argument("--tmdb-id", type=int, help="disambiguate duplicate title/year metadata")
         organize_parser.add_argument("--dry-run", action="store_true", help="validate the exact library match without changing it")
         organize_parser.add_argument("--confirm", action="store_true", help="required to add/import after reviewing a dry run")
         organize_parser.add_argument(

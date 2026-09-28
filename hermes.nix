@@ -47,7 +47,7 @@ in
     "nixconfig"
   ];
 
-  # Hermes Agent - AI assistant with GPT-5.6 Luna via OpenAI Codex
+  # Hermes Agent - AI assistant with GPT-6 Luna via OpenAI Codex
   services.hermes-agent = {
     enable = true;
 
@@ -61,7 +61,7 @@ in
     settings = {
       model = {
         base_url = "https://chatgpt.com/backend-api/codex";
-        default = "gpt-5.6-luna";
+        default = "gpt-6-luna";
         provider = "openai-codex";
       };
       toolsets = [ "all" ];
