@@ -61,6 +61,16 @@
       reloadServices = [ "nginx" ];
       webroot = null;
     };
+    certs."jellyfin.buildfleet.duckdns.org" = {
+      domain = "jellyfin.buildfleet.duckdns.org";
+      dnsProvider = "duckdns";
+      credentialFiles = {
+        "DUCKDNS_TOKEN_FILE" = "/var/lib/secrets/duckdns-token-value";
+      };
+      dnsPropagationCheck = true;
+      reloadServices = [ "nginx" ];
+      webroot = null;
+    };
   };
 
   # Nginx reverse proxy
@@ -80,6 +90,24 @@
       locations."/vault/" = {
         proxyPass = "http://127.0.0.1:8222";
         proxyWebsockets = true;
+      };
+    };
+
+    # Keep Jellyfin at the root of its own hostname so existing LAN and
+    # Tailscale clients do not need a Jellyfin Base URL change.
+    virtualHosts."jellyfin.buildfleet.duckdns.org" = {
+      enableACME = true;
+      forceSSL = true;
+      locations."/" = {
+        proxyPass = "http://127.0.0.1:8096";
+        proxyWebsockets = true;
+        extraConfig = ''
+          proxy_buffering off;
+          proxy_read_timeout 3600s;
+          proxy_send_timeout 3600s;
+          # Jellyfin may put API keys in URLs; do not record request paths.
+          access_log off;
+        '';
       };
     };
   };
