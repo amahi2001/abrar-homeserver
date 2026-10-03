@@ -23,6 +23,7 @@ let
     runtimeInputs = [
       pkgs.systemd
       pkgs.python3
+      pkgs.ffmpeg-headless
       pkgs.curl
     ];
     text = ''
