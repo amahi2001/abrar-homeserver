@@ -76,6 +76,9 @@ that every result is a hard link before reporting success.
 
 1. Start the manager and dry-run the exact title match. A movie must include a
    year; a TV/anime title should include a year if its title is ambiguous.
+   Movie dry-runs check the file runtime against the selected Radarr record.
+   For an existing record, they also validate Radarr's file scan. A new
+   record's dry-run is a preflight; the final scan follows record creation.
 
    ```bash
    sudo media-library start sonarr
@@ -86,10 +89,11 @@ that every result is a hard link before reporting success.
    ```
 
 2. State the exact identified title/year and planned hard-link import. If the
-   command says the match is ambiguous, ask the user which candidate is
-   correct. After the user approves the plan, execute the same command with
-   `--confirm` instead of `--dry-run`. Do not infer a title/year from a weak
-   filename match.
+   command reports an ambiguous match, runtime mismatch, or file-scan mismatch,
+   inspect the media and ask the user which candidate is correct. Never
+   automatically import under an alternate year or TMDb ID. After the user
+   approves the plan, execute the same command with `--confirm` instead of
+   `--dry-run`. Do not infer a title/year from a weak filename match.
 
 3. Report the verified result, then stop every manager started for this task:
 

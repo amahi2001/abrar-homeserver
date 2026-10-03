@@ -3,6 +3,7 @@
 
 import argparse
 import json
+import math
 import os
 import re
 import subprocess
@@ -175,7 +176,7 @@ def replacement_rejections_only(item):
     )
 
 
-def prepare_files(manager, files, record, replace_existing=False):
+def accepted_files(files, replace_existing=False):
     rejected_items = [item for item in files if item.get("rejections")]
     if replace_existing and any(not replacement_rejections_only(item) for item in rejected_items):
         raise LibraryError("The media has a rejection unrelated to replacing an existing file.")
@@ -191,6 +192,76 @@ def prepare_files(manager, files, record, replace_existing=False):
         raise LibraryError(
             f"{len(rejected_items)} file(s) were rejected; refusing a partial import."
         )
+    return accepted
+
+
+def probe_runtime_minutes(files):
+    total_seconds = 0.0
+    for item in files:
+        try:
+            result = subprocess.run(
+                [
+                    "ffprobe", "-v", "error", "-show_entries", "format=duration",
+                    "-of", "default=noprint_wrappers=1:nokey=1", item["path"],
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            duration = float(result.stdout.strip())
+        except (
+            KeyError, OSError, ValueError, subprocess.CalledProcessError,
+            subprocess.TimeoutExpired,
+        ) as error:
+            raise LibraryError("Could not verify the movie runtime; review it before importing.") from error
+        if not math.isfinite(duration) or duration <= 0:
+            raise LibraryError("Could not verify the movie runtime; review it before importing.")
+        total_seconds += duration
+    return total_seconds / 60
+
+
+def validate_movie_runtime(lookup, files):
+    expected = lookup.get("runtime")
+    if not isinstance(expected, (int, float)) or expected < 10:
+        return
+    actual = probe_runtime_minutes(files)
+    # Allow ordinary catalog differences and longer cuts; stop gross mismatches.
+    if abs(actual - expected) < 30 or 0.65 <= actual / expected <= 1.5:
+        return
+    title = lookup["title"]
+    year = lookup.get("year")
+    try:
+        alternatives = api("movie", "/movie/lookup", query={"term": title})
+    except LibraryError:
+        alternatives = []
+    suggestions = [
+        candidate for candidate in alternatives
+        if normalized(candidate.get("title")) == normalized(title)
+        and candidate.get("tmdbId") != lookup.get("tmdbId")
+        and isinstance(candidate.get("year"), int)
+        and isinstance(year, int)
+        and abs(candidate["year"] - year) <= 1
+        and isinstance(candidate.get("runtime"), (int, float))
+        and abs(candidate["runtime"] - actual) <= max(10, actual * 0.15)
+    ]
+    suggestions.sort(key=lambda candidate: abs(candidate["runtime"] - actual))
+    hint = ""
+    if suggestions:
+        candidate = suggestions[0]
+        hint = (
+            f" Possible same-title match: {candidate['title']} ({candidate['year']}, "
+            f"TMDb {candidate.get('tmdbId', '?')}, {candidate['runtime']} min)."
+        )
+    raise LibraryError(
+        f"Movie runtime mismatch: file {actual:.0f} min; selected {title} "
+        f"({year}, TMDb {lookup.get('tmdbId', '?')}) {expected} min."
+        f"{hint} Review the file before importing."
+    )
+
+
+def prepare_files(manager, files, record, replace_existing=False):
+    accepted = accepted_files(files, replace_existing)
     for item in accepted:
         item.pop("rejections", None)
         if manager == "tv":
@@ -246,27 +317,32 @@ def organize(args):
     # define this optional argument.
     lookup = matching_lookup(manager, args.title, args.year, getattr(args, "tmdb_id", None))
     record = existing_record(manager, lookup)
+    if not args.dry_run and not args.confirm:
+        raise LibraryError("Importing requires --confirm after reviewing the plan.")
+    if args.replace_existing and record is None:
+        raise LibraryError("Replacement requires an existing Sonarr/Radarr record.")
+    files = scan_source(manager, source)
+    if manager == "movie":
+        validate_movie_runtime(lookup, files)
     if args.dry_run:
         state = "existing record" if record else "new unmonitored record"
         replacement = " forced replacement" if args.replace_existing else ""
-        if args.replace_existing:
-            if record is None:
-                raise LibraryError("Replacement requires an existing Sonarr/Radarr record.")
-            prepare_files(manager, scan_source(manager, source), record, True)
+        if record:
+            prepare_files(manager, files, record, args.replace_existing)
+            validation = "scan matches record"
+        else:
+            validation = "preflight only; final match checked after record creation"
         print(
             f"Plan: {MANAGERS[manager]['name']} → {lookup['title']} ({lookup.get('year', '?')}); "
-            f"{state}; source={source}; mode=hard-link copy{replacement}."
+            f"{state}; source={source}; mode=hard-link copy{replacement}; {validation}."
         )
         return
-    if not args.confirm:
-        raise LibraryError("Importing requires --confirm after reviewing the plan.")
     if record is None:
-        if args.replace_existing:
-            raise LibraryError("Replacement requires an existing Sonarr/Radarr record.")
         record = add_record(manager, lookup)
+        files = scan_source(manager, source)
     files = prepare_files(
         manager,
-        scan_source(manager, source),
+        files,
         record,
         args.replace_existing,
     )

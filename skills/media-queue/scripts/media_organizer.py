@@ -200,6 +200,21 @@ def organize_torrent(torrent, source, kind, title, year, started_managers):
     return command(args)
 
 
+def requires_review(error):
+    detail = str(error).casefold()
+    return any(marker in detail for marker in (
+        "cannot safely infer",
+        "rejected",
+        "no accepted media files",
+        "could not identify exactly one",
+        "movie runtime mismatch",
+        "could not verify the movie runtime",
+        "did not identify any media",
+        "scanned movie file does not match",
+        "scanned tv files do not all match",
+    ))
+
+
 def run(dry_run=False):
     state = load_state()
     library_inodes = published_inodes()
@@ -246,12 +261,7 @@ def run(dry_run=False):
                 )
                 library_inodes = published_inodes()
             except OrganizerError as error:
-                status = "needs-review" if (
-                    "Cannot safely infer" in str(error)
-                    or "rejected" in str(error).lower()
-                    or "No accepted media files" in str(error)
-                    or "Could not identify exactly one" in str(error)
-                ) else "error"
+                status = "needs-review" if requires_review(error) else "error"
                 if dry_run:
                     print(f"Would require review: {torrent.get('name', 'unknown')} — {error}")
                     continue
