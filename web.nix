@@ -1,5 +1,5 @@
 # Public-facing web stack: ACME, Nginx, DuckDNS
-{ config, pkgs, ... }:
+{ config, pkgs, lib, ... }:
 
 {
   # DuckDNS dynamic DNS
@@ -7,6 +7,38 @@
     enable = true;
     domains = [ "buildfleet" ];
     tokenFile = "/var/lib/secrets/duckdns-token.txt";
+  };
+
+  # Retry transient provider failures within the five-minute update interval.
+  # Keep the token in the credential file and curl's stdin, never its argv.
+  systemd.services.duckdns = {
+    after = [ "network-online.target" ];
+    wants = [ "network-online.target" ];
+    serviceConfig = {
+      Type = lib.mkForce "oneshot";
+      TimeoutStartSec = "180s";
+    };
+    script = lib.mkForce ''
+      set -euo pipefail
+      token="$(${pkgs.systemd}/bin/systemd-creds cat DUCKDNS_TOKEN_FILE)"
+      domains=${lib.escapeShellArg (lib.concatStringsSep "," config.services.duckdns.domains)}
+
+      if ! response="$(${pkgs.curl}/bin/curl --fail --silent --show-error \
+        --connect-timeout 10 --max-time 20 \
+        --retry 4 --retry-delay 5 --retry-max-time 120 \
+        --config - <<< "url = \"https://www.duckdns.org/update?verbose=true&domains=$domains&token=$token&ip=\"")"; then
+        echo "DuckDNS update failed after bounded retries; the next timer run will retry."
+        exit 1
+      fi
+      unset token
+
+      read -r result <<< "$response"
+      if [ "$result" != "OK" ]; then
+        echo "DuckDNS rejected the update; check the configured domains and credential."
+        exit 1
+      fi
+      echo "DuckDNS update succeeded."
+    '';
   };
 
   # ACME / Let's Encrypt (DuckDNS DNS challenge)
@@ -21,6 +53,16 @@
     certs."buildfleet.duckdns.org" = {
       domain = "buildfleet.duckdns.org";
       extraDomainNames = [ ];
+      dnsProvider = "duckdns";
+      credentialFiles = {
+        "DUCKDNS_TOKEN_FILE" = "/var/lib/secrets/duckdns-token-value";
+      };
+      dnsPropagationCheck = true;
+      reloadServices = [ "nginx" ];
+      webroot = null;
+    };
+    certs."jellyfin.buildfleet.duckdns.org" = {
+      domain = "jellyfin.buildfleet.duckdns.org";
       dnsProvider = "duckdns";
       credentialFiles = {
         "DUCKDNS_TOKEN_FILE" = "/var/lib/secrets/duckdns-token-value";
@@ -48,6 +90,24 @@
       locations."/vault/" = {
         proxyPass = "http://127.0.0.1:8222";
         proxyWebsockets = true;
+      };
+    };
+
+    # Keep Jellyfin at the root of its own hostname so existing LAN and
+    # Tailscale clients do not need a Jellyfin Base URL change.
+    virtualHosts."jellyfin.buildfleet.duckdns.org" = {
+      enableACME = true;
+      forceSSL = true;
+      locations."/" = {
+        proxyPass = "http://127.0.0.1:8096";
+        proxyWebsockets = true;
+        extraConfig = ''
+          proxy_buffering off;
+          proxy_read_timeout 3600s;
+          proxy_send_timeout 3600s;
+          # Jellyfin may put API keys in URLs; do not record request paths.
+          access_log off;
+        '';
       };
     };
   };

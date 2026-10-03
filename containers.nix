@@ -1,7 +1,19 @@
 # Docker and OCI containers
-{ config, pkgs, ... }:
+{ config, pkgs, lib, ... }:
 
 let
+  adguardHomeDnsConfig = pkgs.writeShellScript "adguardhome-dns-config" ''
+    set -euo pipefail
+    config=/var/lib/adguardhome/conf/AdGuardHome.yaml
+    if [ -f "$config" ]; then
+      # Preserve UI settings and credentials while managing upstreams in Nix.
+      ${pkgs.yq-go}/bin/yq -i '
+        .dns.upstream_dns = ["https://cloudflare-dns.com/dns-query"] |
+        .dns.fallback_dns = ["tls://dns10.quad9.net"]
+      ' "$config"
+    fi
+  '';
+
   adguardHomeUpdate = pkgs.writeShellScript "adguardhome-update" ''
     set -euo pipefail
 
@@ -80,6 +92,11 @@ in
       "/var/lib/adguardhome/work:/opt/adguardhome/work"
     ];
   };
+
+  # Run after the OCI module removes the old container, while DNS is stopped.
+  systemd.services.docker-adguardhome.preStart = lib.mkAfter ''
+    ${adguardHomeDnsConfig}
+  '';
 
   # AdGuard Home data directories
   systemd.tmpfiles.rules = [

@@ -330,7 +330,8 @@ in
     };
   };
 
-  # Local-first media server for the Shield and remote Tailscale devices.
+  # Media server for LAN and Tailscale clients; Nginx also publishes it over
+  # public HTTPS without opening Jellyfin's HTTP port to the Internet.
   # Compatible clients Direct Play, so this service normally leaves the GPU
   # idle.  NVENC/NVDEC is available only when a client genuinely needs a
   # transcode (for example, remote bandwidth or codec compatibility).

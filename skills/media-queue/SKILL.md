@@ -112,9 +112,10 @@ Jellyfin is always on and reads these paths:
 - Films: `/srv/data/media/library/movies`
 
 Use `http://192.168.1.89:8096` on trusted home Wi-Fi and
-`http://buildfleet-server.tailcb7cdb.ts.net:8096` over Tailscale. Port 8096 is
-restricted to those two interfaces and is not public. Jellyfin runs on the host
-network; it must never be moved into or routed through Gluetun.
+`http://buildfleet-server.tailcb7cdb.ts.net:8096` over Tailscale. For access
+without Tailscale, use `https://jellyfin.buildfleet.duckdns.org`. Port 8096 is
+restricted to Wi-Fi and Tailscale; Nginx serves public HTTPS. Jellyfin runs on
+the host network; it must never be moved into or routed through Gluetun.
 
 After an approved Sonarr/Radarr import, tell the user the item is published to
 the corresponding Jellyfin library. If it does not appear, check that the hard

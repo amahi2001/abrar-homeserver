@@ -3,7 +3,7 @@
 
   inputs = {
     nixpkgs.url = "github:nixos/nixpkgs/nixos-26.05";
-    hermes-agent.url = "github:NousResearch/hermes-agent";
+    hermes-agent.url = "tarball+https://codeload.github.com/NousResearch/hermes-agent/tar.gz/refs/tags/v2026.9.24";
     cloakbrowser.url = "github:CloakHQ/CloakBrowser";
     # Tracks OpenAI Codex CLI releases independently of stable nixpkgs.
     codex-cli.url = "github:sadjow/codex-cli-nix";

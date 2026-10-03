@@ -12,6 +12,7 @@ root is the live flake: `/etc/nixos#buildfleet-server`.
 | Cockpit | Server administration | Tailscale `:9090` |
 | Nextcloud | File storage, sync, sharing, and WebDAV | Public HTTPS root |
 | Vaultwarden | Password manager | Public HTTPS `/vault/` |
+| Jellyfin | Movies and TV playback | Public HTTPS `jellyfin.buildfleet.duckdns.org`; LAN and Tailscale `:8096` |
 | AdGuard Home | Network DNS filtering and admin UI | DNS `:53`, LAN UI `:8080` |
 | Gluetun + Transmission | VPN-isolated downloads with a fail-closed network namespace | RPC on server loopback `:9091` |
 | Prowlarr | Search/indexer aggregation for Hermes | Tailscale `:9696` |
@@ -19,6 +20,12 @@ root is the live flake: `/etc/nixos#buildfleet-server`.
 | Samba + WSD | Read-only media and writable inbox shares | Home Wi-Fi and Tailscale `:445` |
 | Tailscale | Remote administration and exit-node routing | Tailnet |
 | XFCE + Bluetooth | Local recovery console | Starts only when requested |
+
+Jellyfin's runtime network settings in `/var/lib/jellyfin/config/network.xml`
+trust `127.0.0.1` as the Nginx proxy and publish the server URL from each
+request. This lets remote clients receive the public HTTPS URL while LAN and
+Tailscale clients continue using their existing addresses. Port 8096 remains
+restricted to the home Wi-Fi and Tailscale interfaces.
 
 Transmission shares Gluetun's network namespace and cannot reach the network
 without Gluetun's VPN firewall. Its UI is intentionally loopback-only; access
