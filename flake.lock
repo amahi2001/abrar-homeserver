@@ -22,11 +22,11 @@
         "nixpkgs": "nixpkgs"
       },
       "locked": {
-        "lastModified": 1790287396,
-        "narHash": "sha256-Ol5zn3iI137BP2LCtj3kovznze0Y1MG0+I9/mWegt6A=",
+        "lastModified": 1790717316,
+        "narHash": "sha256-ZpFMRzfeznRfX2Ym1NzelTqbePO9tjUlL1DPmn7562U=",
         "owner": "CloakHQ",
         "repo": "CloakBrowser",
-        "rev": "9bc5e374d7fc3a4099360bbd93e570b1e7ec8618",
+        "rev": "f44864b6ed3c5fe9cc48fb9954fb413b5b2a02ef",
         "type": "github"
       },
       "original": {
@@ -185,11 +185,11 @@
     },
     "nixpkgs_4": {
       "locked": {
-        "lastModified": 1790450978,
-        "narHash": "sha256-/eLCD/X9kaWJqPR47+fDozEC87Hjmm3i8gJbYmDAD7g=",
+        "lastModified": 1790920529,
+        "narHash": "sha256-nQyFkMR78WP6PiXKkDW2SjqzLf/spQqjRuxRGSbcV8k=",
         "owner": "nixos",
         "repo": "nixpkgs",
-        "rev": "5e2305d577ca00acbba631b05cb1094d172b29f3",
+        "rev": "774debe7a0d1b496e35677ad955a1011c6ff74f3",
         "type": "github"
       },
       "original": {
