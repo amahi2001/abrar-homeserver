@@ -102,6 +102,19 @@ branch. Each updater validates the resulting system before creating one
 lock-file-only commit. It skips review branches and dirty worktrees, preventing
 timer-generated commits from mixing with manual server work.
 
+Codex updates are deployed daily at 04:30–04:45 Eastern after validation,
+using `nixos-rebuild switch` with the current validated configuration. This
+can also deploy other input pins awaiting the weekly system upgrade. The job
+checks the deployed package even when the version pin is unchanged, so failed deployments are
+retried. Update jobs share a lock to avoid concurrent flake edits.
+
+`codex-app-server-refresh` checks the remote app server every five minutes.
+An outdated server is retired only after checking that its chats are idle and
+no background terminals are running. The app reconnects through SSH using the
+installed CLI. Busy servers stay running and are checked again on the next
+timer; this also catches CLI upgrades applied manually or by the weekly job.
+Failures are visible in `journalctl -u codex-cli-update -u codex-app-server-refresh`.
+
 The repository is public. Never place real credentials in examples, commits,
 issues, or pull-request text. The ignore rules are a safety net, not a substitute
 for the secret scan.
@@ -113,7 +126,7 @@ for the secret scan.
 - Roll back a deployment: select an older generation in GRUB or run
   `sudo nixos-rebuild switch --rollback`
 - Inspect services: `systemctl status hermes-agent docker-gluetun docker-transmission-vpn prowlarr`
-- Inspect timers: `systemctl list-timers codex-cli-update nixos-flake-update nixos-upgrade`
+- Inspect timers: `systemctl list-timers codex-cli-update codex-app-server-refresh nixos-flake-update nixos-upgrade`
 
 ## License
 

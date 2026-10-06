@@ -1,16 +1,27 @@
 # Guarded NixOS update policy.
 #
-# Daily: update only the independently pinned Codex CLI input.
+# Daily: update and deploy the independently pinned Codex CLI input.
+# Every five minutes: retire an outdated remote Codex server once it is idle.
 # Sunday: update all flake inputs and dry-build the resulting system.
 # Sunday later: update to the latest stable Hermes release, deploy, and verify
 # it independently, even when unrelated work keeps the general updater guarded.
-# Monday: deploy the already-validated lock file with system.autoUpgrade.
+# Monday: regular system deployment with system.autoUpgrade.
 #
 # The general and Codex update jobs require a clean main checkout. The Hermes
 # job updates only its input and preserves any pre-existing lock-file edits.
 { pkgs, ... }:
 
 let
+  flakeUpdateLock = ''
+    exec 8>/run/lock/nixos-flake-update.lock
+    ${pkgs.util-linux}/bin/flock -n 8 || {
+      echo "[$LOG_TAG] Another flake update is running; retrying on the next timer."
+      exit 0
+    }
+  '';
+
+  codexRefreshPython = pkgs.python3.withPackages (ps: [ ps.websocket-client ]);
+
   gitPreflight = ''
     if ! "$GIT" -C "$FLAKE_DIR" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
       echo "[$LOG_TAG] /etc/nixos is not a Git worktree; skipping automatic update."
@@ -36,6 +47,7 @@ let
     FLAKE_DIR="/etc/nixos"
     GIT="${pkgs.git}/bin/git"
     LOG_TAG="codex-cli-update"
+    ${flakeUpdateLock}
     ${gitPreflight}
 
     lock_backup="$(${pkgs.coreutils}/bin/mktemp)"
@@ -51,8 +63,19 @@ let
       exit 1
     fi
 
-    if ${pkgs.diffutils}/bin/cmp -s "$lock_backup" "$FLAKE_DIR/flake.lock"; then
-      echo "[$LOG_TAG] Codex CLI input is already current."
+    # Compare the desired package with the deployed CLI even if the lock did
+    # not change: a previous deployment may have failed after its commit.
+    if ! expected_package="$(${pkgs.nix}/bin/nix eval --raw --impure --expr \
+      "(builtins.getFlake \"$FLAKE_DIR\").inputs.codex-cli.packages.${pkgs.stdenv.hostPlatform.system}.default.outPath")"; then
+      ${pkgs.coreutils}/bin/cp "$lock_backup" "$FLAKE_DIR/flake.lock"
+      exit 1
+    fi
+    installed_cli="$(${pkgs.coreutils}/bin/readlink -f /run/current-system/sw/bin/codex || true)"
+
+    if ${pkgs.diffutils}/bin/cmp -s "$lock_backup" "$FLAKE_DIR/flake.lock" \
+      && [ "$installed_cli" = "$expected_package/bin/codex" ]; then
+      echo "[$LOG_TAG] Codex CLI is already deployed; checking the remote server."
+      ${pkgs.systemd}/bin/systemctl start codex-app-server-refresh.service
       exit 0
     fi
 
@@ -63,16 +86,33 @@ let
       exit 1
     fi
 
-    "$GIT" -C "$FLAKE_DIR" \
-      -c user.name="NixOS Codex Updater" \
-      -c user.email="codex-updater@localhost" \
-      add flake.lock
-    if ! "$GIT" -C "$FLAKE_DIR" \
-      -c user.name="NixOS Codex Updater" \
-      -c user.email="codex-updater@localhost" \
-      commit --only flake.lock -m "chore: update Codex CLI"; then
-      echo "[$LOG_TAG] WARNING: validated lock file was not committed."
+    if ! ${pkgs.diffutils}/bin/cmp -s "$lock_backup" "$FLAKE_DIR/flake.lock"; then
+      if ! "$GIT" -C "$FLAKE_DIR" \
+        -c user.name="NixOS Codex Updater" \
+        -c user.email="codex-updater@localhost" \
+        commit --only flake.lock -m "chore: update Codex CLI"; then
+        ${pkgs.coreutils}/bin/cp "$lock_backup" "$FLAKE_DIR/flake.lock"
+        echo "[$LOG_TAG] Commit failed; restored the previous lock file."
+        exit 1
+      fi
     fi
+
+    # Keep the validated pin committed if deployment fails, so the next run
+    # can retry the same package instead of being blocked by a dirty checkout.
+    ${pkgs.util-linux}/bin/mount -o remount,rw /
+    ${pkgs.util-linux}/bin/mount -o remount,rw /run
+    if ! ${pkgs.nixos-rebuild}/bin/nixos-rebuild switch \
+      --flake "$FLAKE_DIR#buildfleet-server"; then
+      echo "[$LOG_TAG] Deployment failed; the validated pin will be retried."
+      exit 1
+    fi
+    installed_cli="$(${pkgs.coreutils}/bin/readlink -f /run/current-system/sw/bin/codex)"
+    if [ "$installed_cli" != "$expected_package/bin/codex" ]; then
+      echo "[$LOG_TAG] Deployed CLI does not match the validated package."
+      exit 1
+    fi
+    /run/current-system/sw/bin/codex --version
+    ${pkgs.systemd}/bin/systemctl start codex-app-server-refresh.service
   '';
 
   nixosFlakeUpdate = pkgs.writeShellScript "nixos-flake-update" ''
@@ -82,6 +122,7 @@ let
     FLAKE_DIR="/etc/nixos"
     GIT="${pkgs.git}/bin/git"
     LOG_TAG="nixos-flake-update"
+    ${flakeUpdateLock}
     ${gitPreflight}
 
     lock_backup="$(${pkgs.coreutils}/bin/mktemp)"
@@ -128,6 +169,7 @@ let
     FLAKE_DIR="/etc/nixos"
     GIT="${pkgs.git}/bin/git"
     LOG_TAG="hermes-flake-update"
+    ${flakeUpdateLock}
 
     exec 9>/run/lock/hermes-flake-update.lock
     ${pkgs.util-linux}/bin/flock -n 9 || {
@@ -245,13 +287,37 @@ let
 in
 {
   systemd.services.codex-cli-update = {
-    description = "Update and validate the OpenAI Codex CLI flake input";
+    description = "Update, validate, and deploy the OpenAI Codex CLI";
     after = [ "network-online.target" ];
     wants = [ "network-online.target" ];
+    # A switch performed by this job must not stop the job itself.
+    restartIfChanged = false;
+    stopIfChanged = false;
     serviceConfig = {
       Type = "oneshot";
       ExecStart = codexCliUpdate;
-      TimeoutStartSec = "30min";
+      TimeoutStartSec = "60min";
+    };
+  };
+
+  systemd.services.codex-app-server-refresh = {
+    description = "Refresh outdated remote Codex app servers when idle";
+    serviceConfig = {
+      Type = "oneshot";
+      User = "buildfleet";
+      Group = "users";
+      ExecStart = "${codexRefreshPython}/bin/python ${./scripts/codex-app-server-refresh.py} --socket /home/buildfleet/.codex/app-server-control/app-server-control.sock";
+      TimeoutStartSec = "2min";
+      UMask = "0077";
+    };
+  };
+
+  systemd.timers.codex-app-server-refresh = {
+    description = "Retry deferred Codex app server refreshes";
+    wantedBy = [ "timers.target" ];
+    timerConfig = {
+      OnBootSec = "5min";
+      OnUnitActiveSec = "5min";
     };
   };
 
