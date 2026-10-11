@@ -349,42 +349,62 @@ def watch_message(name, state, torrent):
     return f"Media download resumed: {name}"
 
 
-def drain_organizer_events():
+def read_organizer_events():
     messages = []
+    pending = []
     try:
         events = sorted(ORGANIZER_EVENT_DIR.glob("*.json"))
     except OSError:
-        return messages
+        return messages, pending
     for event in events:
         try:
             data = json.loads(event.read_text(encoding="utf-8"))
-            message = data.get("message")
-            if isinstance(message, str) and message:
-                messages.append(message)
-        except (OSError, json.JSONDecodeError):
-            pass
+            message = data.get("message") if isinstance(data, dict) else None
+            if not isinstance(message, str) or not message.strip():
+                raise ValueError("missing event message")
+            messages.append(message)
+            pending.append(event)
+        except (OSError, ValueError):
+            messages.append(
+                f"Media organizer event needs inspection: {event.name}. "
+                "Ask Hermes to inspect the event file; it has been preserved for recovery."
+            )
+    return messages, pending
+
+
+def deliver_watch_messages(state, messages, pending):
+    save_watch_state(state)
+    # Hand the events to Hermes cron before acknowledging local consumption.
+    # A failed poll or stdout write must not silently delete a review request.
+    # Cron's later Telegram delivery has no acknowledgement back to this CLI;
+    # unresolved reviews therefore also have organizer reminders.
+    print("\n".join(messages), flush=True)
+    for event in pending:
         try:
             event.unlink()
         except OSError:
             pass
-    return messages
 
 
 def watch_downloads():
     state = load_watch_state()
-    messages = drain_organizer_events()
+    messages, pending = read_organizer_events()
+    failure_context = "VPN guardrail"
     try:
         network_guardrails()
+        failure_context = "Transmission polling failure"
+        torrents = {str(torrent.get("id")): torrent for torrent in transmission_torrents()}
     except QueueError as error:
-        if state.get("pipeline") != "failed":
-            messages.append(f"Media download watcher stopped by a VPN guardrail: {error}")
+        detail = f"{failure_context}: {error}"
+        if state.get("pipeline") != "failed" or state.get("pipelineError") != detail:
+            messages.append(f"Media download watcher stopped by a {detail}")
         state["pipeline"] = "failed"
-        save_watch_state(state)
-        print("\n".join(messages))
+        state["pipelineError"] = detail
+        deliver_watch_messages(state, messages, pending)
         return
     recovered = state.get("pipeline") == "failed"
     state["pipeline"] = "healthy"
-    torrents = {str(torrent.get("id")): torrent for torrent in transmission_torrents()}
+    state.pop("pipelineError", None)
     if recovered:
         messages.append("Media download watcher restored its protected connection.")
     now = time.time()
@@ -419,8 +439,7 @@ def watch_downloads():
             elif previous in {"paused", "paused-no-peers", "waiting-for-peers", "failed"} and current in {"downloading", "checking", "queued"}:
                 messages.append(watch_message(name, "resumed", torrent))
         watched["state"] = current
-    save_watch_state(state)
-    print("\n".join(messages))
+    deliver_watch_messages(state, messages, pending)
 
 
 def parse_args():

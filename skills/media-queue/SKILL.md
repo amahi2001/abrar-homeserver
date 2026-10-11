@@ -58,6 +58,46 @@ sudo media-organizer status
 systemctl status media-organizer.timer --no-pager
 ```
 
+### Responding to an import review
+
+Review alerts include the torrent's stable hash, the specific blocker, and the
+input needed. The five-minute watcher is a Hermes `no_agent` cron: it delivers
+stdout to Telegram without starting an agent conversation or processing an
+import approval. Tell the user to send a **new message to Hermes**, for example
+`Review media <hash>; the correct show is The Middle, year 2009`. A reply to a
+cron alert or the word `import` alone is not an automatic import command.
+
+When that message reaches an agent conversation, proactively continue:
+
+1. Run `sudo media-organizer review <hash>`. This read-only command checks that
+   the exact torrent is still completed, shows its source path and blocker, and
+   prints a suggested preflight. Use the hash rather than a Transmission ID,
+   because IDs can be reused. If the hash is missing, use
+   `sudo media-organizer status` to identify the item with the user.
+2. Apply the user's exact title/year to the `media-library` dry-run below.
+   A title correction or a request to investigate authorizes this preflight;
+   it does not approve an import. Ask for missing title/year or movie/TV kind
+   when classification is unclear. For rejected files, explain the actual
+   rejection and ask whether to keep the existing copy or review a replacement.
+3. Show the identified title/year, source, planned hard-link import, and any
+   remaining preflight limitation. Explicitly ask the user to approve that
+   exact plan. Approval given in response to that plan authorizes the same
+   command with `--confirm`. Never use `media-organizer retry` or `retry all`
+   as a substitute for this review and approval: retry re-enables automation.
+4. After confirmation, complete the import, check its hard-link verification,
+   and stop any manager started for the task. The next organizer pass also
+   verifies all source media files against the organized library and emits a
+   resolution alert. If verification fails, report the blocker and ask for
+   the next needed input instead of reporting Jellyfin availability.
+
+New review events normally reach Telegram on the next five-minute watcher poll
+after the two-minute organizer pass. Existing unresolved completed torrents
+receive the improved alert on the first pass after deployment, and reminders
+every 24 hours until verified or removed. The CLI acknowledges events only
+after writing stdout successfully. Telegram delivery happens afterward and
+has no acknowledgement back to the CLI; reminders provide recovery for missed
+delivery. Inspect malformed event files rather than discarding them.
+
 Use the manual flow only when automatic classification reports `needs-review`,
 or when the user explicitly asks to replace, track, or repair existing library
 content. Start only the matching manager:
@@ -121,11 +161,12 @@ without Tailscale, use `https://jellyfin.buildfleet.duckdns.org`. Port 8096 is
 restricted to Wi-Fi and Tailscale; Nginx serves public HTTPS. Jellyfin runs on
 the host network; it must never be moved into or routed through Gluetun.
 
-After an approved Sonarr/Radarr import, tell the user the item is published to
-the corresponding Jellyfin library. If it does not appear, check that the hard
-link exists under the organized path and let Jellyfin's library monitor detect
-it before considering a manual scan. Do not expose the `manual` or incomplete
-download directories to Jellyfin as a shortcut.
+After an approved Sonarr/Radarr import passes hard-link verification, report
+the file count and organized library path. Say that Jellyfin's library monitor
+still needs to index it; only claim it is visible in Jellyfin after checking
+that visibility. If it does not appear, check the organized hard links and let
+Jellyfin's library monitor detect them before considering a manual scan. Do
+not expose the `manual` or incomplete download directories as a shortcut.
 
 For a Jellyfin player error, inspect evidence before changing settings:
 
@@ -209,6 +250,7 @@ sudo media-queue queue --query "<title and release terms>" --index <number> [<nu
 sudo media-queue status
 sudo media-queue watch
 sudo media-organizer status
+sudo media-organizer review <torrent-hash>
 ```
 
 Use `--dry-run` to validate a specific result and all network guardrails without

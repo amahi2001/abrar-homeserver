@@ -87,5 +87,31 @@ class OrganizerReviewTests(unittest.TestCase):
         self.assertFalse(organizer.requires_review("Radarr API request failed."))
 
 
+class RejectedImportTests(unittest.TestCase):
+    def test_partial_rejection_reports_specific_reason(self):
+        files = [
+            {"path": "/manual/S01E01.mkv", "rejections": []},
+            {"path": "/manual/S01E02.mkv", "rejections": [{"reason": "Not an upgrade for existing episode file"}]},
+        ]
+        with self.assertRaisesRegex(library.LibraryError, "Not an upgrade for existing episode file"):
+            library.accepted_files(files)
+
+    def test_replacement_cannot_override_unrelated_rejection(self):
+        files = [{"path": "/manual/S01E02.mkv", "rejections": [{"reason": "Unknown series"}]}]
+        with self.assertRaisesRegex(library.LibraryError, "unrelated"):
+            library.accepted_files(files, replace_existing=True)
+
+    def test_copy_is_not_reported_as_verified_hardlink(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "source.mkv"
+            source.write_bytes(b"episode")
+            library_path = root / "tv"
+            library_path.mkdir()
+            (library_path / "episode.mkv").write_bytes(source.read_bytes())
+            with self.assertRaisesRegex(library.LibraryError, "Hard-link verification failed"):
+                library.verify_hardlinks([source], library_path)
+
+
 if __name__ == "__main__":
     unittest.main()

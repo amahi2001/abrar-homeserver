@@ -93,7 +93,16 @@ def require_active(manager):
 def matching_lookup(manager, title, year, tmdb_id=None):
     resource = MANAGERS[manager]["resource"]
     candidates = api(manager, f"/{resource}/lookup", query={"term": title})
-    matches = [item for item in candidates if normalized(item.get("title")) == normalized(title)]
+
+    def match_title(value):
+        # Sonarr includes a disambiguating year in some canonical series names.
+        # Only ignore that exact suffix when an explicit year also filters the
+        # records below. Keep movie and yearless TV matching unchanged.
+        if manager == "tv" and year is not None:
+            value = re.sub(rf"\s*\({year}\)$", "", str(value))
+        return normalized(value)
+
+    matches = [item for item in candidates if match_title(item.get("title")) == match_title(title)]
     if year is not None:
         matches = [item for item in matches if item.get("year") == year]
     if tmdb_id is not None:
@@ -181,16 +190,16 @@ def accepted_files(files, replace_existing=False):
     if replace_existing and any(not replacement_rejections_only(item) for item in rejected_items):
         raise LibraryError("The media has a rejection unrelated to replacing an existing file.")
     accepted = files if replace_existing else [item for item in files if not item.get("rejections")]
+    reasons = "; ".join(
+        rejection.get("reason", "unknown rejection")
+        for item in rejected_items
+        for rejection in item.get("rejections", [])
+    )
     if not accepted:
-        reasons = "; ".join(
-            rejection.get("reason", "unknown rejection")
-            for item in rejected_items
-            for rejection in item.get("rejections", [])
-        )
         raise LibraryError(f"No accepted media files were found: {reasons}")
     if rejected_items and not replace_existing:
         raise LibraryError(
-            f"{len(rejected_items)} file(s) were rejected; refusing a partial import."
+            f"{len(rejected_items)} file(s) were rejected; refusing a partial import. Rejections: {reasons}"
         )
     return accepted
 

@@ -5,6 +5,7 @@ import argparse
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 import time
@@ -17,6 +18,8 @@ class OrganizerError(RuntimeError):
 
 STATE_FILE = Path("/var/lib/media-queue/organizer-state.json")
 EVENT_DIR = Path("/var/lib/media-queue/events")
+REVIEW_NOTICE_VERSION = 1
+REVIEW_REMINDER_SECONDS = 24 * 60 * 60
 MANUAL_ROOT = Path("/srv/data/media/library/manual")
 LIBRARY_ROOTS = (
     Path("/srv/data/media/library/tv"),
@@ -76,18 +79,61 @@ def emit_event(key, message):
     save_private_json(path, {"message": message})
 
 
-def record_state(state, key, torrent, status, detail, *, notify=None):
+def record_state(state, key, torrent, status, detail, *, notify=None, source=None):
     previous = state["items"].get(key, {})
     changed = previous.get("status") != status or previous.get("detail") != detail
     state["items"][key] = {
+        **previous,
         "detail": detail,
         "name": torrent.get("name", "unknown media"),
         "status": status,
         "torrentId": torrent.get("id"),
         "updatedAt": int(time.time()),
     }
+    if source is not None:
+        state["items"][key]["sourcePath"] = str(source)
     if changed and notify:
         emit_event(key, notify)
+    return changed
+
+
+def review_message(key, item):
+    detail = item.get("detail", "Unknown import blocker.")
+    lower = detail.casefold()
+    if any(marker in lower for marker in ("cannot safely infer", "exactly one", "runtime", "does not match", "do not all match")):
+        question = "Which exact title and release year should be used (and is this TV or a movie)?"
+    elif "not an upgrade for existing" in lower or "same quality already exists" in lower:
+        question = (
+            "Should the existing library copy be kept, or should Hermes inspect the rejected files "
+            "and propose an explicit replacement for your approval?"
+        )
+    elif "reject" in lower or "no accepted media" in lower:
+        question = (
+            "May Hermes inspect the rejected files and explain what needs correcting "
+            "before showing a dry-run plan for your approval?"
+        )
+    else:
+        question = "May Hermes investigate this blocker and show an import dry-run plan for your approval?"
+    return (
+        f"Media import needs review: {item.get('name', 'unknown media')}\n"
+        f"Torrent hash: {key}\nBlocker: {detail}\n"
+        "Import has not been verified; Jellyfin availability is unconfirmed.\n"
+        f"Action needed: {question}\n"
+        f'Send Hermes a new message: "Review media {key}" with your answer. '
+        "This no-agent cron only delivers alerts; it cannot process replies or approve imports. "
+        "Hermes must show the dry-run plan and ask for approval before importing. "
+        f"CLI inspection: sudo media-organizer review {key}"
+    )
+
+
+def notify_review(state, key, *, force=False):
+    item = state["items"][key]
+    now = int(time.time())
+    if (force or item.get("reviewNoticeVersion") != REVIEW_NOTICE_VERSION
+            or now - item.get("reviewNotifiedAt", 0) >= REVIEW_REMINDER_SECONDS):
+        emit_event(key, review_message(key, item))
+        item["reviewNoticeVersion"] = REVIEW_NOTICE_VERSION
+        item["reviewNotifiedAt"] = now
 
 
 def transmission_torrents():
@@ -158,13 +204,24 @@ def clean_title(value):
 
 
 def classify(name):
-    stem = Path(name).stem
+    # Torrent names are often extensionless directories containing dots. Only
+    # remove a known media extension, never the last release-name component.
+    stem = Path(name).stem if Path(name).suffix.lower() in MEDIA_SUFFIXES else name
     tv_match = re.search(
         r"(?i)^(?P<title>.+?)[ ._-]+S(?P<season>\d{1,2})(?:E\d{1,3})?\b",
         stem,
     )
     if tv_match:
-        return "tv", clean_title(tv_match.group("title")), None
+        raw_title = re.sub(
+            r"(?i)[ ._-]+Season[ ._-]*\d{1,2}$", "", tv_match.group("title")
+        )
+        year_match = re.match(
+            r"^(?P<title>.+?)[ ._\-[(]+(?P<year>(?:19|20)\d{2})[)\]]?$",
+            raw_title,
+        )
+        if year_match:
+            return "tv", clean_title(year_match.group("title")), int(year_match.group("year"))
+        return "tv", clean_title(raw_title), None
     movie_match = re.search(
         r"(?i)^(?P<title>.+?)[ ._\-\[(]+(?P<year>(?:19|20)\d{2})\b",
         stem,
@@ -212,6 +269,7 @@ def requires_review(error):
         "did not identify any media",
         "scanned movie file does not match",
         "scanned tv files do not all match",
+        "verification failed",
     ))
 
 
@@ -224,6 +282,7 @@ def run(dry_run=False):
             if torrent.get("left_until_done") != 0:
                 continue
             key = torrent.get("hash_string") or str(torrent.get("id"))
+            source = None
             try:
                 previous = state["items"].get(key, {})
                 # An explicit later replacement may intentionally unlink one
@@ -234,9 +293,23 @@ def run(dry_run=False):
                     continue
                 source = source_path(torrent)
                 if is_published(source, library_inodes):
-                    record_state(state, key, torrent, "organized", "Already published in Jellyfin library.")
+                    if dry_run:
+                        print(f"Verified existing organized hard links: {torrent['name']} ← {source}")
+                        continue
+                    record_state(
+                        state, key, torrent, "organized",
+                        "Verified hard links in the organized Jellyfin library paths.",
+                        source=source,
+                        notify=(
+                            f"Verified media import into Jellyfin library paths: {torrent['name']} "
+                            f"(torrent {key}). All source media files have organized hard links; "
+                            "Jellyfin's library monitor still needs to index them."
+                            if previous.get("status") in {"needs-review", "error", "retry"} else None
+                        ),
+                    )
                     continue
                 if previous.get("status") == "needs-review" and not dry_run:
+                    notify_review(state, key)
                     continue
                 kind, title, year = classify(torrent["name"])
                 if dry_run:
@@ -251,28 +324,38 @@ def run(dry_run=False):
                     year,
                     started_managers,
                 )
+                library_inodes = published_inodes()
+                if not is_published(source, library_inodes):
+                    raise OrganizerError(
+                        "Import verification failed: not every source media file has a hard link "
+                        "in the organized library. Inspect the import before trying again."
+                    )
                 record_state(
                     state,
                     key,
                     torrent,
                     "organized",
                     detail,
-                    notify=f"Media organized for Jellyfin via {manager_name(kind).title()}: {torrent['name']}",
+                    source=source,
+                    notify=(
+                        f"Verified media import into Jellyfin library paths via {manager_name(kind).title()}: "
+                        f"{torrent['name']} (torrent {key}). Jellyfin's library monitor still needs to index it."
+                    ),
                 )
-                library_inodes = published_inodes()
             except OrganizerError as error:
                 status = "needs-review" if requires_review(error) else "error"
                 if dry_run:
                     print(f"Would require review: {torrent.get('name', 'unknown')} — {error}")
                     continue
-                record_state(
+                changed = record_state(
                     state,
                     key,
                     torrent,
                     status,
                     str(error),
-                    notify=f"Media organization needs review: {torrent.get('name', 'unknown')} — {error}",
+                    source=source,
                 )
+                notify_review(state, key, force=changed)
     finally:
         for manager, started_here in started_managers.items():
             if started_here:
@@ -291,9 +374,38 @@ def show_status():
     if not state["items"]:
         print("No completed media has been evaluated yet.")
         return
-    for item in sorted(state["items"].values(), key=lambda value: value.get("name", "")):
+    for key, item in sorted(state["items"].items(), key=lambda entry: entry[1].get("name", "")):
         print(f"{item.get('status', 'unknown'):>12}  {item.get('name', 'unknown')}")
+        print(f"              Torrent hash: {key}")
         print(f"              {item.get('detail', '')}")
+
+
+def show_review(key):
+    item = load_state()["items"].get(key)
+    if item is None:
+        raise OrganizerError("No organizer state exists for that torrent hash.")
+    if item.get("status") not in {"needs-review", "error"}:
+        raise OrganizerError("No pending import review for that torrent; inspect sudo media-organizer status.")
+    print(review_message(key, item))
+    torrent = next((torrent for torrent in transmission_torrents()
+                    if (torrent.get("hash_string") or str(torrent.get("id"))) == key), None)
+    if torrent is None or torrent.get("left_until_done") != 0:
+        raise OrganizerError("This torrent is no longer completed in Transmission; inspect sudo media-queue status first.")
+    source = source_path(torrent)
+    print(f"Verified completed source path: {source}")
+    try:
+        kind, title, year = classify(torrent["name"])
+    except OrganizerError:
+        print("Provide the media kind (tv/movie), exact title, and release year before planning an import.")
+        return
+    print("Suggested preflight; correct the title/year from your answer before running:")
+    print(shlex.join(["sudo", "media-library", "start", manager_name(kind)]))
+    args = ["sudo", "media-library", f"organize-{kind}", "--path", str(source), "--title", title]
+    if year is not None:
+        args += ["--year", str(year)]
+    print(shlex.join(args + ["--dry-run"]))
+    print("Review the plan with the user, then use the media-queue skill's confirmation flow. "
+          "Stop any manager started for this review when finished.")
 
 
 def retry(key):
@@ -340,6 +452,8 @@ def parse_args():
     run_parser = subparsers.add_parser("run")
     run_parser.add_argument("--dry-run", action="store_true")
     subparsers.add_parser("status")
+    review_parser = subparsers.add_parser("review", help="inspect one completed torrent and print a guarded preflight handoff")
+    review_parser.add_argument("hash", help="exact torrent hash from the review alert")
     retry_parser = subparsers.add_parser("retry")
     retry_parser.add_argument("hash", help="torrent hash or 'all'")
     forget_parser = subparsers.add_parser("forget")
@@ -356,6 +470,8 @@ def main():
         run(args.dry_run)
     elif args.command == "status":
         show_status()
+    elif args.command == "review":
+        show_review(args.hash)
     elif args.command == "retry":
         retry(args.hash)
     elif args.command == "forget":
