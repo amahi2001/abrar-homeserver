@@ -165,8 +165,10 @@ together. Both sets of links are managed by `tmpfiles.rules` in `hermes.nix`.
 - Main provider base URL: `https://chatgpt.com/backend-api/codex`
 
 ### Packages (in configuration.nix)
-- `deno` 2.8.2 (with `dx` wrapper) — replaces opencode binary
-- `bun` — JS runtime for MCP servers
+- `bun` 1.4.3 — pinned upstream stable runtime for scripts and MCP servers;
+  includes `bunx` (`bunx --bun <package>` forces the Bun runtime)
+- Deno and the `dx` wrapper have been removed. The vault sync uses Bun and
+  standard Node APIs; its fake-CLI regression tests run in `nix flake check`.
 - `cloakbrowser` — stealth Chromium from CloakHQ flake
 - Docker + docker-compose, AdGuard Home, nginx, certbot, etc.
 

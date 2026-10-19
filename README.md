@@ -65,6 +65,31 @@ Runtime state and credentials do not belong in Git. They live under
 - `/var/lib/gluetun/` and `/var/lib/transmission-vpn/` for download services
 - `/srv/data/` for files and media
 
+## JavaScript runtime
+
+Bun 1.4.3 is pinned by version and SHA-256 in `configuration.nix`, overriding
+the older stable nixpkgs package for interactive use and services. Update the
+pin and archive hash together, then run `nix flake check` before deploying.
+No unrelated flake inputs need updating for a Bun release.
+
+Use `bun run script.ts` for local scripts and `bunx --bun <npm-package>` for
+package executables. The `--bun` flag makes Node shebangs use Bun. Deno and
+the `dx` wrapper are removed; Deno-specific URLs, JSR imports, and runtime
+APIs must be ported before running them with Bun.
+
+The daily vault sync runs an immutable Nix-store copy of
+`scripts/bitwarden-sync.ts` using Bun. Its existing direction is
+**Vaultwarden to Bitwarden**, including deletion of tracked Bitwarden items
+that were removed from Vaultwarden. The timer and credentials are unchanged.
+Profile state defaults to `/var/lib/bitwarden-sync`; the
+`BITWARDEN_SYNC_STATE_DIR` override supports isolated testing.
+
+`bun test scripts/bitwarden-sync.test.ts` exercises the sync with a fake `bw`
+and synthetic credentials; it never connects to either vault. These tests
+also run in the Nix build sandbox as part of `nix flake check`. Existing Node
+dependencies such as the packaged Bitwarden CLI and Warden MCP remain on
+their declared runtimes.
+
 ## Deploy and validate
 
 ```bash

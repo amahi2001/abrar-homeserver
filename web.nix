@@ -1,5 +1,10 @@
 # Public-facing web stack: ACME, Nginx, DuckDNS
-{ config, pkgs, lib, ... }:
+{
+  config,
+  pkgs,
+  lib,
+  ...
+}:
 
 {
   # DuckDNS dynamic DNS
@@ -132,11 +137,11 @@
     description = "Bitwarden to Vaultwarden synchronization service";
     path = with pkgs; [
       bitwarden-cli
-      deno
+      bun
     ];
     serviceConfig = {
       Type = "oneshot";
-      ExecStart = "${pkgs.deno}/bin/deno run --allow-run --allow-read --allow-write --allow-env --allow-net /etc/nixos/scripts/bitwarden-sync.ts";
+      ExecStart = "${pkgs.bun}/bin/bun run ${./scripts/bitwarden-sync.ts}";
       EnvironmentFile = "/var/lib/secrets/bitwarden-sync.env";
       User = "root";
     };
