@@ -1,49 +1,46 @@
-#!/usr/bin/env dx
-// Bitwarden to Vaultwarden synchronization script
+#!/usr/bin/env bun
+// Vaultwarden to Bitwarden synchronization script
 
-import { existsSync } from "https://deno.land/std@0.224.0/fs/exists.ts";
+import { spawn } from "node:child_process";
+import { mkdir } from "node:fs/promises";
+import { join } from "node:path";
+import process from "node:process";
 
-const SRC_DIR = "/var/lib/bitwarden-sync/src";
-const DST_DIR = "/var/lib/bitwarden-sync/dst";
+// Tests use a temporary state directory and a fake bw executable.
+const STATE_DIR = process.env.BITWARDEN_SYNC_STATE_DIR || "/var/lib/bitwarden-sync";
+const SRC_DIR = join(STATE_DIR, "src");
+const DST_DIR = join(STATE_DIR, "dst");
 
 // Helper to run a command
 async function runCommand(cmd: string, args: string[], stdinValue?: string, env: Record<string, string> = {}): Promise<string> {
-  const command = new Deno.Command(cmd, {
-    args,
-    stdin: stdinValue ? "piped" : "inherit",
-    stdout: "piped",
-    stderr: "piped",
-    env: {
-      ...Deno.env.toObject(),
-      ...env,
-    },
-  });
-
   const displayArgs = args
     .map((arg, index) => args[index - 1] === "--session" ? "[REDACTED]" : arg)
     .join(" ");
 
-  if (stdinValue) {
-    const child = command.spawn();
-    const writer = child.stdin.getWriter();
-    await writer.write(new TextEncoder().encode(stdinValue));
-    await writer.close();
-    const { code, stdout, stderr } = await child.output();
-    const outStr = new TextDecoder().decode(stdout).trim();
-    const errStr = new TextDecoder().decode(stderr).trim();
-    if (code !== 0) {
-      throw new Error(`Command ${cmd} ${displayArgs} failed with code ${code}.\nError: ${errStr}\nOutput: ${outStr}`);
+  return await new Promise<string>((resolve, reject) => {
+    const child = spawn(cmd, args, {
+      stdio: [stdinValue === undefined ? "inherit" : "pipe", "pipe", "pipe"],
+      env: { ...process.env, ...env },
+    });
+    let stdout = "";
+    let stderr = "";
+    child.stdout!.setEncoding("utf8");
+    child.stderr!.setEncoding("utf8");
+    child.stdout!.on("data", (chunk: string) => { stdout += chunk; });
+    child.stderr!.on("data", (chunk: string) => { stderr += chunk; });
+    child.once("error", reject);
+    child.once("close", (code, signal) => {
+      if (code !== 0) {
+        reject(new Error(`Command ${cmd} ${displayArgs} failed with ${signal ? `signal ${signal}` : `code ${code}`}.\nError: ${stderr.trim()}\nOutput: ${stdout.trim()}`));
+      } else {
+        resolve(stdout.trim());
+      }
+    });
+    if (child.stdin) {
+      child.stdin.once("error", reject);
+      child.stdin.end(stdinValue);
     }
-    return outStr;
-  } else {
-    const { code, stdout, stderr } = await command.output();
-    const outStr = new TextDecoder().decode(stdout).trim();
-    const errStr = new TextDecoder().decode(stderr).trim();
-    if (code !== 0) {
-      throw new Error(`Command ${cmd} ${displayArgs} failed with code ${code}.\nError: ${errStr}\nOutput: ${outStr}`);
-    }
-    return outStr;
-  }
+  });
 }
 
 async function runBw(appDataDir: string, args: string[], stdinValue?: string, env: Record<string, string> = {}): Promise<string> {
@@ -263,22 +260,22 @@ async function main() {
   console.log(`[${new Date().toISOString()}] Starting Vaultwarden -> Bitwarden Sync...`);
 
   // Ensure directories exist
-  await Deno.mkdir(SRC_DIR, { recursive: true });
-  await Deno.mkdir(DST_DIR, { recursive: true });
+  await mkdir(SRC_DIR, { recursive: true });
+  await mkdir(DST_DIR, { recursive: true });
 
   // Get credentials
-  const BW_CLIENTID = Deno.env.get("BW_CLIENTID");
-  const BW_CLIENTSECRET = Deno.env.get("BW_CLIENTSECRET");
-  const BW_PASSWORD = Deno.env.get("BW_PASSWORD");
-  const VW_CLIENTID = Deno.env.get("VW_CLIENTID");
-  const VW_CLIENTSECRET = Deno.env.get("VW_CLIENTSECRET");
-  const VW_EMAIL = Deno.env.get("VW_EMAIL");
-  const VW_PASSWORD = Deno.env.get("VW_PASSWORD");
-  const VW_SERVER_URL = Deno.env.get("VW_SERVER_URL") || "https://buildfleet.duckdns.org/vault";
+  const BW_CLIENTID = process.env.BW_CLIENTID;
+  const BW_CLIENTSECRET = process.env.BW_CLIENTSECRET;
+  const BW_PASSWORD = process.env.BW_PASSWORD;
+  const VW_CLIENTID = process.env.VW_CLIENTID;
+  const VW_CLIENTSECRET = process.env.VW_CLIENTSECRET;
+  const VW_EMAIL = process.env.VW_EMAIL;
+  const VW_PASSWORD = process.env.VW_PASSWORD;
+  const VW_SERVER_URL = process.env.VW_SERVER_URL || "https://buildfleet.duckdns.org/vault";
 
   if (!BW_CLIENTID || !BW_CLIENTSECRET || !BW_PASSWORD || !VW_PASSWORD || (!VW_CLIENTID && !VW_EMAIL)) {
     console.error("Missing required environment variables!");
-    Deno.exit(1);
+    process.exit(1);
   }
 
   // Configure servers
@@ -427,6 +424,6 @@ if (import.meta.main) {
     await main();
   } catch (err) {
     console.error("Fatal sync error:", err);
-    Deno.exit(1);
+    process.exit(1);
   }
 }

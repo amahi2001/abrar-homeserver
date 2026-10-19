@@ -7,28 +7,6 @@
   ...
 }:
 
-let
-  deno-latest = pkgs.stdenv.mkDerivation rec {
-    pname = "deno";
-    version = "2.8.2";
-
-    src = pkgs.fetchurl {
-      url = "https://github.com/denoland/deno/releases/download/v${version}/deno-x86_64-unknown-linux-gnu.zip";
-      hash = "sha256-GE2npSZ6tkm8CIIbO8POaAXY5phfuCcHy41en9ZTU2I=";
-    };
-
-    nativeBuildInputs = [ pkgs.unzip ];
-    buildInputs = [ pkgs.stdenv.cc.cc.lib ];
-
-    sourceRoot = ".";
-
-    installPhase = ''
-      mkdir -p $out/bin
-      cp deno $out/bin/
-      chmod +x $out/bin/deno
-    '';
-  };
-in
 {
   imports = [
     ./hardware-configuration.nix
@@ -110,6 +88,19 @@ in
 
   # System packages
   nixpkgs.config.allowUnfree = true;
+  # Stable nixpkgs currently ships Bun 1.3.13. Pin the upstream stable release
+  # for both interactive commands and services without updating unrelated inputs.
+  nixpkgs.overlays = [
+    (_final: prev: {
+      bun = prev.bun.overrideAttrs (_old: rec {
+        version = "1.4.3";
+        src = prev.fetchurl {
+          url = "https://github.com/oven-sh/bun/releases/download/bun-v${version}/bun-linux-x64.zip";
+          hash = "sha256-PnMFKNiXdfA/h/BcBnh8TfQJnQo38/JS57gpyyOBbhg=";
+        };
+      });
+    })
+  ];
   environment.systemPackages = with pkgs; [
     wget
     unzip
@@ -135,10 +126,6 @@ in
     # Latest release from the dedicated Codex flake, not the older stable
     # nixpkgs package. Updated by codex-cli-update.service.
     codexCli.packages.x86_64-linux.default
-    deno-latest
-    (pkgs.writeShellScriptBin "dx" ''
-      exec ${deno-latest}/bin/deno x "$@"
-    '')
     rtk
     cloakbrowser.packages.x86_64-linux.default
     bitwarden-cli

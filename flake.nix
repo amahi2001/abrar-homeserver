@@ -42,7 +42,19 @@
 
       # Make `nix flake check` evaluate and build the exact system closure that
       # `nixos-rebuild` deploys, rather than merely checking flake syntax.
-      checks.${system}.nixos = buildfleet-server.config.system.build.toplevel;
+      checks.${system} = {
+        nixos = buildfleet-server.config.system.build.toplevel;
+        bitwarden-sync =
+          buildfleet-server.pkgs.runCommand "bitwarden-sync-tests"
+            {
+              nativeBuildInputs = [ buildfleet-server.pkgs.bun ];
+              SYNC_TEST_SCRIPT = ./scripts/bitwarden-sync.ts;
+            }
+            ''
+              bun test ${./scripts/bitwarden-sync.test.ts}
+              touch "$out"
+            '';
+      };
 
       formatter.${system} = nixpkgs.legacyPackages.${system}.nixfmt;
     };
