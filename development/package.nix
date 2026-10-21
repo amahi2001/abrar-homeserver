@@ -1,21 +1,9 @@
-{
-  pkgs,
-  ponytail,
-  caveman,
-}:
+{ pkgs }:
 let
   assets = pkgs.runCommand "dev-container-assets" { } ''
-    mkdir -p $out/skills
+    mkdir -p $out
     cp -r ${./.}/. $out/
     chmod -R u+w $out
-    for name in ponytail ponytail-review ponytail-audit ponytail-debt ponytail-gain ponytail-help; do
-      cp -r ${ponytail}/skills/$name $out/skills/
-    done
-    for name in caveman caveman-commit caveman-review; do
-      cp -r ${caveman}/skills/$name $out/skills/
-    done
-    cp ${ponytail}/LICENSE $out/skills/PONYTAIL-LICENSE
-    cp ${caveman}/LICENSE $out/skills/CAVEMAN-LICENSE
   '';
 in
 pkgs.writeShellApplication {

@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync, chmodSync, copyFileSync, readdirSync, lstatSync, unlinkSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync, chmodSync, copyFileSync, readdirSync, lstatSync, unlinkSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve, dirname } from "node:path";
 
@@ -64,7 +64,16 @@ export function main(argv = process.argv.slice(2)) {
   const stateRoot = resolve(process.env.DEV_STATE_ROOT || join(homedir(), ".local/state/dev"));
   const accounts = join(stateRoot, "accounts");
   const credentials = join(stateRoot, "credentials");
+  const configExport = resolve(process.env.DEV_AGENT_CONFIG || join(homedir(), ".local/share/agent-config/export"));
+  if (process.env.DEV_AGENT_CONFIG && !existsSync(configExport)) throw Error(`Agent config snapshot not found: ${configExport}`);
+  const emptyConfig = join(stateRoot, "agent-config-empty");
+  const toolsLock = join(configExport, "tools.lock.json");
+  const rtk = existsSync(toolsLock) ? JSON.parse(readFileSync(toolsLock, "utf8")).rtk : undefined;
+  const personalPackage = join(configExport, "package.json");
+  const skillsVersion = existsSync(personalPackage) ? JSON.parse(readFileSync(personalPackage, "utf8")).dependencies.skills : undefined;
   const fingerprint = createHash("sha256");
+  if (rtk) fingerprint.update(JSON.stringify(rtk));
+  if (skillsVersion) fingerprint.update(skillsVersion);
   function hashFiles(dir: string) {
     for (const entry of readdirSync(dir, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
       const path = join(dir, entry.name);
@@ -77,8 +86,10 @@ export function main(argv = process.argv.slice(2)) {
   const image = `buildfleet-dev:${fingerprint.digest("hex").slice(0, 16)}`;
 
   function build() {
-    if (!existsSync(join(assets, "skills/ponytail/SKILL.md"))) throw Error("Pinned skills missing. Use the Nix-packaged dev command.");
-    run(["docker", "build", "--tag", image, assets], { inherit: true });
+    const args = ["docker", "build", "--tag", image];
+    if (rtk) args.push("--build-arg", `RTK_VERSION=v${rtk.version.replace(/^v/, "")}`, "--build-arg", `RTK_INSTALLER=${rtk.installer}`, "--build-arg", `RTK_INSTALLER_SHA256=${rtk.installerSha256}`);
+    if (skillsVersion) args.push("--build-arg", `SKILLS_VERSION=${skillsVersion}`);
+    run([...args, assets], { inherit: true });
   }
   if (command === "build") { build(); return; }
   if (command === "list") {
@@ -111,9 +122,11 @@ export function main(argv = process.argv.slice(2)) {
 
   const git = (...args: string[]) => run(["git", "-C", source, ...args]).stdout;
   function compose(args: string[], inherit = false, allowFailure = false) {
+    if (!existsSync(configExport)) mkdirSync(emptyConfig, { recursive: true, mode: 0o700 });
     const env = {
       DEV_IMAGE: metadata?.image || workspaceImage, DEV_BASE_IMAGE: image, DEV_PROJECT: project, DEV_SOURCE: source,
       DEV_PROJECT_STATE: projectState, DEV_ACCOUNTS: accounts, DEV_CREDENTIALS: credentials,
+      DEV_AGENT_CONFIG: existsSync(configExport) ? realpathSync(configExport) : emptyConfig,
       DEV_UID: String(process.getuid!()), DEV_GID: String(process.getgid!()),
       DEV_GIT_NAME: run(["git", "config", "--get", "user.name"], { allowFailure: true }).stdout || "Development Agent",
       DEV_GIT_EMAIL: run(["git", "config", "--get", "user.email"], { allowFailure: true }).stdout || "agent@localhost",

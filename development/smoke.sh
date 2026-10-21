@@ -2,6 +2,7 @@
 # Live Docker checks; no GitHub or model calls and no real credentials required.
 set -euo pipefail
 image=${1:?Usage: bash smoke.sh IMAGE}
+config=${2:-}
 work=$(mktemp -d)
 one="dev-smoke-$$-one"
 two="dev-smoke-$$-two"
@@ -24,7 +25,10 @@ wait_ready() {
 }
 start() {
   local name=$1 project=$2 project_home=$3
+  local mounts=()
+  if [ -n "$config" ]; then mounts+=(--mount "type=bind,src=$config,dst=/opt/agent-config,readonly"); fi
   docker run -d --name "$name" --init \
+    --network none "${mounts[@]}" \
     -e DEV_UID="$(id -u)" -e DEV_GID="$(id -g)" -e DEV_PROJECT="$project" \
     -e GIT_AUTHOR_NAME=Test -e GIT_AUTHOR_EMAIL=test@example.invalid \
     -e GIT_COMMITTER_NAME=Test -e GIT_COMMITTER_EMAIL=test@example.invalid \
@@ -49,8 +53,6 @@ inside bash -ec '
   git remote add probe git@github.com:owner/repo.git
   test "$(git remote get-url probe)" = https://github.com/owner/repo.git
   git remote remove probe
-  test -f "$HOME/.agents/skills/ponytail/SKILL.md"
-  test -f "$CLAUDE_CONFIG_DIR/skills/caveman/SKILL.md"
   test -f "$CODEX_HOME/AGENTS.md"
   test ! -S /var/run/docker.sock
   sudo -n true
@@ -59,6 +61,18 @@ inside bash -ec '
   printf "account\n" > "$CLAUDE_CONFIG_DIR/persistence-marker"
   rtk ls .
 '
+if [ -n "$config" ]; then
+  inside bash -ec '
+    test -f "$HOME/.agents/skills/caveman-help/SKILL.md"
+    test -f "$HOME/.agents/skills/ponytail/SKILL.md"
+    test -f "$CLAUDE_CONFIG_DIR/skills/caveman/SKILL.md"
+    rg -q "rtk hook claude" "$CLAUDE_CONFIG_DIR/settings.json"
+    rg -q "rtk hook codex" "$CODEX_HOME/hooks.json"
+    rg -q "agent-config:start" "$CODEX_HOME/AGENTS.md" "$CLAUDE_CONFIG_DIR/CLAUDE.md"
+    rg -q "gpt-6.1-sol" "$CODEX_HOME/config.toml"
+    test ! -w /opt/agent-config/instructions.md
+  '
+fi
 docker exec --user "$(id -u):$(id -g)" "$two" bash -ec '
   test ! -e /workspace/one
   test ! -e "$HOME/.cache/cache-marker"
@@ -91,6 +105,7 @@ docker stop "$one" >/dev/null
 docker rm "$one" >/dev/null
 start "$one" one home-one
 inside bash -ec 'test -s source-marker; test -s "$HOME/.cache/cache-marker"; test -s "$CLAUDE_CONFIG_DIR/persistence-marker"'
+if [ -n "$config" ]; then docker logs "$one" | rg -q 'Synced Codex \+ Claude \(0 files changed\)'; fi
 # The noninteractive agent process must retain its lock while running.
 inside bash -ec 'flock -n "$HOME/.agent-session.lock" sleep 5' &
 lock_pid=$!

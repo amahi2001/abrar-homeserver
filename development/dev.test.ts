@@ -1,5 +1,5 @@
 import { test, expect, afterEach } from "bun:test";
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, statSync, copyFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, statSync, copyFileSync, symlinkSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { projectName, repository, githubRemote } from "./dev";
@@ -22,7 +22,7 @@ function fixture() {
   const mock = `#!${process.execPath}
 import {appendFileSync,existsSync,writeFileSync} from 'node:fs';
 const name=process.argv[1].split('/').pop(), a=process.argv.slice(2);
-appendFileSync(process.env.FAKE_LOG,JSON.stringify({name,args:a})+'\\n');
+appendFileSync(process.env.FAKE_LOG,JSON.stringify({name,args:a,agentConfig:process.env.DEV_AGENT_CONFIG})+'\\n');
 const fail=(message)=>{console.error(message);process.exit(1)};
 if(name==='git') {
  if(a.includes('ls-remote')) process.exit(0);
@@ -84,6 +84,22 @@ test("rejects path traversal, URLs, shell strings, and malformed project/reposit
   expect(githubRemote("https://github.com/owner/repo.git")).toBe("owner/repo");
 });
 
+test("snapshot changes resolve to new mount paths without building images", () => {
+  const f = fixture();
+  const one = join(f.dir, "snapshot-one"), two = join(f.dir, "snapshot-two"), link = join(f.dir, "config-export");
+  mkdirSync(one); mkdirSync(two); symlinkSync(one, link);
+  let result = f.cli(["start", "app", "--no-agent"], { DEV_AGENT_CONFIG: link });
+  expect(result.code).toBe(0);
+  expect(f.calls().find(c => c.name === "docker" && c.args.includes("up")).agentConfig).toBe(one);
+  unlinkSync(link); symlinkSync(two, link); f.clear();
+  result = f.cli(["start", "app", "--no-agent"], { DEV_AGENT_CONFIG: link });
+  expect(result.code).toBe(0);
+  expect(f.calls().find(c => c.name === "docker" && c.args.includes("up")).agentConfig).toBe(two);
+  expect(f.calls().some(c => c.name === "docker" && c.args.includes("build"))).toBe(false);
+  result = f.cli(["start", "app", "--no-agent"], { DEV_AGENT_CONFIG: join(f.dir, "missing") });
+  expect(result.code).toBe(1); expect(result.err).toContain("snapshot not found");
+});
+
 test("creates and verifies a private default repo; credentials stay outside source and logs", () => {
   const f = fixture();
   const r = f.cli(["start", "app", "--no-agent"], { FAKE_MISSING: "1" });
@@ -95,6 +111,22 @@ test("creates and verifies a private default repo; credentials stay outside sour
   expect(readFileSync(join(f.state, "accounts/codex/auth.json"), "utf8")).toContain("fake-codex-credential");
   expect(r.out + r.err + JSON.stringify(f.calls())).not.toContain("fake-github-credential");
   expect(f.calls().find(c => c.name === "git" && c.args.includes("push"))?.args).toContain("main");
+});
+
+test("tool lock updates change the image tag and pass versions to official installers", () => {
+  const f = fixture(), config = join(f.dir, "tool-snapshot"); mkdirSync(config);
+  const path = join(config, "tools.lock.json");
+  const lock = { rtk: { version: "1.0.1", installer: "https://example.invalid/official-install.sh", installerSha256: "test-hash" } };
+  writeFileSync(path, JSON.stringify(lock));
+  expect(f.cli(["build"], { DEV_AGENT_CONFIG: config }).code).toBe(0);
+  const first = f.calls().find(c => c.name === "docker" && c.args[0] === "build").args;
+  expect(first).toContain("RTK_VERSION=v1.0.1");
+  expect(first).toContain("RTK_INSTALLER_SHA256=test-hash");
+  lock.rtk.version = "1.0.2"; writeFileSync(path, JSON.stringify(lock)); f.clear();
+  expect(f.cli(["build"], { DEV_AGENT_CONFIG: config }).code).toBe(0);
+  const second = f.calls().find(c => c.name === "docker" && c.args[0] === "build").args;
+  expect(second).toContain("RTK_VERSION=v1.0.2");
+  expect(second[second.indexOf("--tag") + 1]).not.toBe(first[first.indexOf("--tag") + 1]);
 });
 
 test("warm start preserves uncommitted work and task branch, skips GitHub API and image builds", () => {

@@ -3,7 +3,7 @@
 You are inside this project's persistent Linux development container. Complete development here. Source and home persist; tools are installed. No Docker orchestration is needed inside the container.
 
 - Prefix shell commands with `rtk`; use `rtk proxy <command>` for unsupported commands or exact machine-readable output. Use targeted `rg` searches and compact command output.
-- Apply Ponytail's smallest complete solution and Caveman's concise communication. Read those skills once when coding; load other skills only when relevant. Preserve clarity, validation, and meaningful checks.
+- Apply Ponytail's smallest complete solution and Caveman's concise communication when those skills are installed. Read relevant skills once. Preserve clarity, validation, and meaningful checks.
 - Inspect repository instructions, current Git branch, and local changes before editing. Preserve existing work. Reuse installed tools and project conventions. Install only missing project dependencies; caches persist in your home.
 - Complete authorized work without repeated confirmation. Ask only for missing information or actions outside the task's authority. Report real failures; never claim unrun checks passed.
 - Work on the prepared `agent/*` branch. Never force-push, merge, change visibility, or publish packages without explicit instruction. Never commit secrets, environment files, dependencies, or agent state.

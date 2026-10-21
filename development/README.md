@@ -14,6 +14,23 @@ dev list
 
 `start` prepares the project and launches the selected agent inside its container.
 Codex is the default. `--no-agent` prepares without consuming model tokens.
+Personal skills, hooks, instructions, and portable preferences are maintained in
+the private `amahi2001/agent-config` repository. Clone it, run
+`bun install --frozen-lockfile`, then `bun run sync` on the host. This creates a
+versioned snapshot under `~/.local/share/agent-config/`; `dev start` resolves its
+`export` link and mounts that version read-only at `/opt/agent-config`. A changed
+version recreates the container on the next start while keeping its persistent
+source/home/account state. Startup installs from the local snapshot using the
+image's pinned Skills CLI without GitHub or dependency downloads. Shared account
+setup is serialized across projects. Host sync also adds container routing to
+global Codex/Claude instructions; restart host agents after syncing.
+
+Set `DEV_AGENT_CONFIG=/absolute/snapshot/path` to use a different exported snapshot.
+Without an export, the image provides tools and workspace instructions; run the
+host sync to install your selected skills. Skills are not duplicated in Nix lists.
+Nix no longer reasserts personal host skill links; project/Hermes skill links stay
+managed by Nix. Private config/authentication is never fetched during a Nix build.
+
 Arguments after `--` are passed directly to the agent, for example:
 
 ```bash
@@ -81,9 +98,11 @@ dev start myproject --agent claude
 ```
 
 `CLAUDE_CONFIG_DIR` points at persistent account storage, including `.claude.json`.
-The entire host agent configuration, unrelated plugins, and MCP connections are
-not copied into containers. Both agents get pinned Ponytail and Caveman skills,
-concise workspace instructions, and RTK. Codex runs without a nested OS sandbox;
+Portable preferences come from the optional agent-config snapshot; unrelated host
+plugins, MCP connections, and machine trust decisions stay on the host. Both agents
+get the snapshot's skills/instructions when present. RTK is installed using its
+official installer and the snapshot's tools.lock.json; RTK's own init commands
+configure its native hooks for each agent. Codex runs without a nested OS sandbox;
 Claude skips repeated tool-permission prompts. Docker mounts define their host
 filesystem access. One active agent session per project is enforced with `flock`.
 The launcher holds its project lock through the session; shells and explicit
@@ -100,7 +119,9 @@ dev rebuild myproject
 project container, retaining bind-mounted source, home, caches, and account state.
 It refuses while an agent session holds the project lock. Ordinary `start` uses
 the cached image without pulling or installing tools. Base image digest and
-agent/RTK/Bun/uv versions are pinned; Debian packages resolve at explicit image
+Agent/Bun/uv versions are pinned; RTK and Skills CLI follow the personal config
+lockfiles when a snapshot is present. Changed tool locks select a new image so
+updates are built once and reused across projects. Debian packages resolve at explicit image
 build time. Both x86_64 Linux and the server's existing Docker daemon are required.
 
 Ports 3000, 5173, and 8000 map to random **host-loopback** ports. Run `dev list`
@@ -142,8 +163,8 @@ stop/start and rebuild; `dev` never deletes volumes.
 
 ## NixOS integration and validation
 
-`development.nix` installs `dev`, links all six pinned Ponytail skills for host
-Codex and Claude, and narrows Docker's existing weekly pruning to dangling images.
+`development.nix` installs `dev` and narrows Docker's existing weekly pruning to
+dangling images. Personal host agent settings/skills are managed by agent-config.
 Stopped containers, tagged images, volumes, and build caches are preserved.
 
 ```bash
@@ -154,10 +175,17 @@ nix build /etc/nixos#checks.x86_64-linux.development --no-link -L
 The development check allows 30 seconds per test for slower machines.
 
 The initial targeted rollout uses `~/.local/bin/dev` linked to that GC-rooted
-package, plus only this module's tmpfiles and Docker-prune drop-in. This avoids
+package, plus this module's Docker-prune drop-in. This avoids
 activating unrelated pending server changes. The normal next NixOS rebuild
 manages the same settings system-wide. After editing launcher/image/skills,
 rebuild the package above before running `dev rebuild` for existing projects.
+An offline Docker smoke check can test the defaults or a personal snapshot:
+
+```bash
+bash development/smoke.sh IMAGE_TAG
+bash development/smoke.sh IMAGE_TAG ~/.local/share/agent-config/export
+```
+
 `DEV_ROOT` and `DEV_STATE_ROOT` can relocate a new installation; existing project
 metadata rejects accidental relocation. `DEV_GITHUB_OWNER` changes the default
 account for new projects and must match the authenticated GitHub identity.

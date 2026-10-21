@@ -42,7 +42,9 @@ continue seeding, and stops them afterward.
 Use `dev start <project>` to launch Codex inside a persistent Linux container,
 or add `--agent claude`. New unassigned projects receive private GitHub repos;
 agents work and push on task branches. See [development/README.md](development/README.md)
-for login, previews, customization, and verification.
+for login, previews, customization, and verification. Personal skills, hooks, and
+portable Codex/Claude settings are synced from the separate private
+`amahi2001/agent-config` repository; its local snapshot is applied on container startup.
 
 ## Repository layout
 

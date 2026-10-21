@@ -10,15 +10,20 @@ if [ "$(id -u)" = 0 ]; then
   exec setpriv --reuid=node --regid=node --init-groups "$0" "$@"
 fi
 mkdir -p "$CODEX_HOME" "$CLAUDE_CONFIG_DIR"
-for skill in /opt/dev/skills/*/; do
-  ln -sfn "$skill" "$HOME/.agents/skills/$(basename "$skill")"
-done
+# Account config is shared between projects; serialize setup across containers.
+exec 9>"$CODEX_HOME/.dev-config.lock"
+flock 9
 mkdir -p "$CLAUDE_CONFIG_DIR/skills"
-for skill in /opt/dev/skills/*/; do
-  ln -sfn "$skill" "$CLAUDE_CONFIG_DIR/skills/$(basename "$skill")"
-done
-install -m 600 /opt/dev/instructions.md "$CODEX_HOME/AGENTS.md"
-install -m 600 /opt/dev/instructions.md "$CLAUDE_CONFIG_DIR/CLAUDE.md"
+if ! cmp -s /opt/dev/instructions.md "$CODEX_HOME/.dev-container-instructions.md" || [ ! -f "$CODEX_HOME/AGENTS.md" ] || [ ! -f "$CLAUDE_CONFIG_DIR/CLAUDE.md" ]; then
+  install -m 600 /opt/dev/instructions.md "$CODEX_HOME/AGENTS.md"
+  install -m 600 /opt/dev/instructions.md "$CLAUDE_CONFIG_DIR/CLAUDE.md"
+fi
+install -m 600 /opt/dev/instructions.md "$CODEX_HOME/.dev-container-instructions.md"
+if [ -f /opt/agent-config/sync.js ]; then
+  bun /opt/agent-config/sync.js --container
+fi
+flock -u 9
+exec 9>&-
 git config --global user.name "$GIT_AUTHOR_NAME"
 git config --global user.email "$GIT_AUTHOR_EMAIL"
 git config --global credential.https://github.com.helper '!gh auth git-credential'

@@ -7,13 +7,9 @@
     cloakbrowser.url = "github:CloakHQ/CloakBrowser";
     # Tracks OpenAI Codex CLI releases independently of stable nixpkgs.
     codex-cli.url = "github:sadjow/codex-cli-nix";
-    # Source for the Caveman skills exposed to Codex and managed Hermes.
+    # Source for the Caveman skills used by managed Hermes.
     caveman = {
       url = "github:JuliusBrussee/caveman/v1.9.1";
-      flake = false;
-    };
-    ponytail = {
-      url = "github:DietrichGebert/ponytail/09c434ab73ca43761c5d8b0c5d341926c2fba710";
       flake = false;
     };
   };
@@ -26,14 +22,13 @@
       cloakbrowser,
       codex-cli,
       caveman,
-      ponytail,
     }:
     let
       system = "x86_64-linux";
       buildfleet-server = nixpkgs.lib.nixosSystem {
         system = "x86_64-linux";
         specialArgs = {
-          inherit cloakbrowser caveman ponytail;
+          inherit cloakbrowser caveman;
           codexCli = codex-cli;
         };
         modules = [
@@ -44,9 +39,7 @@
     in
     {
       nixosConfigurations.buildfleet-server = buildfleet-server;
-      packages.${system}.dev = nixpkgs.legacyPackages.${system}.callPackage ./development/package.nix {
-        inherit ponytail caveman;
-      };
+      packages.${system}.dev = nixpkgs.legacyPackages.${system}.callPackage ./development/package.nix { };
 
       # Make `nix flake check` evaluate and build the exact system closure that
       # `nixos-rebuild` deploys, rather than merely checking flake syntax.

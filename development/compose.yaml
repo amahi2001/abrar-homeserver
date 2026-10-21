@@ -19,6 +19,7 @@ services:
       - ${DEV_ACCOUNTS}/codex:/agent/codex
       - ${DEV_ACCOUNTS}/claude:/agent/claude
       - ${DEV_CREDENTIALS}:/run/dev-credentials:ro
+      - ${DEV_AGENT_CONFIG}:/opt/agent-config:ro
     # Docker enforces loopback for automatically published project services too.
     networks:
       default:

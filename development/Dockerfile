@@ -4,21 +4,23 @@ ARG CODEX_VERSION=0.163.0
 ARG CLAUDE_VERSION=2.1.306
 ARG BUN_VERSION=1.4.3
 ARG UV_VERSION=0.13.4
-ARG RTK_VERSION=0.41.0
-ARG RTK_SHA256=90ae10f5c76de9bacaec5eeeefb6012f74dd47f4e280ec614295555b64da6b57
+ARG SKILLS_VERSION=1.7.4
 RUN apt-get update && apt-get install -y --no-install-recommends \
     bash ca-certificates curl git gh ripgrep fd-find jq less unzip \
     python3 python3-venv python3-pip build-essential pkg-config openssh-client \
     procps util-linux sudo && rm -rf /var/lib/apt/lists/*
-RUN npm install -g @openai/codex@${CODEX_VERSION} @anthropic-ai/claude-code@${CLAUDE_VERSION} bun@${BUN_VERSION} \
+RUN npm install -g @openai/codex@${CODEX_VERSION} @anthropic-ai/claude-code@${CLAUDE_VERSION} bun@${BUN_VERSION} skills@${SKILLS_VERSION} \
     && python3 -m venv /opt/uv && /opt/uv/bin/pip install --no-cache-dir uv==${UV_VERSION} \
     && ln -s /opt/uv/bin/uv /usr/local/bin/uv \
     && ln -s /opt/uv/bin/uvx /usr/local/bin/uvx \
-    && curl -fsSL "https://github.com/rtk-ai/rtk/releases/download/v${RTK_VERSION}/rtk-x86_64-unknown-linux-musl.tar.gz" -o /tmp/rtk.tar.gz \
-    && echo "${RTK_SHA256}  /tmp/rtk.tar.gz" | sha256sum -c - \
-    && tar -xzf /tmp/rtk.tar.gz -C /usr/local/bin rtk && rm /tmp/rtk.tar.gz \
     && ln -s /usr/bin/fdfind /usr/local/bin/fd
-COPY skills/ /opt/dev/skills/
+ARG RTK_VERSION=
+ARG RTK_INSTALLER=https://raw.githubusercontent.com/rtk-ai/rtk/master/install.sh
+ARG RTK_INSTALLER_SHA256=
+RUN curl -fsSL "$RTK_INSTALLER" -o /tmp/rtk-install.sh \
+    && if [ -n "$RTK_INSTALLER_SHA256" ]; then echo "$RTK_INSTALLER_SHA256  /tmp/rtk-install.sh" | sha256sum -c -; fi \
+    && RTK_INSTALL_DIR=/usr/local/bin sh /tmp/rtk-install.sh \
+    && rm /tmp/rtk-install.sh
 COPY instructions.md /opt/dev/instructions.md
 COPY entrypoint.sh agent-session.sh dev-finish.sh gh.sh /usr/local/lib/dev/
 RUN chmod +x /usr/local/lib/dev/*.sh \

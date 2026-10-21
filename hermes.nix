@@ -263,24 +263,8 @@ in
     "L+ /etc/nixos/.agents/skills/nixos-hermes-setup - - - - /var/lib/hermes/.hermes/skills/devops/nixos-hermes-setup"
     "L+ /etc/nixos/.agents/skills/cloakbrowser-nixos-setup - - - - /var/lib/hermes/.hermes/skills/devops/cloakbrowser-nixos-setup"
 
-    # Caveman is a prompt-only skill.  Link its upstream source from the Nix
-    # store so upgrades are pinned in flake.lock and rebuilds cannot overwrite
-    # it.  Codex reads the global skill directory and the repository link;
-    # Hermes reads its managed productivity skill directory.
-    "L+ /home/buildfleet/.codex/skills/caveman - - - - ${caveman}/skills/caveman"
-    "L+ /home/buildfleet/.codex/skills/caveman-commit - - - - ${caveman}/skills/caveman-commit"
-    "L+ /home/buildfleet/.codex/skills/caveman-review - - - - ${caveman}/skills/caveman-review"
-    "L+ /home/buildfleet/.codex/skills/caveman-help - - - - ${caveman}/skills/caveman-help"
-    "L+ /home/buildfleet/.codex/skills/caveman-stats - - - - ${caveman}/skills/caveman-stats"
-    "L+ /home/buildfleet/.codex/skills/caveman-compress - - - - ${caveman}/skills/caveman-compress"
-    "L+ /home/buildfleet/.codex/skills/cavecrew - - - - ${caveman}/skills/cavecrew"
-    "L+ /etc/nixos/.agents/skills/caveman - - - - ${caveman}/skills/caveman"
-    "L+ /etc/nixos/.agents/skills/caveman-commit - - - - ${caveman}/skills/caveman-commit"
-    "L+ /etc/nixos/.agents/skills/caveman-review - - - - ${caveman}/skills/caveman-review"
-    "L+ /etc/nixos/.agents/skills/caveman-help - - - - ${caveman}/skills/caveman-help"
-    "L+ /etc/nixos/.agents/skills/caveman-stats - - - - ${caveman}/skills/caveman-stats"
-    "L+ /etc/nixos/.agents/skills/caveman-compress - - - - ${caveman}/skills/caveman-compress"
-    "L+ /etc/nixos/.agents/skills/cavecrew - - - - ${caveman}/skills/cavecrew"
+    # Keep Hermes skills pinned in flake.lock.
+    # Personal global agent skills are synced from the separate agent-config repo.
     "L+ /var/lib/hermes/.hermes/skills/productivity/caveman - - - - ${caveman}/skills/caveman"
     "L+ /var/lib/hermes/.hermes/skills/productivity/caveman-commit - - - - ${caveman}/skills/caveman-commit"
     "L+ /var/lib/hermes/.hermes/skills/productivity/caveman-review - - - - ${caveman}/skills/caveman-review"
