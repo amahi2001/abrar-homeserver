@@ -164,8 +164,19 @@ the host network; it must never be moved into or routed through Gluetun.
 After an approved Sonarr/Radarr import passes hard-link verification, report
 the file count and organized library path. Say that Jellyfin's library monitor
 still needs to index it; only claim it is visible in Jellyfin after checking
-that visibility. If it does not appear, check the organized hard links and let
-Jellyfin's library monitor detect them before considering a manual scan. Do
+that visibility. The organizer now checks Jellyfin's index after import and
+emits **Ready in Jellyfin** only after every source media file is indexed at an
+organized library path. `sudo media-organizer status` separates import status
+from Jellyfin verification. Existing imported downloads are checked quietly
+on rollout; new imports and recovered pending publications get ready alerts.
+
+If indexing remains incomplete after two minutes, the organizer requests a
+library scan, at most once per thirty minutes across all pending imports.
+After ten minutes it emits an actionable publication alert, repeated daily
+until verified. API failures remain unconfirmed and retry on the next pass.
+These checks never repeat an import or restore a replaced file. A publication
+alert authorizes read-only diagnosis; use the existing approval flow for any
+replacement or corrected import. Do
 not expose the `manual` or incomplete download directories as a shortcut.
 
 For a Jellyfin player error, inspect evidence before changing settings:

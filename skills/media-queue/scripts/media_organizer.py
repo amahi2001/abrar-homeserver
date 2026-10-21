@@ -10,6 +10,9 @@ import subprocess
 import sys
 import time
 from pathlib import Path, PurePosixPath
+from urllib.error import URLError
+from urllib.parse import urlencode
+from urllib.request import Request, urlopen
 
 
 class OrganizerError(RuntimeError):
@@ -20,6 +23,11 @@ STATE_FILE = Path("/var/lib/media-queue/organizer-state.json")
 EVENT_DIR = Path("/var/lib/media-queue/events")
 REVIEW_NOTICE_VERSION = 1
 REVIEW_REMINDER_SECONDS = 24 * 60 * 60
+INDEX_GRACE_SECONDS = 2 * 60
+INDEX_ALERT_SECONDS = 10 * 60
+INDEX_REFRESH_SECONDS = 30 * 60
+# Reuse the host's existing protected Jellyfin connection, without another key.
+JELLYFIN_CONFIG = Path("/etc/youtube-queue.json")
 MANUAL_ROOT = Path("/srv/data/media/library/manual")
 LIBRARY_ROOTS = (
     Path("/srv/data/media/library/tv"),
@@ -196,6 +204,103 @@ def is_published(source, library_inodes):
     return True
 
 
+def jellyfin_request(path, *, body=None, query=None):
+    try:
+        config = json.loads(JELLYFIN_CONFIG.read_text())
+        key = Path(config["jellyfinKeyFile"]).read_text().strip()
+        if not key:
+            raise ValueError("empty credential")
+        url = config["jellyfinUrl"].rstrip("/") + path
+        if query:
+            url += "?" + urlencode(query)
+        request = Request(
+            url, headers={"X-Emby-Token": key, "Content-Type": "application/json"},
+            data=json.dumps(body).encode() if body is not None else None,
+        )
+        with urlopen(request, timeout=15) as response:
+            raw = response.read()
+            return json.loads(raw) if raw else None
+    except (OSError, URLError, ValueError, KeyError, TypeError) as error:
+        raise OrganizerError("Jellyfin verification unavailable; check its service and protected API credential.") from error
+
+
+def indexed_inodes():
+    result = set()
+    offset = 0
+    while True:
+        page = jellyfin_request("/Items", query={
+            "Recursive": "true", "IncludeItemTypes": "Movie,Episode", "Fields": "Path",
+            "StartIndex": offset, "Limit": 500,
+        })
+        if not isinstance(page, dict) or not isinstance(page.get("Items"), list):
+            raise OrganizerError("Jellyfin returned an unexpected item listing.")
+        for item in page["Items"]:
+            if not isinstance(item, dict) or not isinstance(item.get("Path", ""), str):
+                raise OrganizerError("Jellyfin returned an unexpected item path.")
+            path = Path(item.get("Path") or "/").resolve()
+            if not any(path.is_relative_to(root) for root in LIBRARY_ROOTS):
+                continue
+            try:
+                stat = path.stat()
+            except OSError:
+                continue
+            if path.is_file():
+                result.add((stat.st_dev, stat.st_ino))
+        offset += len(page["Items"])
+        if len(page["Items"]) < 500:
+            return result
+
+
+def verify_publications(state, torrents):
+    pending = []
+    for torrent in torrents:
+        key = torrent.get("hash_string") or str(torrent.get("id"))
+        item = state["items"].get(key, {})
+        if torrent.get("left_until_done") != 0 or item.get("status") != "organized" or item.get("jellyfinVerifiedAt"):
+            continue
+        try:
+            source = source_path(torrent)
+        except OrganizerError:
+            continue
+        pending.append((key, item, source))
+    if not pending:
+        return
+    now = int(time.time())
+    try:
+        indexed = indexed_inodes()
+        problem = "Imported files are not all indexed in Jellyfin yet."
+    except OrganizerError as error:
+        indexed = None
+        problem = str(error)
+    refresh = False
+    for key, item, source in pending:
+        was_pending = "jellyfinPendingSince" in item
+        item.setdefault("jellyfinPendingSince", now)
+        if indexed is not None and is_published(source, indexed):
+            item["jellyfinVerifiedAt"] = now
+            item["jellyfinDetail"] = "Every source media file is indexed at an organized Jellyfin library path."
+            if was_pending or now - item.get("updatedAt", 0) < INDEX_ALERT_SECONDS:
+                emit_event(key, f"Ready in Jellyfin: {item['name']} (torrent {key}). Every imported media file is indexed.")
+            continue
+        item["jellyfinDetail"] = problem
+        age = now - item["jellyfinPendingSince"]
+        refresh |= indexed is not None and age >= INDEX_GRACE_SECONDS
+        if age >= INDEX_ALERT_SECONDS and now - item.get("jellyfinNotifiedAt", 0) >= REVIEW_REMINDER_SECONDS:
+            emit_event(key, (
+                f"Jellyfin publication needs attention: {item['name']} (torrent {key}).\n"
+                f"{problem}\nThe import will not be repeated or replaced automatically.\n"
+                f'Send Hermes a new message: "Check Jellyfin publication for media {key}". '
+                "Inspect sudo media-organizer status and Jellyfin's service/library scan."
+            ))
+            item["jellyfinNotifiedAt"] = now
+    if refresh and now - state.get("jellyfinRefreshAt", 0) >= INDEX_REFRESH_SECONDS:
+        try:
+            jellyfin_request("/Library/Refresh", body={})
+            state["jellyfinRefreshAt"] = now
+        except OrganizerError:
+            pass  # Pending verification remains retryable on the next timer pass.
+
+
 def clean_title(value):
     value = re.sub(r"^\[[^]]+\]\s*", "", value)
     value = re.sub(r"[._]+", " ", value)
@@ -278,7 +383,8 @@ def run(dry_run=False):
     library_inodes = published_inodes()
     started_managers = {}
     try:
-        for torrent in transmission_torrents():
+        torrents = transmission_torrents()
+        for torrent in torrents:
             if torrent.get("left_until_done") != 0:
                 continue
             key = torrent.get("hash_string") or str(torrent.get("id"))
@@ -356,6 +462,8 @@ def run(dry_run=False):
                     source=source,
                 )
                 notify_review(state, key, force=changed)
+        if not dry_run:
+            verify_publications(state, torrents)
     finally:
         for manager, started_here in started_managers.items():
             if started_here:
@@ -378,6 +486,9 @@ def show_status():
         print(f"{item.get('status', 'unknown'):>12}  {item.get('name', 'unknown')}")
         print(f"              Torrent hash: {key}")
         print(f"              {item.get('detail', '')}")
+        if item.get("status") == "organized":
+            publication = "ready" if item.get("jellyfinVerifiedAt") else "unconfirmed"
+            print(f"              Jellyfin: {publication}. {item.get('jellyfinDetail', '')}")
 
 
 def show_review(key):

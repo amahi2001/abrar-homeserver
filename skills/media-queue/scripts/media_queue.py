@@ -336,7 +336,7 @@ def torrent_state(torrent):
 
 def watch_message(name, state, torrent):
     if state == "completed":
-        return f"Media download finished: {name}"
+        return f"Media download finished: {name}. Organization and Jellyfin indexing are still being checked; wait for the Ready in Jellyfin alert."
     if state == "paused":
         return f"Media download paused before completion: {name}"
     if state == "paused-no-peers":
