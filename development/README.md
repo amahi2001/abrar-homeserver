@@ -3,6 +3,7 @@
 Run on `buildfleet-server`, normally over Tailscale SSH:
 
 ```bash
+dev setup                          # once per host, or after updating its CLI lock
 dev start myproject
 dev start myproject --agent claude
 dev start existing --repo owner/repository
@@ -14,6 +15,26 @@ dev list
 
 `start` prepares the project and launches the selected agent inside its container.
 Codex is the default. `--no-agent` prepares without consuming model tokens.
+The same commands now use the official Dev Containers CLI for project builds,
+container startup and execution. Our wrapper retains GitHub defaults, branches,
+credentials, active-agent locks, health readiness and browser checkpoints. Compose
+resolves project configuration, keeps supporting services running and stops the
+stack; the native CLI has no stop command. Agents need no new global instructions.
+
+`dev setup` uses the [official standalone installer](https://github.com/devcontainers/cli#install-script)
+with a bundled Node 24 runtime under `~/.local/share/devcontainers`. The CLI version
+comes from `tools.lock.json`'s `devcontainerCli.version` (default 0.89.0). On this
+NixOS server, `nix-ld` supports the upstream runtime. Normal startup checks the
+version and never installs or downloads host tooling. Update with agent-config's
+`bun run update`, sync, then `dev setup`; uninstall through the upstream installer's
+`--uninstall --prefix ~/.local/share/devcontainers`.
+
+Generated `devcontainer.json`, resolved `compose.json` and native CLI state live
+under `~/.local/state/dev/projects/<project>`, outside source control. They retain
+root startup for the image's UID/GID setup and run commands as `node`. No duplicate
+installation hooks or UID rewrite are added. Changed resolved configuration
+recreates an idle box after checkpointing its browser; unchanged starts reuse it.
+
 Personal skills, hooks, instructions, and portable preferences are maintained in
 the private `amahi2001/agent-config` repository. Clone it, run
 `bun install --frozen-lockfile`, then `bun run sync` on the host. This creates a
@@ -233,13 +254,43 @@ use `dev rebuild <project>` after changing a recipe. The metadata `baseImage`
 records the shared base. Named database volumes survive
 stop/start and rebuild; `dev` never deletes volumes.
 
-## Dev Containers comparison
+## Dev Containers migration and rollback
 
-The optional [side-by-side pilot](pilot/README.md) runs the official Dev Containers
-CLI around this same image and Compose service, with separate disposable projects
-and fake credentials. [Measured results](pilot/comparison.md) compare startup,
-builds, rendered output, agent integration, viewers and persistence. The existing
-launcher and project containers remain in service.
+The disposable comparison runner, fixtures, extra CLI installation and pilot boxes
+were removed after migration. The [original comparison and raw results](https://github.com/amahi2001/abrar-homeserver/blob/b8a003008b4a2f86853c12061c0aa022c29b88d1/development/pilot/comparison.md)
+remain in Git history. Those timings compare native lifecycle with the original
+wrapper, and do not measure model tokens or the full migrated wrapper.
+
+The migration keeps existing project names, source paths, persistent homes,
+accounts, networks, image tags and Compose overrides. Metadata without a resolved
+configuration hash is adopted on the first idle start. No volumes are removed.
+Relative build paths are resolved against the project before passing them to the
+native CLI. Project images build once; runtime configuration removes their build
+recipe so ordinary starts cannot rebuild them.
+
+On this server the previous Compose launcher is retained as the GC-rooted
+`~/.local/state/dev-package-compose`. To roll back an idle project, run
+`~/.local/state/dev-package-compose/bin/dev start PROJECT --no-agent`, then point
+`~/.local/bin/dev` back at that package if needed. Both launchers use the same
+state and agent lock. Rollback and forward migration were verified with persistent
+browser cookies, artifacts and account/source markers before rollout.
+
+Migration verification on 2026-10-21:
+
+- Nix development check: 33 tests / 236 assertions. Agent-config: 10 tests /
+  68 assertions, including both CLI registry update paths.
+- Real native builds respected project-relative paths. Sidecar recovery, optional
+  Compose profiles, named-volume data and literal dollar values were preserved.
+- Browser/desktop smoke and native discovery of all 14 selected skills passed.
+  Active-agent protection allowed concurrent shells and viewer access, with the
+  actual loopback viewer reachable from the host.
+- Both idle real projects retained branches, working state, authentication and
+  shared instructions. Codex login checks and Claude's authenticated status passed.
+- Full warm startup measured 0.57–0.61s across two runs per real project. Healthy
+  unchanged boxes skip native startup and checkpoints; no UI service, installer,
+  image build or download is needed. This measures elapsed time, not model tokens.
+- The targeted launcher package was deployed without a NixOS activation. Previous
+  images and the Compose launcher remain available for rollback.
 
 ## NixOS integration and validation
 

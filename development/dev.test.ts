@@ -22,7 +22,7 @@ function fixture() {
   mkdirSync(join(dir, "host-claude"));
   writeFileSync(join(dir, "host-claude/.credentials.json"), '{"claudeAiOauth":{"accessToken":"fake-claude-credential","refreshToken":"fake-claude-refresh"}}');
   const mock = `#!${process.execPath}
-import {appendFileSync,existsSync,writeFileSync} from 'node:fs';
+import {appendFileSync,existsSync,writeFileSync,readFileSync} from 'node:fs';
 const name=process.argv[1].split('/').pop(), a=process.argv.slice(2);
 appendFileSync(process.env.FAKE_LOG,JSON.stringify({name,args:a,agentConfig:process.env.DEV_AGENT_CONFIG})+'\\n');
 const fail=(message)=>{console.error(message);process.exit(1)};
@@ -43,27 +43,36 @@ if(name==='gh') {
  fail('unexpected gh invocation');
 }
 if(name==='docker') {
- if(a.includes('dev-agent')&&process.env.FAKE_AGENT_STARTED) {writeFileSync(process.env.FAKE_AGENT_STARTED,'ready');await Bun.sleep(600);}
  if(a[0]==='info')console.log('29.8.1');
- if(a.includes('config'))console.log(JSON.stringify({services:{dev:{build:process.env.FAKE_CUSTOM_BUILD?{}:undefined}}}));
+ if(a.includes('config'))console.log(JSON.stringify({services:{dev:{image:process.env.DEV_IMAGE,build:process.env.FAKE_CUSTOM_BUILD?{context:process.env.DEV_SOURCE}:undefined,environment:{snapshot:process.env.DEV_AGENT_CONFIG}},...(process.env.FAKE_SIDECAR?{db:{image:'cached-db'}}:{})}}));
+ if(a[0]==='inspect') {if(a.includes('{{.State.Health.Status}}'))console.log(process.env.FAKE_HEALTH_FAIL?'unhealthy':'healthy');else console.log(JSON.stringify({Running:!process.env.FAKE_HEALTH_FAIL,Health:{Status:process.env.FAKE_HEALTH_FAIL?'unhealthy':'healthy'}}));process.exit(0)}
  if(a.includes('inspect')&&process.env.FAKE_IMAGE_MISSING)fail('image absent');
  if(a.includes('inspect')&&process.env.FAKE_WORKSPACE_MISSING&&a.at(-1).includes('-dev-'))fail('workspace image absent');
- if(a.includes('up')&&process.env.FAKE_UP_FAIL)fail('container unhealthy');
  if(a.includes('ps')&&a.includes('-q')&&process.env.FAKE_RUNNING)console.log('container-id');
  if(a.includes('port'))console.log(process.env.FAKE_PORT || '127.0.0.1:43219');
- if(a.includes('dev-ui')&&process.env.FAKE_UI_FAIL)fail('viewer failed');
  if(a.includes('flock')&&process.env.FAKE_AGENT_ACTIVE)fail('locked');
  process.exit(0);
 }
+if(name==='devcontainer') {
+ if(a[0]==='--version') {console.log(existsSync(process.env.FAKE_INSTALLED)?readFileSync(process.env.FAKE_INSTALLED,'utf8'):process.env.FAKE_CLI_VERSION||'0.89.0');process.exit(0)}
+ if(a[0]==='up') {if(process.env.FAKE_UP_FAIL)fail('container unhealthy');console.log(JSON.stringify({containerId:'container-id'}));}
+ if(a.includes('dev-agent')&&process.env.FAKE_AGENT_STARTED) {writeFileSync(process.env.FAKE_AGENT_STARTED,'ready');await Bun.sleep(600);}
+ if(a.some(value=>value.includes('dev-ui'))&&process.env.FAKE_UI_FAIL)fail('viewer failed');
+ if(a.includes('flock')&&process.env.FAKE_AGENT_ACTIVE)fail('locked');
+ process.exit(0);
+}
+if(name==='curl') {writeFileSync(a[a.indexOf('-o')+1],'# fake official installer');process.exit(0)}
+if(name==='sh') {writeFileSync(process.env.FAKE_INSTALLED,a[a.indexOf('--version')+1]);process.exit(0)}
 fail('unexpected mock');
 `;
-  for (const name of ["git", "gh", "docker"]) writeFileSync(join(bin, name), mock, { mode: 0o755 });
+  for (const name of ["git", "gh", "docker", "devcontainer", "curl", "sh"]) writeFileSync(join(bin, name), mock, { mode: 0o755 });
   const env = {
     ...process.env, PATH: `${bin}:${process.env.PATH}`, REAL_GIT: realGit,
     DEV_ROOT: join(dir, "projects"), DEV_STATE_ROOT: state, CODEX_HOME: join(dir, "host-codex"),
     CLAUDE_CONFIG_DIR: join(dir, "host-claude"),
     DEV_ASSETS: assets,
-    DEV_LOCK_HELD: "", FAKE_LOG: join(dir, "calls.jsonl"), FAKE_CREATED: join(dir, "created"),
+    DEVCONTAINER_CLI: join(bin, "devcontainer"),
+    DEV_LOCK_HELD: "", FAKE_LOG: join(dir, "calls.jsonl"), FAKE_CREATED: join(dir, "created"), FAKE_INSTALLED: join(dir, "installed"),
     GIT_AUTHOR_NAME: "Test", GIT_AUTHOR_EMAIL: "test@example.invalid", GIT_COMMITTER_NAME: "Test", GIT_COMMITTER_EMAIL: "test@example.invalid",
   };
   return {
@@ -117,7 +126,7 @@ test("view discovers the published port and controls services without changing c
   f.clear();
   expect(f.cli(["view", "app", "desktop", "--stop"], { FAKE_RUNNING: "1" }).code).toBe(0);
   expect(f.calls().some(c => c.args.slice(-3).join(" ") === "dev-ui stop desktop")).toBe(true);
-  expect(f.calls().some(c => c.args.slice(-3).join(" ") === "port dev 6080")).toBe(true);
+  expect(f.calls().some(c => c.args.slice(-3).join(" ") === "port container-id 6080/tcp")).toBe(true);
   expect(f.cli(["view", "app", "desktop"], { FAKE_RUNNING: "1", FAKE_UI_FAIL: "1" }).code).toBe(1);
   expect(f.git("branch", "--show-current")).toBe(branch);
 });
@@ -150,9 +159,10 @@ test("failed browser checkpoint blocks stop/recreation and preserves project met
   const path = join(f.state, "projects/app/project.json"), before = readFileSync(path, "utf8");
   for (const command of ["stop", "rebuild", "start"]) {
     f.clear();
-    const result = f.cli([command, "app", ...(command === "start" ? ["--no-agent"] : [])], { FAKE_RUNNING: "1", FAKE_UI_FAIL: "1" });
+    const snapshot = join(f.dir, "changed-snapshot"); mkdirSync(snapshot, { recursive: true });
+    const result = f.cli([command, "app", ...(command === "start" ? ["--no-agent"] : [])], { FAKE_RUNNING: "1", FAKE_UI_FAIL: "1", DEV_AGENT_CONFIG: snapshot });
     expect(result.code).toBe(1);
-    expect(f.calls().some(c => c.args.slice(-2).join(" ") === "dev-ui _checkpoint")).toBe(true);
+    expect(f.calls().some(c => c.args.some(value => value.includes("dev-ui _checkpoint")))).toBe(true);
     expect(f.calls().some(c => c.args.includes("up") || c.args.at(-1) === "stop")).toBe(false);
     expect(readFileSync(path, "utf8")).toBe(before);
   }
@@ -164,11 +174,11 @@ test("snapshot changes resolve to new mount paths without building images", () =
   mkdirSync(one); mkdirSync(two); symlinkSync(one, link);
   let result = f.cli(["start", "app", "--no-agent"], { DEV_AGENT_CONFIG: link });
   expect(result.code).toBe(0);
-  expect(f.calls().find(c => c.name === "docker" && c.args.includes("up")).agentConfig).toBe(one);
+  expect(f.calls().find(c => c.name === "devcontainer" && c.args.includes("up")).agentConfig).toBe(one);
   unlinkSync(link); symlinkSync(two, link); f.clear();
   result = f.cli(["start", "app", "--no-agent"], { DEV_AGENT_CONFIG: link });
   expect(result.code).toBe(0);
-  expect(f.calls().find(c => c.name === "docker" && c.args.includes("up")).agentConfig).toBe(two);
+  expect(f.calls().find(c => c.name === "devcontainer" && c.args.includes("up")).agentConfig).toBe(two);
   expect(f.calls().some(c => c.name === "docker" && c.args.includes("build"))).toBe(false);
   result = f.cli(["start", "app", "--no-agent"], { DEV_AGENT_CONFIG: join(f.dir, "missing") });
   expect(result.code).toBe(1); expect(result.err).toContain("snapshot not found");
@@ -284,11 +294,90 @@ test("custom builds use a project image and failed rebuild preserves metadata an
   mkdirSync(join(f.source, ".dev")); writeFileSync(join(f.source, ".dev/compose.yaml"), "services: {}\n");
   f.clear();
   expect(f.cli(["start", "app", "--no-agent"], { FAKE_WORKSPACE_MISSING: "1", FAKE_CUSTOM_BUILD: "1" }).code).toBe(0);
-  expect(f.calls().some(c => c.name === "docker" && c.args.slice(-2).join(" ") === "build dev")).toBe(true);
+  expect(f.calls().some(c => c.name === "devcontainer" && c.args[0] === "build")).toBe(true);
   expect(f.calls().some(c => c.name === "docker" && c.args.slice(0, 2).join(" ") === "image tag")).toBe(false);
+  const beforeFailure = readFileSync(meta, "utf8");
   expect(f.cli(["rebuild", "app"], { FAKE_UP_FAIL: "1", FAKE_CUSTOM_BUILD: "1" }).code).toBe(1);
-  expect(readFileSync(meta, "utf8")).toBe(before);
+  expect(readFileSync(meta, "utf8")).toBe(beforeFailure);
   expect(existsSync(join(f.source, "README.md"))).toBe(true);
+});
+
+test("native lifecycle adopts legacy state once and reuses unchanged running or stopped boxes", () => {
+  const f = fixture(); expect(f.cli(["start", "app", "--no-agent"]).code).toBe(0);
+  const path = join(f.state, "projects/app/project.json"), meta = JSON.parse(readFileSync(path, "utf8"));
+  delete meta.configHash; writeFileSync(path, JSON.stringify(meta)); f.clear();
+  expect(f.cli(["start", "app", "--no-agent"], { FAKE_RUNNING: "1" }).code).toBe(0);
+  expect(f.calls().find(c => c.name === "devcontainer" && c.args[0] === "up").args).toContain("--remove-existing-container");
+  for (const extra of [{}, { FAKE_RUNNING: "1" }]) {
+    f.clear(); expect(f.cli(["start", "app", "--no-agent"], extra).code).toBe(0);
+    const up = f.calls().find(c => c.name === "devcontainer" && c.args[0] === "up");
+    if (extra.FAKE_RUNNING) expect(up).toBeUndefined();
+    else { expect(up.args).not.toContain("--remove-existing-container"); expect(up.args).toContain(`com.docker.compose.project=${meta.composeProject}`); }
+    expect(f.calls().some(c => c.args.some(value => value.includes("dev-ui _checkpoint")))).toBe(false);
+    expect(f.calls().filter(c => c.name === "docker" && c.args.includes("exec")).every(c => c.args.includes("flock"))).toBe(true);
+    expect(f.calls().some(c => c.name === "docker" && c.args.includes("up"))).toBe(false);
+    expect(f.calls().some(c => ["curl", "sh"].includes(c.name))).toBe(false);
+  }
+  const config = JSON.parse(readFileSync(join(f.state, "projects/app/devcontainer.json"), "utf8"));
+  expect(config).toMatchObject({ remoteUser: "node", updateRemoteUserUID: false, overrideCommand: false, userEnvProbe: "none", shutdownAction: "none" });
+  expect(config.runServices).toBeUndefined(); // Keep Compose's full project/profile behavior.
+  expect(statSync(join(f.state, "projects/app/compose.json")).mode & 0o777).toBe(0o600);
+});
+
+test("snapshot/config changes request native recreation and preserve metadata on unhealthy startup", () => {
+  const f = fixture(); expect(f.cli(["start", "app", "--no-agent"]).code).toBe(0);
+  const path = join(f.state, "projects/app/project.json"), before = readFileSync(path, "utf8");
+  const snapshot = join(f.dir, "snapshot"); mkdirSync(snapshot); f.clear();
+  expect(f.cli(["start", "app", "--no-agent"], { DEV_AGENT_CONFIG: snapshot, FAKE_HEALTH_FAIL: "1" }).code).toBe(1);
+  expect(f.calls().find(c => c.name === "devcontainer" && c.args[0] === "up").args).toContain("--remove-existing-container");
+  expect(readFileSync(path, "utf8")).toBe(before);
+  expect(f.calls().some(c => c.args.includes("dev-agent"))).toBe(false);
+  const fresh = fixture();
+  expect(fresh.cli(["start", "app"], { FAKE_MISSING: "1", FAKE_HEALTH_FAIL: "1" }).code).toBe(1);
+  const identity = JSON.parse(readFileSync(join(fresh.state, "projects/app/project.json"), "utf8"));
+  expect(identity.privateDefault).toBe(true); expect(identity.configHash).toBeUndefined();
+});
+
+test("native project builds stay out of the runtime Compose file and normal restarts", () => {
+  const f = fixture();
+  expect(f.cli(["start", "app", "--no-agent"], { FAKE_CUSTOM_BUILD: "1", FAKE_WORKSPACE_MISSING: "1" }).code).toBe(0);
+  const config = JSON.parse(readFileSync(join(f.state, "projects/app/compose.json"), "utf8"));
+  expect(config.services.dev.build).toBeUndefined();
+  f.clear(); expect(f.cli(["start", "app", "--no-agent"], { FAKE_CUSTOM_BUILD: "1" }).code).toBe(0);
+  expect(f.calls().some(c => c.name === "devcontainer" && c.args[0] === "build")).toBe(false);
+});
+
+test("host CLI uses its official installer only during explicit setup", () => {
+  const f = fixture();
+  expect(f.cli(["start", "app", "--no-agent"], { FAKE_CLI_VERSION: "0.88.0" }).err).toContain("run dev setup");
+  expect(existsSync(f.source)).toBe(false);
+  f.clear();
+  expect(f.cli(["setup"], { HOME: f.dir, FAKE_CLI_VERSION: "0.88.0" }).code).toBe(0);
+  expect(f.calls().find(c => c.name === "curl").args).toContain("https://raw.githubusercontent.com/devcontainers/cli/main/scripts/install.sh");
+  expect(f.calls().find(c => c.name === "sh").args.slice(1)).toEqual(["--version", "0.89.0", "--node-version", "24", "--prefix", join(f.dir, ".local/share/devcontainers")]);
+  f.clear(); expect(f.cli(["setup"], { HOME: f.dir }).code).toBe(0);
+  expect(f.calls().some(c => c.name === "curl" || c.name === "sh")).toBe(false);
+});
+
+test("host CLI lock updates do not invalidate the shared development image", () => {
+  const f = fixture(), snapshot = join(f.dir, "snapshot"); mkdirSync(snapshot);
+  const lock = join(snapshot, "tools.lock.json");
+  writeFileSync(lock, JSON.stringify({ devcontainerCli: { version: "0.89.0" } }));
+  expect(f.cli(["build"], { DEV_AGENT_CONFIG: snapshot }).code).toBe(0);
+  const image = f.calls().find(c => c.name === "docker" && c.args[0] === "build").args[2];
+  f.clear(); writeFileSync(lock, JSON.stringify({ devcontainerCli: { version: "0.90.0" } }));
+  expect(f.cli(["build"], { DEV_AGENT_CONFIG: snapshot }).code).toBe(0);
+  expect(f.calls().find(c => c.name === "docker" && c.args[0] === "build").args[2]).toBe(image);
+  expect(f.cli(["start", "app", "--no-agent"], { DEV_AGENT_CONFIG: snapshot }).err).toContain("0.90.0 required");
+});
+
+test("warm starts reconcile sidecars without replacing the running development container", () => {
+  const f = fixture(); expect(f.cli(["start", "app", "--no-agent"], { FAKE_SIDECAR: "1" }).code).toBe(0);
+  f.clear(); expect(f.cli(["start", "app", "--no-agent"], { FAKE_SIDECAR: "1", FAKE_RUNNING: "1" }).code).toBe(0);
+  expect(f.calls().some(c => c.name === "devcontainer" && c.args[0] === "up")).toBe(false);
+  const sidecars = f.calls().find(c => c.name === "docker" && c.args.includes("up"));
+  expect(sidecars.args.at(-1)).toBe("db");
+  expect(sidecars.args).toContain("--no-deps"); expect(sidecars.args).toContain("--wait");
 });
 
 test("concurrent startup fails promptly while process-owned lock is held", async () => {

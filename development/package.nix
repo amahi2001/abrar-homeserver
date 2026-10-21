@@ -16,6 +16,12 @@ pkgs.writeShellApplication {
     gh
     util-linux
     coreutils
+    bash
+    gnused
+    curl
+    gnutar
+    gzip
+    xz
   ];
   text = ''
     export DEV_ASSETS=${assets}

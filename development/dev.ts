@@ -10,6 +10,7 @@ const help = `Usage:
   dev stop PROJECT
   dev view PROJECT [browser|desktop] [--stop]
   dev list
+  dev setup
   dev build
   dev rebuild PROJECT
 
@@ -55,7 +56,7 @@ function atomic(path: string, data: string, mode = 0o600) {
   renameSync(temp, path);
 }
 
-type Metadata = { repo: string; privateDefault: boolean; source: string; composeProject: string; image: string; baseImage?: string };
+type Metadata = { repo: string; privateDefault: boolean; source: string; composeProject: string; image: string; baseImage?: string; configHash?: string };
 
 export function main(argv = process.argv.slice(2)) {
   const [command, rawProject, ...rest] = argv;
@@ -70,6 +71,31 @@ export function main(argv = process.argv.slice(2)) {
   const emptyConfig = join(stateRoot, "agent-config-empty");
   const toolsLock = join(configExport, "tools.lock.json");
   const toolVersions = existsSync(toolsLock) ? JSON.parse(readFileSync(toolsLock, "utf8")) : {};
+  const nativeVersion = toolVersions.devcontainerCli?.version ?? "0.89.0";
+  if (typeof nativeVersion !== "string" || !/^\d+\.\d+\.\d+$/.test(nativeVersion)) throw Error("Invalid locked Dev Containers CLI version");
+  const nativePrefix = join(homedir(), ".local/share/devcontainers");
+  const nativeCli = process.env.DEVCONTAINER_CLI || join(nativePrefix, "bin/devcontainer");
+  function nativeReady() {
+    if (!Bun.which(nativeCli)) throw Error(`Dev Containers CLI ${nativeVersion} required; run dev setup.`);
+    const version = run([nativeCli, "--version"], { allowFailure: true }).stdout;
+    if (version !== nativeVersion) throw Error(`Dev Containers CLI ${nativeVersion} required; run dev setup. Found: ${version || "not installed"}`);
+  }
+  if (command === "setup") {
+    const lock = join(homedir(), ".local/share/devcontainers.setup.lock");
+    mkdirSync(dirname(lock), { recursive: true, mode: 0o700 });
+    if (!process.env.DEV_SETUP_LOCKED) {
+      process.exitCode = run(["flock", lock, process.execPath, import.meta.path, "setup"], { inherit: true, allowFailure: true, env: { DEV_SETUP_LOCKED: "1" } }).code;
+      return;
+    }
+    if (existsSync(nativeCli) && run([nativeCli, "--version"], { allowFailure: true }).stdout === nativeVersion) { console.log(`Dev Containers CLI ${nativeVersion} ready.`); return; }
+    const installer = `${lock}.install.sh`;
+    try {
+      run(["curl", "-fsSL", "https://raw.githubusercontent.com/devcontainers/cli/main/scripts/install.sh", "-o", installer]);
+      run(["sh", installer, "--version", nativeVersion, "--node-version", "24", "--prefix", nativePrefix], { inherit: true });
+      nativeReady();
+    } finally { if (existsSync(installer)) unlinkSync(installer); }
+    return;
+  }
   const rtk = toolVersions.rtk;
   const playwrightVersion = toolVersions.playwrightCli?.version ?? "0.1.22";
   if (typeof playwrightVersion !== "string" || !/^\d+\.\d+\.\d+$/.test(playwrightVersion)) throw Error("Invalid locked Playwright CLI version");
@@ -134,38 +160,92 @@ export function main(argv = process.argv.slice(2)) {
   if (metadata && (metadata.source !== source || metadata.composeProject !== composeProject)) throw Error("Project location changed; restore its original DEV_ROOT and DEV_STATE_ROOT.");
 
   const git = (...args: string[]) => run(["git", "-C", source, ...args]).stdout;
-  function compose(args: string[], inherit = false, allowFailure = false) {
+  function environment() {
     if (!existsSync(configExport)) mkdirSync(emptyConfig, { recursive: true, mode: 0o700 });
-    const env = {
+    return {
       DEV_IMAGE: metadata?.image || workspaceImage, DEV_BASE_IMAGE: image, DEV_PROJECT: project, DEV_SOURCE: source,
       DEV_PROJECT_STATE: projectState, DEV_ACCOUNTS: accounts, DEV_CREDENTIALS: credentials,
       DEV_AGENT_CONFIG: existsSync(configExport) ? realpathSync(configExport) : emptyConfig,
       DEV_UID: String(process.getuid!()), DEV_GID: String(process.getgid!()),
       DEV_GIT_NAME: run(["git", "config", "--get", "user.name"], { allowFailure: true }).stdout || "Development Agent",
       DEV_GIT_EMAIL: run(["git", "config", "--get", "user.email"], { allowFailure: true }).stdout || "agent@localhost",
+      COMPOSE_PROJECT_NAME: composeProject,
     };
+  }
+  function compose(args: string[], inherit = false) {
     const files = ["-f", join(assets, "compose.yaml")];
     const override = join(source, ".dev/compose.yaml");
     if (existsSync(override)) files.push("-f", override);
-    return run(["docker", "compose", "--project-directory", source, "-p", composeProject, ...files, ...args], { env, inherit, allowFailure });
+    return run(["docker", "compose", "--project-directory", source, "-p", composeProject, ...files, ...args], { env: environment(), inherit });
+  }
+  const configPath = join(projectState, "devcontainer.json");
+  const nativeConfig = {
+    name: project, dockerComposeFile: "compose.json", service: "dev",
+    workspaceFolder: `/workspace/${project}`, remoteUser: "node", updateRemoteUserUID: false,
+    overrideCommand: false, userEnvProbe: "none", shutdownAction: "none",
+  };
+  function configure(config: any) {
+    atomic(join(projectState, "compose.json"), JSON.stringify(config, null, 2) + "\n");
+    atomic(configPath, JSON.stringify(nativeConfig, null, 2) + "\n");
+  }
+  function native(command: string, args: string[] = [], inherit = false, allowFailure = false) {
+    if (!existsSync(configPath)) configure(JSON.parse(compose(["config", "--format", "json"]).stdout));
+    const identity = command === "build" ? [] : ["--id-label", `com.docker.compose.project=${composeProject}`, "--id-label", "com.docker.compose.service=dev"];
+    return run([nativeCli, command, "--workspace-folder", source, "--config", configPath, "--user-data-folder", join(projectState, "devcontainers"), ...identity, ...args], { env: environment(), inherit, allowFailure });
+  }
+  function container() {
+    const ids = run(["docker", "ps", "-q", "--filter", `label=com.docker.compose.project=${composeProject}`, "--filter", "label=com.docker.compose.service=dev"]).stdout.split("\n").filter(Boolean);
+    if (ids.length > 1) throw Error("Multiple development containers found; reconcile the project before continuing.");
+    return ids[0];
   }
   function checkpointBrowser() {
-    if (!metadata || !compose(["ps", "--status", "running", "-q", "dev"]).stdout) return;
-    const exec = ["exec", "-T", "--user", `${process.getuid!()}:${process.getgid!()}`, "dev"];
-    // Old images have no browser tooling to checkpoint.
-    if (!compose([...exec, "test", "-x", "/usr/local/bin/dev-ui"], false, true).code) compose([...exec, "dev-ui", "_checkpoint"]);
+    if (!metadata || !container()) return;
+    // Old images have no browser tooling; transport/checkpoint errors must fail.
+    native("exec", ["bash", "-ec", "if [ -x /usr/local/bin/dev-ui ]; then dev-ui _checkpoint; fi"]);
+  }
+  function startContainer(force = false) {
+    const config = JSON.parse(compose(["config", "--format", "json"]).stdout);
+    const configHash = createHash("sha256").update(JSON.stringify(config)).update(JSON.stringify(nativeConfig)).digest("hex");
+    const recreate = force || metadata?.configHash !== configHash;
+    if (recreate) checkpointBrowser();
+    if (config.services.dev.build && (force || run(["docker", "image", "inspect", config.services.dev.image], { allowFailure: true }).code)) {
+      configure(config);
+      native("build");
+    }
+    // The project image was prepared once; ordinary starts must never rebuild it.
+    delete config.services.dev.build;
+    configure(config);
+    let id = container();
+    if (recreate || !id || run(["docker", "inspect", id, "--format", "{{.State.Health.Status}}"]).stdout !== "healthy") {
+      const result = native("up", recreate ? ["--remove-existing-container"] : []);
+      id = JSON.parse(result.stdout).containerId;
+      if (typeof id !== "string" || !id) throw Error("Dev Containers CLI returned no container ID");
+    }
+    // Native up skips Compose when dev is running; keep its sidecars running too.
+    const sidecars = Object.keys(config.services).filter(service => service !== "dev");
+    if (sidecars.length) run(["docker", "compose", "--project-directory", source, "-p", composeProject, "-f", join(projectState, "compose.json"), "up", "-d", "--no-build", "--no-deps", "--wait", ...sidecars], { env: environment() });
+    for (let i = 0; i < 300; i++) {
+      const state = JSON.parse(run(["docker", "inspect", id, "--format", "{{json .State}}"]).stdout);
+      if (state.Running && state.Health?.Status === "healthy") return configHash;
+      if (!state.Running || state.Health?.Status === "unhealthy") break;
+      Bun.sleepSync(100);
+    }
+    const logs = run(["docker", "logs", "--tail", "80", id], { allowFailure: true });
+    throw Error(`Container did not become healthy.\n${logs.stdout}\n${logs.stderr}`);
   }
 
   if (command === "view") {
     if (!metadata) throw Error("Project not initialized. Run dev start PROJECT --no-agent first.");
-    if (!compose(["ps", "--status", "running", "-q", "dev"]).stdout) throw Error("Project is not running. Run dev start PROJECT --no-agent first.");
+    const id = container();
+    if (!id) throw Error("Project is not running. Run dev start PROJECT --no-agent first.");
+    nativeReady();
     const port = viewer === "browser" ? "8931" : "6080";
-    const mapping = compose(["port", "dev", port]).stdout;
+    const mapping = run(["docker", "port", id, `${port}/tcp`]).stdout;
     const match = /^127\.0\.0\.1:(\d+)$/.exec(mapping);
     if (!match || Number(match[1]) < 1 || Number(match[1]) > 65535) throw Error(`Expected one host-loopback mapping for ${port}; found ${mapping || "none"}. Rebuild an idle box if viewer ports are missing.`);
     const target = process.env.DEV_SSH_TARGET || `${userInfo().username}@${hostname()}`;
     if (/[\r\n]/.test(target) || target.startsWith("-") || !target) throw Error("Invalid DEV_SSH_TARGET");
-    compose(["exec", "-T", "--user", `${process.getuid!()}:${process.getgid!()}`, "dev", "dev-ui", stopViewer ? "stop" : "start", viewer], true);
+    native("exec", ["dev-ui", stopViewer ? "stop" : "start", viewer], true);
     if (!stopViewer) {
       const published = match[1];
       const quoted = "'" + target.replaceAll("'", "'\\''") + "'";
@@ -177,12 +257,13 @@ export function main(argv = process.argv.slice(2)) {
 
   if (command === "shell") {
     if (!metadata) throw Error("Project not initialized. Run dev start PROJECT first.");
-    const tty = process.stdin.isTTY && process.stdout.isTTY ? [] : ["-T"];
-    const result = compose(["exec", ...tty, "--user", `${process.getuid!()}:${process.getgid!()}`, "dev", ...(agentArgs.length ? agentArgs : ["bash"])], true, true);
+    nativeReady();
+    const result = native("exec", agentArgs.length ? agentArgs : ["bash"], true, true);
     process.exitCode = result.code; return;
   }
   if (command === "stop") {
     if (!metadata) throw Error("Project not initialized.");
+    nativeReady();
     checkpointBrowser();
     compose(["stop"], true); return;
   }
@@ -197,9 +278,10 @@ export function main(argv = process.argv.slice(2)) {
     process.exitCode = child.code;
     return;
   }
+  nativeReady();
   if (metadata) {
-    const running = compose(["ps", "--status", "running", "-q", "dev"]).stdout;
-    if (running && compose(["exec", "-T", "--user", `${process.getuid!()}:${process.getgid!()}`, "dev", "flock", "-n", "/home/node/.agent-session.lock", "true"], false, true).code) throw Error("Agent active; finish its session before starting or rebuilding.");
+    const id = container();
+    if (id && run(["docker", "exec", "--user", `${process.getuid!()}:${process.getgid!()}`, id, "flock", "-n", "/home/node/.agent-session.lock", "true"], { allowFailure: true }).code) throw Error("Agent active; finish its session before starting or rebuilding.");
   }
   if (command === "rebuild") {
     if (!metadata) throw Error("Project not initialized.");
@@ -210,8 +292,7 @@ export function main(argv = process.argv.slice(2)) {
     try {
       const config = JSON.parse(compose(["config", "--format", "json"]).stdout);
       if (!config.services.dev.build) run(["docker", "image", "tag", image, workspaceImage]);
-      checkpointBrowser();
-      compose(["up", "-d", "--build", "--force-recreate", "--wait"], true);
+      metadata.configHash = startContainer(true);
     } catch (error) { metadata = previous; throw error; }
     atomic(metadataPath, JSON.stringify(metadata, null, 2) + "\n");
     console.log(`${project} rebuilt; source, home, caches, and account state preserved.`);
@@ -294,19 +375,16 @@ export function main(argv = process.argv.slice(2)) {
   if (!existingExcludes.includes("# dev runtime")) atomic(excludes, existingExcludes + "\n# dev runtime\n.env\n.env.*\n!.env.example\n.codex/\n.claude/\n.claude.json\nauth.json\nnode_modules/\n.venv/\n", 0o644);
   if (run(["docker", "image", "inspect", image], { allowFailure: true }).code) build();
   const workspaceExists = run(["docker", "image", "inspect", workspaceImage], { allowFailure: true }).code === 0;
-  metadata = { repo, privateDefault, source, composeProject, image: workspaceImage, baseImage: image };
-  if (!workspaceExists) {
-    if (existsSync(join(source, ".dev/compose.yaml")) && JSON.parse(compose(["config", "--format", "json"]).stdout).services.dev.build) compose(["build", "dev"], true);
-    else run(["docker", "image", "tag", image, workspaceImage]);
-  }
-  checkpointBrowser();
+  metadata = { ...metadata, repo, privateDefault, source, composeProject, image: workspaceImage, baseImage: image };
+  if (!workspaceExists && !JSON.parse(compose(["config", "--format", "json"]).stdout).services.dev.build) run(["docker", "image", "tag", image, workspaceImage]);
+  // Retain repository identity on failed first startup; readiness is committed below.
+  if (!existsSync(metadataPath)) atomic(metadataPath, JSON.stringify(metadata, null, 2) + "\n");
+  metadata.configHash = startContainer();
   atomic(metadataPath, JSON.stringify(metadata, null, 2) + "\n");
-  compose(["up", "-d", "--wait", "--no-build"], true);
   console.log(`${project} ready in ${((performance.now() - started) / 1000).toFixed(2)}s | ${repo} | ${git("branch", "--show-current")}`);
   console.log(`Source: ${source}\nPreview mappings: dev list | Shell: dev shell ${project}`);
   if (!noAgent) {
-    const tty = process.stdin.isTTY && process.stdout.isTTY ? [] : ["-T"];
-    process.exitCode = compose(["exec", ...tty, "--user", `${process.getuid!()}:${process.getgid!()}`, "dev", "dev-agent", agent, ...agentArgs], true, true).code;
+    process.exitCode = native("exec", ["dev-agent", agent, ...agentArgs], true, true).code;
   }
 }
 
