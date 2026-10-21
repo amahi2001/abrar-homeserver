@@ -54,6 +54,7 @@ inside bash -ec '
   test "$(git remote get-url probe)" = https://github.com/owner/repo.git
   git remote remove probe
   test -f "$CODEX_HOME/AGENTS.md"
+  rg -q "^@$CODEX_HOME/AGENTS.md$" "$CLAUDE_CONFIG_DIR/CLAUDE.md"
   test ! -S /var/run/docker.sock
   sudo -n true
   printf "source\n" > source-marker
@@ -106,6 +107,12 @@ docker rm "$one" >/dev/null
 start "$one" one home-one
 inside bash -ec 'test -s source-marker; test -s "$HOME/.cache/cache-marker"; test -s "$CLAUDE_CONFIG_DIR/persistence-marker"'
 if [ -n "$config" ]; then docker logs "$one" | rg -q 'Synced Codex \+ Claude \(0 files changed\)'; fi
+# Edits to the imported file must survive setup from a different project home.
+inside bash -ec 'printf "\nShared agent-learned rule.\n" >> "$CODEX_HOME/AGENTS.md"'
+docker stop "$two" >/dev/null
+docker start "$two" >/dev/null
+wait_ready "$two"
+docker exec --user "$(id -u):$(id -g)" "$two" bash -ec 'rg -q "Shared agent-learned rule" "$CODEX_HOME/AGENTS.md"; rg -q "^@$CODEX_HOME/AGENTS.md$" "$CLAUDE_CONFIG_DIR/CLAUDE.md"'
 # The noninteractive agent process must retain its lock while running.
 inside bash -ec 'flock -n "$HOME/.agent-session.lock" sleep 5' &
 lock_pid=$!
@@ -115,4 +122,4 @@ if inside flock -n /home/node/.agent-session.lock true; then
   exit 1
 fi
 wait "$lock_pid"
-echo 'Docker smoke checks passed: tools, skills, UID/GID, isolation, restart readiness, persistent source/home/accounts, and locking.'
+echo 'Docker smoke checks passed: tools, skills, shared instruction imports/edit persistence, UID/GID, isolation, restart readiness, persistent source/home/accounts, and locking.'

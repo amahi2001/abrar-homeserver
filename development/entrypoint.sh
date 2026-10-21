@@ -14,9 +14,17 @@ mkdir -p "$CODEX_HOME" "$CLAUDE_CONFIG_DIR"
 exec 9>"$CODEX_HOME/.dev-config.lock"
 flock 9
 mkdir -p "$CLAUDE_CONFIG_DIR/skills"
-if ! cmp -s /opt/dev/instructions.md "$CODEX_HOME/.dev-container-instructions.md" || [ ! -f "$CODEX_HOME/AGENTS.md" ] || [ ! -f "$CLAUDE_CONFIG_DIR/CLAUDE.md" ]; then
+# Seed once: shared account instructions may have been edited by either agent.
+if [ ! -f "$CODEX_HOME/AGENTS.md" ]; then
   install -m 600 /opt/dev/instructions.md "$CODEX_HOME/AGENTS.md"
-  install -m 600 /opt/dev/instructions.md "$CLAUDE_CONFIG_DIR/CLAUDE.md"
+fi
+# Remove only the old, image-owned preamble before personal sync migrates its block.
+if [ -f "$CLAUDE_CONFIG_DIR/CLAUDE.md" ] && [ -f "$CODEX_HOME/.dev-container-instructions.md" ]; then
+  bun -e 'const fs = require("node:fs"); const [path, marker] = process.argv.slice(1); const text = fs.readFileSync(path, "utf8"), base = fs.readFileSync(marker, "utf8"); if (text.startsWith(base)) fs.writeFileSync(path, text.slice(base.length), {mode: 0o600});' "$CLAUDE_CONFIG_DIR/CLAUDE.md" "$CODEX_HOME/.dev-container-instructions.md"
+fi
+if [ ! -s "$CLAUDE_CONFIG_DIR/CLAUDE.md" ]; then
+  printf '@%s/AGENTS.md\n\nEdit shared rules in the imported AGENTS.md.\n' "$CODEX_HOME" > "$CLAUDE_CONFIG_DIR/CLAUDE.md"
+  chmod 600 "$CLAUDE_CONFIG_DIR/CLAUDE.md"
 fi
 install -m 600 /opt/dev/instructions.md "$CODEX_HOME/.dev-container-instructions.md"
 if [ -f /opt/agent-config/sync.js ]; then

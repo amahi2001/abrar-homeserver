@@ -25,6 +25,14 @@ image's pinned Skills CLI without GitHub or dependency downloads. Shared account
 setup is serialized across projects. Host sync also adds container routing to
 global Codex/Claude instructions; restart host agents after syncing.
 
+Codex account `AGENTS.md` is the shared live instruction file. Claude account
+`CLAUDE.md` imports it, so shared edits belong in `AGENTS.md`; keep Claude-specific
+rules in its wrapper. Container setup seeds workspace rules only when `AGENTS.md`
+is missing and preserves subsequent edits. Personal sync preserves edited shared
+rules or reports a conflict when repo defaults changed too. Git/personal sync is
+still needed to distribute changes between the host profile and container profile
+or other machines; imports do not implement reverse Git synchronization.
+
 Set `DEV_AGENT_CONFIG=/absolute/snapshot/path` to use a different exported snapshot.
 Without an export, the image provides tools and workspace instructions; run the
 host sync to install your selected skills. Skills are not duplicated in Nix lists.
