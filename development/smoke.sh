@@ -13,6 +13,15 @@ trap cleanup EXIT
 mkdir -p "$work"/{one,two,home-one,home-two,accounts/codex,accounts/claude,credentials}
 printf 'fake-test-credential\n' > "$work/credentials/github-token"
 chmod 600 "$work/credentials/github-token"
+wait_ready() {
+  local name=$1
+  for _ in {1..50}; do
+    if docker exec --user "$(id -u):$(id -g)" "$name" test -f /tmp/dev-ready 2>/dev/null; then return; fi
+    sleep 0.1
+  done
+  docker logs "$name"
+  return 1
+}
 start() {
   local name=$1 project=$2 project_home=$3
   docker run -d --name "$name" --init \
@@ -25,12 +34,7 @@ start() {
     --mount "type=bind,src=$work/accounts/claude,dst=/agent/claude" \
     --mount "type=bind,src=$work/credentials,dst=/run/dev-credentials,readonly" \
     --workdir "/workspace/$project" "$image" >/dev/null
-  for _ in {1..50}; do
-    if docker exec --user "$(id -u):$(id -g)" "$name" test -f /tmp/dev-ready 2>/dev/null; then return; fi
-    sleep 0.1
-  done
-  docker logs "$name"
-  return 1
+  wait_ready "$name"
 }
 inside() { docker exec --user "$(id -u):$(id -g)" "$one" "$@"; }
 start "$one" one home-one
@@ -60,6 +64,29 @@ docker exec --user "$(id -u):$(id -g)" "$two" bash -ec '
   test ! -e "$HOME/.cache/cache-marker"
   test -f "$CLAUDE_CONFIG_DIR/persistence-marker"
 '
+# Pause setup on a restart of the same writable layer to detect a stale marker.
+docker exec -i --user 0 "$one" bash -ec 'cat > /usr/local/bin/install; chmod +x /usr/local/bin/install; touch /tmp/hold-setup' <<'EOF'
+#!/bin/bash
+if [ -e /tmp/hold-setup ]; then
+  touch /tmp/setup-paused
+  while [ -e /tmp/hold-setup ]; do sleep 0.05; done
+fi
+exec /usr/bin/install "$@"
+EOF
+docker stop "$one" >/dev/null
+docker start "$one" >/dev/null
+for _ in {1..50}; do
+  if inside test -f /tmp/setup-paused; then break; fi
+  sleep 0.1
+done
+inside test -f /tmp/setup-paused
+if inside test -e /tmp/dev-ready; then
+  echo 'Stale readiness marker visible during restart setup.' >&2
+  exit 1
+fi
+docker exec --user 0 "$one" rm /tmp/hold-setup
+wait_ready "$one"
+docker exec --user 0 "$one" rm /usr/local/bin/install /tmp/setup-paused
 docker stop "$one" >/dev/null
 docker rm "$one" >/dev/null
 start "$one" one home-one
@@ -73,4 +100,4 @@ if inside flock -n /home/node/.agent-session.lock true; then
   exit 1
 fi
 wait "$lock_pid"
-echo 'Docker smoke checks passed: tools, skills, UID/GID, isolation, persistent source/home/accounts, and locking.'
+echo 'Docker smoke checks passed: tools, skills, UID/GID, isolation, restart readiness, persistent source/home/accounts, and locking.'

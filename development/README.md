@@ -54,12 +54,12 @@ Agents are instructed to finish automatically with:
 dev-finish "Describe the completed change" --check "bun test" -- src/app.ts src/app.test.ts
 ```
 
-The helper runs the check first, verifies the branch is unchanged, stages only
-supplied paths, rejects common credential/runtime paths and preexisting staged
-work, commits, and pushes the task branch. Failed checks do not stage files;
-failed pushes retain the commit. Rerun the same command to retry a pending push,
-even when the files are unchanged. SSH-form GitHub remotes use the same HTTPS
-credentials without mounting host SSH keys.
+The helper runs the check first, verifies the branch is unchanged, rejects files
+staged by the check, stages only supplied paths, rejects common credential/runtime
+paths and preexisting staged work, commits, and pushes the task branch. Failed
+checks do not stage files; failed pushes retain the commit. Rerun the same command
+to retry a pending push, even when the files are unchanged or were deleted.
+SSH-form GitHub remotes use the same HTTPS credentials without mounting host SSH keys.
 Agent compliance with workflow instructions is behavioral, not a GitHub branch
 protection rule or a comprehensive secret scanner. Force pushes and merges are
 not part of the workflow.
@@ -150,6 +150,8 @@ Stopped containers, tagged images, volumes, and build caches are preserved.
 nix build /etc/nixos#dev --out-link ~/.local/state/dev-package
 nix build /etc/nixos#checks.x86_64-linux.development --no-link -L
 ```
+
+The development check allows 30 seconds per test for slower machines.
 
 The initial targeted rollout uses `~/.local/bin/dev` linked to that GC-rooted
 package, plus only this module's tmpfiles and Docker-prune drop-in. This avoids

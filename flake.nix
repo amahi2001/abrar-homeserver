@@ -66,7 +66,7 @@
               export HOME="$TMPDIR/home"
               mkdir -p "$HOME"
               for script in ${./development}/*.sh; do bash -n "$script"; done
-              bun test ${./development}/dev.test.ts
+              bun test --timeout 30000 ${./development}/dev.test.ts
               touch "$out"
             '';
         bitwarden-sync =

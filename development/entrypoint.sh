@@ -1,6 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 if [ "$(id -u)" = 0 ]; then
+  rm -f /tmp/dev-ready
   # Only change container account metadata; host project files keep their owner.
   if [ "$(id -g node)" != "$DEV_GID" ]; then groupmod -o -g "$DEV_GID" node; fi
   if [ "$(id -u node)" != "$DEV_UID" ]; then usermod -o -u "$DEV_UID" node; fi

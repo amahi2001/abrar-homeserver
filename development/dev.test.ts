@@ -188,6 +188,7 @@ test("dev-finish blocks failed checks, wrong branches, secrets, and unrelated st
   writeFileSync(join(f.source, "task.txt"), "work");
   expect(finish("exit 1", ["task.txt"]).exitCode).toBe(1);
   expect(f.git("diff", "--cached", "--name-only")).toBe("");
+  expect(finish("true", [":(invalid)task.txt"]).exitCode).not.toBe(0);
   f.git("add", "task.txt"); expect(finish("true", ["task.txt"]).exitCode).toBe(1); f.git("reset", "--", "task.txt");
   writeFileSync(join(f.source, "auth.json"), "secret");
   expect(finish("true", ["auth.json"]).exitCode).toBe(1); f.git("reset", "--", "auth.json");
@@ -246,4 +247,32 @@ test("dev-finish aborts if its check changes the task branch", () => {
   expect(r.exitCode).toBe(1);
   expect(f.git("rev-parse", "main")).toBe(initial);
   expect(f.git("diff", "--cached", "--name-only")).toBe("");
+});
+
+test("dev-finish retries a deleted path alongside unchanged paths without including unrelated files", () => {
+  const f = fixture(); expect(f.cli(["start", "app", "--no-agent"]).code).toBe(0);
+  writeFileSync(join(f.source, "old task.txt"), "remove this");
+  f.git("add", "--", "old task.txt"); f.git("commit", "-m", "Add removable file");
+  rmSync(join(f.source, "old task.txt"));
+  const args = ["bash", join(import.meta.dir, "dev-finish.sh"), "Remove old task", "--check", "test ! -e 'old task.txt'", "--", "old task.txt", "README.md"];
+  expect(Bun.spawnSync(args, { cwd: f.source, env: { ...f.env, FAKE_PUSH_FAIL: "1" } }).exitCode).toBe(1);
+  const commit = f.git("rev-parse", "HEAD");
+  expect(f.git("ls-files")).not.toContain("old task.txt");
+  writeFileSync(join(f.source, "unrelated.txt"), "not mine"); f.clear();
+  expect(Bun.spawnSync(args, { cwd: f.source, env: f.env }).exitCode).toBe(0);
+  expect(f.git("rev-parse", "HEAD")).toBe(commit);
+  expect(f.git("ls-files")).not.toContain("unrelated.txt");
+  expect(f.calls().some(c => c.name === "git" && c.args.includes("push"))).toBe(true);
+});
+
+test("dev-finish rejects and preserves files staged by the check", () => {
+  const f = fixture(); expect(f.cli(["start", "app", "--no-agent"]).code).toBe(0);
+  const initial = f.git("rev-parse", "HEAD");
+  writeFileSync(join(f.source, "task.txt"), "my task");
+  writeFileSync(join(f.source, "unrelated.txt"), "not mine"); f.clear();
+  const r = Bun.spawnSync(["bash", join(import.meta.dir, "dev-finish.sh"), "Task change", "--check", "git add unrelated.txt", "--", "task.txt"], { cwd: f.source, env: f.env });
+  expect(r.exitCode).toBe(1);
+  expect(f.git("rev-parse", "HEAD")).toBe(initial);
+  expect(f.git("diff", "--cached", "--name-only")).toBe("unrelated.txt");
+  expect(f.calls().some(c => c.name === "git" && c.args.includes("push"))).toBe(false);
 });

@@ -16,7 +16,12 @@ case "$branch" in agent/*) ;; *) echo 'Refusing to publish outside an agent/* ta
 git diff --cached --quiet || { echo 'Index already has staged changes; review them before dev-finish.' >&2; exit 1; }
 bash -o pipefail -c "$check"
 [ "$(git symbolic-ref --short HEAD)" = "$branch" ] || { echo 'Check changed the branch; refusing to stage or commit.' >&2; exit 1; }
-git add -- "$@"
+git diff --cached --quiet || { echo 'Check staged changes; review the index before dev-finish.' >&2; exit 1; }
+# Already-committed deletions no longer match git add, but their push can be retried.
+selected_changes=$(git status --porcelain --ignored -- "$@")
+if [ -n "$selected_changes" ]; then
+  git add -- "$@"
+fi
 while IFS= read -r -d '' path; do
   case "/$path" in
     */.env|*/.env.*|*/auth.json|*/.credentials.json|*/hosts.yml|*/.claude.json|*/.codex/*|*/.claude/*|*/node_modules/*|*/.venv/*|*.pem|*.key|*.secret)
