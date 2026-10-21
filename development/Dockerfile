@@ -21,17 +21,31 @@ RUN curl -fsSL "$RTK_INSTALLER" -o /tmp/rtk-install.sh \
     && if [ -n "$RTK_INSTALLER_SHA256" ]; then echo "$RTK_INSTALLER_SHA256  /tmp/rtk-install.sh" | sha256sum -c -; fi \
     && RTK_INSTALL_DIR=/usr/local/bin sh /tmp/rtk-install.sh \
     && rm /tmp/rtk-install.sh
-COPY instructions.md /opt/dev/instructions.md
+ARG PLAYWRIGHT_CLI_VERSION=0.1.22
+ENV PLAYWRIGHT_BROWSERS_PATH=/opt/playwright-browsers
+RUN npm install -g @playwright/cli@${PLAYWRIGHT_CLI_VERSION} \
+    && playwright-cli install-browser --with-deps chromium \
+    && chmod -R a+rX /opt/playwright-browsers \
+    && apt-get update && apt-get install -y --no-install-recommends \
+       xvfb openbox dbus-x11 x11vnc novnc websockify xdotool scrot xterm x11-utils \
+    && rm -rf /var/lib/apt/lists/*
+COPY instructions.md ui.md /opt/dev/
+COPY browser-state.cjs /opt/dev/
+COPY playwright-cli.sh /opt/dev/bin/playwright-cli
+COPY dev-ui.sh /usr/local/lib/dev/dev-ui.sh
 COPY entrypoint.sh agent-session.sh dev-finish.sh gh.sh /usr/local/lib/dev/
 RUN chmod +x /usr/local/lib/dev/*.sh \
+    && chmod +x /opt/dev/bin/playwright-cli \
+    && echo 'export PATH="/opt/dev/bin:$PATH"' > /etc/profile.d/dev-ui.sh \
     && ln -s /usr/local/lib/dev/dev-finish.sh /usr/local/bin/dev-finish \
     && ln -s /usr/local/lib/dev/agent-session.sh /usr/local/bin/dev-agent \
+    && ln -s /usr/local/lib/dev/dev-ui.sh /usr/local/bin/dev-ui \
     && ln -s /usr/local/lib/dev/gh.sh /usr/local/bin/gh \
     && echo 'node ALL=(root) NOPASSWD: ALL' > /etc/sudoers.d/dev \
     && chmod 440 /etc/sudoers.d/dev
 ENV HOME=/home/node CODEX_HOME=/agent/codex CLAUDE_CONFIG_DIR=/agent/claude \
     DISABLE_AUTOUPDATER=1 DEV_CONTAINER=1 PONYTAIL_DEFAULT_MODE=full \
-    PATH=/home/node/.local/bin:/home/node/.bun/bin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+    PATH=/opt/dev/bin:/home/node/.local/bin:/home/node/.bun/bin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 WORKDIR /workspace
 ENTRYPOINT ["/usr/local/lib/dev/entrypoint.sh"]
 CMD ["sleep", "infinity"]

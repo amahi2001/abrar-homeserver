@@ -15,7 +15,7 @@ function fixture() {
   mkdirSync(bin);
   const assets = join(dir, "assets");
   mkdirSync(join(assets, "skills/ponytail"), { recursive: true });
-  for (const file of ["Dockerfile", "entrypoint.sh", "agent-session.sh", "dev-finish.sh", "gh.sh", "instructions.md"]) copyFileSync(join(import.meta.dir, file), join(assets, file));
+  for (const file of ["Dockerfile", "entrypoint.sh", "agent-session.sh", "dev-finish.sh", "gh.sh", "instructions.md", "dev-ui.sh", "ui.md", "playwright-cli.sh", "browser-state.cjs"]) copyFileSync(join(import.meta.dir, file), join(assets, file));
   writeFileSync(join(assets, "skills/ponytail/SKILL.md"), "test fixture skill");
   mkdirSync(join(dir, "host-codex"));
   writeFileSync(join(dir, "host-codex/auth.json"), '{"test":"fake-codex-credential"}');
@@ -50,6 +50,8 @@ if(name==='docker') {
  if(a.includes('inspect')&&process.env.FAKE_WORKSPACE_MISSING&&a.at(-1).includes('-dev-'))fail('workspace image absent');
  if(a.includes('up')&&process.env.FAKE_UP_FAIL)fail('container unhealthy');
  if(a.includes('ps')&&a.includes('-q')&&process.env.FAKE_RUNNING)console.log('container-id');
+ if(a.includes('port'))console.log(process.env.FAKE_PORT || '127.0.0.1:43219');
+ if(a.includes('dev-ui')&&process.env.FAKE_UI_FAIL)fail('viewer failed');
  if(a.includes('flock')&&process.env.FAKE_AGENT_ACTIVE)fail('locked');
  process.exit(0);
 }
@@ -85,6 +87,75 @@ test("rejects path traversal, URLs, shell strings, and malformed project/reposit
   for (const bad of ["https://github.com/a/b", "../repo", "a/..", "a/b/c", "a/b;foo"]) expect(() => repository(bad)).toThrow();
   expect(githubRemote("git@github.com:owner/repo.git")).toBe("owner/repo");
   expect(githubRemote("https://github.com/owner/repo.git")).toBe("owner/repo");
+});
+
+test("view validates arguments, initialized/running state and loopback mappings", () => {
+  const f = fixture();
+  for (const args of [["browser", "extra"], ["--agent", "claude"], ["desktop", "--stop", "--stop"], ["--"], ["typo"]]) {
+    expect(f.cli(["view", "app", ...args]).err).toContain("Usage: dev view");
+  }
+  expect(f.cli(["view", "app"]).err).toContain("not initialized");
+  expect(f.cli(["start", "app", "--no-agent"]).code).toBe(0);
+  expect(f.cli(["view", "app"]).err).toContain("not running");
+  for (const port of ["0.0.0.0:43219", "[::]:43219", "127.0.0.1:0", "127.0.0.1:65536", "127.0.0.1:1\n0.0.0.0:1"]) {
+    f.clear();
+    expect(f.cli(["view", "app"], { FAKE_RUNNING: "1", FAKE_PORT: port }).code).toBe(1);
+    expect(f.calls().some(c => c.args.includes("dev-ui"))).toBe(false);
+  }
+});
+
+test("view discovers the published port and controls services without changing checkout or recreating", () => {
+  const f = fixture(); expect(f.cli(["start", "app", "--no-agent"]).code).toBe(0);
+  const branch = f.git("branch", "--show-current");
+  f.clear();
+  const r = f.cli(["view", "app"], { FAKE_RUNNING: "1", FAKE_AGENT_ACTIVE: "1", DEV_SSH_TARGET: "me@server" });
+  expect(r.code).toBe(0);
+  expect(r.out).toContain("http://127.0.0.1:43219/");
+  expect(r.out).toContain("ssh -N -L 43219:127.0.0.1:43219 'me@server'");
+  expect(f.calls().some(c => c.args.slice(-3).join(" ") === "dev-ui start browser")).toBe(true);
+  expect(f.calls().some(c => c.args.includes("up") || c.args.includes("flock") || c.args.includes("switch"))).toBe(false);
+  f.clear();
+  expect(f.cli(["view", "app", "desktop", "--stop"], { FAKE_RUNNING: "1" }).code).toBe(0);
+  expect(f.calls().some(c => c.args.slice(-3).join(" ") === "dev-ui stop desktop")).toBe(true);
+  expect(f.calls().some(c => c.args.slice(-3).join(" ") === "port dev 6080")).toBe(true);
+  expect(f.cli(["view", "app", "desktop"], { FAKE_RUNNING: "1", FAKE_UI_FAIL: "1" }).code).toBe(1);
+  expect(f.git("branch", "--show-current")).toBe(branch);
+});
+
+test("Playwright lock versions change the image and missing fields retain the pinned default", () => {
+  const f = fixture(), snapshot = join(f.dir, "snapshot"); mkdirSync(snapshot);
+  const lock = join(snapshot, "tools.lock.json");
+  writeFileSync(lock, "{}");
+  expect(f.cli(["build"], { DEV_AGENT_CONFIG: snapshot }).code).toBe(0);
+  const first = f.calls().find(c => c.args[0] === "build").args;
+  expect(first).toContain("PLAYWRIGHT_CLI_VERSION=0.1.22");
+  f.clear(); writeFileSync(lock, JSON.stringify({ playwrightCli: { version: "0.1.23" } }));
+  expect(f.cli(["build"], { DEV_AGENT_CONFIG: snapshot }).code).toBe(0);
+  const second = f.calls().find(c => c.args[0] === "build").args;
+  expect(second).toContain("PLAYWRIGHT_CLI_VERSION=0.1.23");
+  expect(first[2]).not.toBe(second[2]);
+  writeFileSync(lock, JSON.stringify({ playwrightCli: { version: "latest" } }));
+  expect(f.cli(["build"], { DEV_AGENT_CONFIG: snapshot }).err).toContain("Invalid locked Playwright");
+});
+
+test("shared Compose publishes both viewers only to loopback and keeps VNC internal", () => {
+  const compose = readFileSync(join(import.meta.dir, "compose.yaml"), "utf8");
+  expect(compose).toContain('"127.0.0.1::8931"');
+  expect(compose).toContain('"127.0.0.1::6080"');
+  expect(compose).not.toContain("5900");
+});
+
+test("failed browser checkpoint blocks stop/recreation and preserves project metadata", () => {
+  const f = fixture(); expect(f.cli(["start", "app", "--no-agent"]).code).toBe(0);
+  const path = join(f.state, "projects/app/project.json"), before = readFileSync(path, "utf8");
+  for (const command of ["stop", "rebuild", "start"]) {
+    f.clear();
+    const result = f.cli([command, "app", ...(command === "start" ? ["--no-agent"] : [])], { FAKE_RUNNING: "1", FAKE_UI_FAIL: "1" });
+    expect(result.code).toBe(1);
+    expect(f.calls().some(c => c.args.slice(-2).join(" ") === "dev-ui _checkpoint")).toBe(true);
+    expect(f.calls().some(c => c.args.includes("up") || c.args.at(-1) === "stop")).toBe(false);
+    expect(readFileSync(path, "utf8")).toBe(before);
+  }
 });
 
 test("snapshot changes resolve to new mount paths without building images", () => {
@@ -286,6 +357,7 @@ test("launcher holds the project lock through the agent session while shell and 
   expect(f.cli(["start", "app", "--task", "overlap", "--no-agent"]).code).toBe(1);
   expect(f.cli(["rebuild", "app"]).code).toBe(1);
   expect(f.cli(["shell", "app", "--", "true"]).code).toBe(0);
+  expect(f.cli(["view", "app"], { FAKE_RUNNING: "1" }).code).toBe(0);
   expect(f.cli(["stop", "app"]).code).toBe(0);
   expect(f.git("branch", "--show-current")).toBe(branch);
   expect(await child.exited).toBe(0);

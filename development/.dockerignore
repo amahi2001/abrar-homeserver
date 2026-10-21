@@ -6,3 +6,7 @@
 !agent-session.sh
 !dev-finish.sh
 !gh.sh
+!ui.md
+!dev-ui.sh
+!playwright-cli.sh
+!browser-state.cjs

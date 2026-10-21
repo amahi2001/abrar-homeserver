@@ -1,13 +1,14 @@
 #!/usr/bin/env bun
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync, chmodSync, copyFileSync, readdirSync, lstatSync, unlinkSync, realpathSync } from "node:fs";
-import { homedir } from "node:os";
+import { homedir, hostname, userInfo } from "node:os";
 import { join, resolve, dirname } from "node:path";
 
 const help = `Usage:
   dev start PROJECT [--agent codex|claude] [--repo OWNER/REPO] [--task NAME] [--no-agent] [-- agent arguments]
   dev shell PROJECT [-- command arguments]
   dev stop PROJECT
+  dev view PROJECT [browser|desktop] [--stop]
   dev list
   dev build
   dev rebuild PROJECT
@@ -68,12 +69,16 @@ export function main(argv = process.argv.slice(2)) {
   if (process.env.DEV_AGENT_CONFIG && !existsSync(configExport)) throw Error(`Agent config snapshot not found: ${configExport}`);
   const emptyConfig = join(stateRoot, "agent-config-empty");
   const toolsLock = join(configExport, "tools.lock.json");
-  const rtk = existsSync(toolsLock) ? JSON.parse(readFileSync(toolsLock, "utf8")).rtk : undefined;
+  const toolVersions = existsSync(toolsLock) ? JSON.parse(readFileSync(toolsLock, "utf8")) : {};
+  const rtk = toolVersions.rtk;
+  const playwrightVersion = toolVersions.playwrightCli?.version ?? "0.1.22";
+  if (typeof playwrightVersion !== "string" || !/^\d+\.\d+\.\d+$/.test(playwrightVersion)) throw Error("Invalid locked Playwright CLI version");
   const personalPackage = join(configExport, "package.json");
   const skillsVersion = existsSync(personalPackage) ? JSON.parse(readFileSync(personalPackage, "utf8")).dependencies.skills : undefined;
   const fingerprint = createHash("sha256");
   if (rtk) fingerprint.update(JSON.stringify(rtk));
   if (skillsVersion) fingerprint.update(skillsVersion);
+  fingerprint.update(playwrightVersion);
   function hashFiles(dir: string) {
     for (const entry of readdirSync(dir, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
       const path = join(dir, entry.name);
@@ -81,26 +86,34 @@ export function main(argv = process.argv.slice(2)) {
       else if (entry.isFile()) { fingerprint.update(path.slice(assets.length)); fingerprint.update(readFileSync(path)); }
     }
   }
-  for (const file of ["Dockerfile", "entrypoint.sh", "agent-session.sh", "dev-finish.sh", "gh.sh", "instructions.md"]) fingerprint.update(readFileSync(join(assets, file)));
+  for (const file of ["Dockerfile", "entrypoint.sh", "agent-session.sh", "dev-finish.sh", "gh.sh", "instructions.md", "dev-ui.sh", "ui.md", "playwright-cli.sh", "browser-state.cjs"]) fingerprint.update(readFileSync(join(assets, file)));
   if (existsSync(join(assets, "skills"))) hashFiles(join(assets, "skills"));
   const image = `buildfleet-dev:${fingerprint.digest("hex").slice(0, 16)}`;
 
   function build() {
-    const args = ["docker", "build", "--tag", image];
+    const args = ["docker", "build", "--tag", image, "--build-arg", `PLAYWRIGHT_CLI_VERSION=${playwrightVersion}`];
     if (rtk) args.push("--build-arg", `RTK_VERSION=v${rtk.version.replace(/^v/, "")}`, "--build-arg", `RTK_INSTALLER=${rtk.installer}`, "--build-arg", `RTK_INSTALLER_SHA256=${rtk.installerSha256}`);
     if (skillsVersion) args.push("--build-arg", `SKILLS_VERSION=${skillsVersion}`);
     run([...args, assets], { inherit: true });
   }
   if (command === "build") { build(); return; }
   if (command === "list") {
+    console.log("Viewer mappings: browser = 8931/tcp | desktop = 6080/tcp (SSH tunnel required)");
     run(["docker", "ps", "-a", "--filter", "label=dev.managed=true", "--format", "table {{.Label \"dev.project\"}}\t{{.Status}}\t{{.Ports}}"], { inherit: true });
     return;
   }
-  if (!["start", "shell", "stop", "rebuild"].includes(command)) throw Error(`Unknown command: ${command}\n${help}`);
+  if (!["start", "shell", "stop", "rebuild", "view"].includes(command)) throw Error(`Unknown command: ${command}\n${help}`);
   const project = projectName(rawProject || "");
   let agent = "codex", repoOption: string | undefined, task: string | undefined, noAgent = false;
   let agentArgs: string[] = [];
-  for (let i = 0; i < rest.length; i++) {
+  let viewer = "browser", stopViewer = false;
+  if (command === "view") {
+    const positional = rest.filter(a => a !== "--stop");
+    if (positional.length > 1 || (positional.length && !["browser", "desktop"].includes(positional[0])) || rest.filter(a => a === "--stop").length > 1) throw Error("Usage: dev view PROJECT [browser|desktop] [--stop]");
+    viewer = positional[0] || "browser";
+    stopViewer = rest.includes("--stop");
+  }
+  for (let i = 0; command !== "view" && i < rest.length; i++) {
     const arg = rest[i];
     if (arg === "--") { agentArgs = rest.slice(i + 1); break; }
     if (arg === "--agent") agent = rest[++i];
@@ -136,6 +149,31 @@ export function main(argv = process.argv.slice(2)) {
     if (existsSync(override)) files.push("-f", override);
     return run(["docker", "compose", "--project-directory", source, "-p", composeProject, ...files, ...args], { env, inherit, allowFailure });
   }
+  function checkpointBrowser() {
+    if (!metadata || !compose(["ps", "--status", "running", "-q", "dev"]).stdout) return;
+    const exec = ["exec", "-T", "--user", `${process.getuid!()}:${process.getgid!()}`, "dev"];
+    // Old images have no browser tooling to checkpoint.
+    if (!compose([...exec, "test", "-x", "/usr/local/bin/dev-ui"], false, true).code) compose([...exec, "dev-ui", "_checkpoint"]);
+  }
+
+  if (command === "view") {
+    if (!metadata) throw Error("Project not initialized. Run dev start PROJECT --no-agent first.");
+    if (!compose(["ps", "--status", "running", "-q", "dev"]).stdout) throw Error("Project is not running. Run dev start PROJECT --no-agent first.");
+    const port = viewer === "browser" ? "8931" : "6080";
+    const mapping = compose(["port", "dev", port]).stdout;
+    const match = /^127\.0\.0\.1:(\d+)$/.exec(mapping);
+    if (!match || Number(match[1]) < 1 || Number(match[1]) > 65535) throw Error(`Expected one host-loopback mapping for ${port}; found ${mapping || "none"}. Rebuild an idle box if viewer ports are missing.`);
+    const target = process.env.DEV_SSH_TARGET || `${userInfo().username}@${hostname()}`;
+    if (/[\r\n]/.test(target) || target.startsWith("-") || !target) throw Error("Invalid DEV_SSH_TARGET");
+    compose(["exec", "-T", "--user", `${process.getuid!()}:${process.getgid!()}`, "dev", "dev-ui", stopViewer ? "stop" : "start", viewer], true);
+    if (!stopViewer) {
+      const published = match[1];
+      const quoted = "'" + target.replaceAll("'", "'\\''") + "'";
+      console.log(`${viewer}: http://127.0.0.1:${published}/${viewer === "desktop" ? "vnc.html?autoconnect=1&resize=remote" : ""}`);
+      console.log(`On your computer: ssh -N -L ${published}:127.0.0.1:${published} ${quoted}`);
+    }
+    return;
+  }
 
   if (command === "shell") {
     if (!metadata) throw Error("Project not initialized. Run dev start PROJECT first.");
@@ -145,6 +183,7 @@ export function main(argv = process.argv.slice(2)) {
   }
   if (command === "stop") {
     if (!metadata) throw Error("Project not initialized.");
+    checkpointBrowser();
     compose(["stop"], true); return;
   }
 
@@ -171,6 +210,7 @@ export function main(argv = process.argv.slice(2)) {
     try {
       const config = JSON.parse(compose(["config", "--format", "json"]).stdout);
       if (!config.services.dev.build) run(["docker", "image", "tag", image, workspaceImage]);
+      checkpointBrowser();
       compose(["up", "-d", "--build", "--force-recreate", "--wait"], true);
     } catch (error) { metadata = previous; throw error; }
     atomic(metadataPath, JSON.stringify(metadata, null, 2) + "\n");
@@ -259,6 +299,7 @@ export function main(argv = process.argv.slice(2)) {
     if (existsSync(join(source, ".dev/compose.yaml")) && JSON.parse(compose(["config", "--format", "json"]).stdout).services.dev.build) compose(["build", "dev"], true);
     else run(["docker", "image", "tag", image, workspaceImage]);
   }
+  checkpointBrowser();
   atomic(metadataPath, JSON.stringify(metadata, null, 2) + "\n");
   compose(["up", "-d", "--wait", "--no-build"], true);
   console.log(`${project} ready in ${((performance.now() - started) / 1000).toFixed(2)}s | ${repo} | ${git("branch", "--show-current")}`);

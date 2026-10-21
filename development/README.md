@@ -139,7 +139,7 @@ dev rebuild myproject
 project container, retaining bind-mounted source, home, caches, and account state.
 It refuses while an agent session holds the project lock. Ordinary `start` uses
 the cached image without pulling or installing tools. Base image digest and
-Agent/Bun/uv versions are pinned; RTK and Skills CLI follow the personal config
+Agent/Bun/uv versions are pinned; RTK, Playwright CLI and Skills CLI follow the personal config
 lockfiles when a snapshot is present. Changed tool locks select a new image so
 updates are built once and reused across projects. Debian packages resolve at explicit image
 build time. Both x86_64 Linux and the server's existing Docker daemon are required.
@@ -153,6 +153,58 @@ ssh -L 3000:127.0.0.1:32768 buildfleet@buildfleet-server.tailcb7cdb.ts.net
 
 App servers must bind `0.0.0.0` inside the container. No new public ports are
 opened. Each project gets a separate Compose network and separate home/cache.
+
+### Browser automation and optional Linux desktop
+
+```bash
+dev view myproject                  # upstream Playwright dashboard
+dev view myproject desktop          # noVNC desktop
+dev view myproject desktop --stop
+dev shell myproject -- playwright-cli open http://127.0.0.1:3000
+dev shell myproject -- dev-ui run -- xterm
+dev shell myproject -- dev-ui screenshot
+```
+
+`view` requires an initialized, running box. It works during an agent session,
+does not change Git branches or recreate containers, and prints the actual URL
+and SSH forwarding command. Set `DEV_SSH_TARGET=user@tailnet-host` to override the
+default current user/hostname. On your computer run the printed tunnel command,
+then open the printed URL. Ports 8931 (browser) and 6080 (desktop) map to random
+host-loopback ports; VNC port 5900 is never published.
+
+The cached image includes Playwright CLI 0.1.22 (overridden by
+`tools.lock.json`'s `playwrightCli.version`), matching Chromium and its dependencies,
+and Xvfb/Openbox/D-Bus/x11vnc/noVNC/xdotool/scrot/xterm. Installation follows
+[upstream](https://github.com/microsoft/playwright-cli): npm plus
+`playwright-cli install-browser --with-deps chromium`. The native skill installer
+owns `$HOME/.agents/skills/playwright-cli`, linked into Claude's configured directory.
+It runs once per project home/version and needs no network or browser download.
+
+Browser and desktop processes remain stopped until requested. The browser uses
+headless Chromium, the project name as its default session, and a persistent
+profile/artifacts in `$HOME/.local/share/dev-ui/`. The home config is seeded once;
+project Playwright configs are preserved. Starting the browser viewer preserves
+open tabs; stopping it leaves browser sessions open. `playwright-cli close` closes
+the current browser. Desktop rendering uses software on display :99 at 1440x900.
+Running windows do not survive desktop stop/container recreation; saved files do.
+Both agents read `/opt/dev/ui.md` through their shared instruction reference.
+
+Inside a box use `dev-ui start|stop|status browser|desktop`, `dev-ui run -- COMMAND`,
+or `dev-ui screenshot [FILE]`. Runtime locks/PIDs/logs stay in `/tmp/dev-ui-UID`;
+profiles/screenshots/traces persist in the project home, separate from shared
+agent authentication. UI failures report logs and release their control lock.
+No PinchTab, extra MCP/model API, GPU passthrough or macOS/Windows-native support.
+
+The pinned CLI's close path was observed force-killing Chromium before recent
+cookies flush. An image-owned shim in `/opt/dev/bin` checkpoints the default
+project session with native `state-save` before normal closure; the launcher does
+the same before stop/recreation. The supported `browser.initPage` hook restores
+that state on a new session. The npm-owned executable and skill remain untouched.
+Snapshots are mode 600 under the project home. Custom named profiles/configs that
+replace `browser.initPage` must manage their own state with native state-save/load,
+or include `/opt/dev/browser-state.cjs` in their hook list. Abrupt host/container
+kills can lose changes since the last checkpoint. Recheck this workaround when
+upgrading the CLI; remove it once the shutdown regression test passes without it.
 
 For project databases or extra runtimes, create `.dev/compose.yaml` in the repo.
 It is merged with the shared Compose file, using the repository as the base
@@ -204,8 +256,38 @@ An offline Docker smoke check can test the defaults or a personal snapshot:
 ```bash
 bash development/smoke.sh IMAGE_TAG
 bash development/smoke.sh IMAGE_TAG ~/.local/share/agent-config/export
+DEV_UI_SMOKE=1 bash development/smoke.sh IMAGE_TAG ~/.local/share/agent-config/export
 ```
+
+The UI smoke test runs offline local fixtures: browser input/errors/reload fixes,
+screenshots/traces/video, live dashboard and noVNC mouse/keyboard control, native
+terminal input, service restart/failure recovery, and cookie/artifact persistence
+and isolation after recreation. It uses temporary homes and fake credentials.
 
 `DEV_ROOT` and `DEV_STATE_ROOT` can relocate a new installation; existing project
 metadata rejects accidental relocation. `DEV_GITHUB_OWNER` changes the default
 account for new projects and must match the authenticated GitHub identity.
+
+### Browser/desktop rollout verification (2026-10-21)
+
+- Nix development check: 27 launcher tests, 188 assertions. Agent-config: 10 tests,
+  63 assertions, including published-version validation and existing auth/config preservation.
+- Offline Docker UI smoke with the personal snapshot: click/type flow, console and
+  HTTP errors, reload after a UI change, screenshots, raw traces and WebM recording;
+  dashboard streaming/input; noVNC input; terminal/xdotool/screenshots; repeat starts,
+  occupied-port failure, crashed-process recovery and cleanup all passed.
+- Recreated temporary boxes retained cookies/artifacts and kept a second project
+  isolated. A stale Chromium lock pointing to PID 1 was cleared. Native skill
+  installation timestamps and shared instruction edits survived unchanged.
+- Codex app-server `skills/list` and Claude's initialization metadata both reported
+  `playwright-cli`. Discovery required no model call (Claude's API was pointed at
+  an unreachable local endpoint with a fake test key).
+- Real SSH forwarding carried dashboard frames, browser mouse/keyboard actions,
+  and noVNC keyboard input that wrote a marker from xterm. Temporary SSH keys,
+  listener and tunnels were removed after verification.
+- Deployed the targeted package/image to the sandbox first, then idle agent-config.
+  A launcher-driven sandbox rebuild retained a newly set cookie, both agents'
+  authentication and the existing branch. Warm starts measured 1.26s / 1.27s;
+  unchanged starts downloaded nothing and launched no UI services.
+- Previous tagged images remain available for rollback. Unrelated pending NixOS
+  changes were not activated. GPU and macOS/Windows-native UI testing remain deferred.

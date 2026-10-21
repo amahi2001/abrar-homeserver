@@ -30,6 +30,24 @@ install -m 600 /opt/dev/instructions.md "$CODEX_HOME/.dev-container-instructions
 if [ -f /opt/agent-config/sync.js ]; then
   bun /opt/agent-config/sync.js --container
 fi
+# Native Playwright owns this skill; its version stamp belongs to the project home.
+pw_version=$(playwright-cli --version)
+pw_stamp="$HOME/.local/state/dev-playwright-version"
+if [ ! -f "$HOME/.agents/skills/playwright-cli/SKILL.md" ] || [ "$(cat "$pw_stamp" 2>/dev/null || true)" != "$pw_version" ]; then
+  playwright-cli install --skills=agents --global
+  mkdir -p "$(dirname "$pw_stamp")"
+  printf '%s\n' "$pw_version" > "$pw_stamp"
+fi
+ln -sfn "$HOME/.agents/skills/playwright-cli" "$CLAUDE_CONFIG_DIR/skills/playwright-cli"
+mkdir -p "$HOME/.playwright" "$HOME/.local/share/dev-ui/browser-profile" "$HOME/.local/share/dev-ui/artifacts"
+# A fresh container has no browser; persisted singleton links refer to old PIDs/sockets.
+rm -f "$HOME/.local/share/dev-ui/browser-profile/SingletonLock" "$HOME/.local/share/dev-ui/browser-profile/SingletonSocket" "$HOME/.local/share/dev-ui/browser-profile/SingletonCookie"
+if [ ! -f "$HOME/.playwright/cli.config.json" ]; then
+  bun -e 'const home=process.env.HOME; await Bun.write(`${home}/.playwright/cli.config.json`, JSON.stringify({browser:{browserName:"chromium",userDataDir:`${home}/.local/share/dev-ui/browser-profile`,initPage:["/opt/dev/browser-state.cjs"],launchOptions:{channel:"chromium",headless:true}},outputDir:`${home}/.local/share/dev-ui/artifacts`},null,2)+"\n");'
+fi
+if ! grep -Fq '/opt/dev/ui.md' "$CODEX_HOME/AGENTS.md"; then
+  printf '\nWhen DEV_CONTAINER=1, read /opt/dev/ui.md for browser automation, visual debugging and optional desktop access.\n' >> "$CODEX_HOME/AGENTS.md"
+fi
 flock -u 9
 exec 9>&-
 git config --global user.name "$GIT_AUTHOR_NAME"

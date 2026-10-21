@@ -30,6 +30,7 @@ start() {
   docker run -d --name "$name" --init \
     --network none "${mounts[@]}" \
     -e DEV_UID="$(id -u)" -e DEV_GID="$(id -g)" -e DEV_PROJECT="$project" \
+    -e PLAYWRIGHT_CLI_SESSION="$project" \
     -e GIT_AUTHOR_NAME=Test -e GIT_AUTHOR_EMAIL=test@example.invalid \
     -e GIT_COMMITTER_NAME=Test -e GIT_COMMITTER_EMAIL=test@example.invalid \
     --mount "type=bind,src=$work/$project,dst=/workspace/$project" \
@@ -43,16 +44,23 @@ start() {
 inside() { docker exec --user "$(id -u):$(id -g)" "$one" "$@"; }
 start "$one" one home-one
 start "$two" two home-two
+if [ "${DEV_UI_SMOKE:-0}" = 1 ]; then
+  docker cp "$(dirname "$0")/ui-smoke.ts" "$one:/tmp/ui-smoke.ts"
+  inside bun /tmp/ui-smoke.ts
+fi
 inside bash -ec '
   test "$(id -u)" = "$DEV_UID"
   test "$(id -g)" = "$DEV_GID"
-  for tool in codex claude bun uv rtk node python3; do "$tool" --version; done
+  for tool in codex claude bun uv rtk node python3 playwright-cli; do "$tool" --version; done
   test "$(command -v gh)" = /usr/local/bin/gh
   bash -lc '\''test "$(command -v gh)" = /usr/local/bin/gh'\''
   git init --quiet
   git remote add probe git@github.com:owner/repo.git
   test "$(git remote get-url probe)" = https://github.com/owner/repo.git
   git remote remove probe
+  test -f "$HOME/.agents/skills/playwright-cli/SKILL.md"
+  test -f "$CLAUDE_CONFIG_DIR/skills/playwright-cli/SKILL.md"
+  grep -Fq /opt/dev/ui.md "$CODEX_HOME/AGENTS.md"
   test -f "$CODEX_HOME/AGENTS.md"
   rg -q "^@$CODEX_HOME/AGENTS.md$" "$CLAUDE_CONFIG_DIR/CLAUDE.md"
   test ! -S /var/run/docker.sock
@@ -60,6 +68,7 @@ inside bash -ec '
   printf "source\n" > source-marker
   printf "cached\n" > "$HOME/.cache/cache-marker"
   printf "account\n" > "$CLAUDE_CONFIG_DIR/persistence-marker"
+  stat -c %Y "$HOME/.local/state/dev-playwright-version" > "$HOME/.cache/playwright-install-time"
   rtk ls .
 '
 if [ -n "$config" ]; then
@@ -104,8 +113,22 @@ wait_ready "$one"
 docker exec --user 0 "$one" rm /usr/local/bin/install /tmp/setup-paused
 docker stop "$one" >/dev/null
 docker rm "$one" >/dev/null
+if [ "${DEV_UI_SMOKE:-0}" = 1 ]; then
+  # PID 1 exists in every new box: stale persisted locks must never block Chromium.
+  ln -sfn old-container-1 "$work/home-one/.local/share/dev-ui/browser-profile/SingletonLock"
+  mkdir -p "$work/one/.playwright"
+  printf '{"browser":{"contextOptions":{"viewport":{"width":1200,"height":800}}}}\n' > "$work/one/.playwright/cli.config.json"
+fi
 start "$one" one home-one
 inside bash -ec 'test -s source-marker; test -s "$HOME/.cache/cache-marker"; test -s "$CLAUDE_CONFIG_DIR/persistence-marker"'
+inside bash -ec 'test "$(stat -c %Y "$HOME/.local/state/dev-playwright-version")" = "$(cat "$HOME/.cache/playwright-install-time")"; test "$(grep -Fc /opt/dev/ui.md "$CODEX_HOME/AGENTS.md")" = 1'
+if [ "${DEV_UI_SMOKE:-0}" = 1 ]; then
+  docker cp "$(dirname "$0")/ui-smoke.ts" "$one:/tmp/ui-smoke.ts"
+  inside bun /tmp/ui-smoke.ts persisted
+  inside grep -Fq '"width":1200' .playwright/cli.config.json
+  docker cp "$(dirname "$0")/ui-smoke.ts" "$two:/tmp/ui-smoke.ts"
+  docker exec --user "$(id -u):$(id -g)" "$two" bun /tmp/ui-smoke.ts isolated
+fi
 if [ -n "$config" ]; then docker logs "$one" | rg -q 'Synced Codex \+ Claude \(0 files changed\)'; fi
 # Edits to the imported file must survive setup from a different project home.
 inside bash -ec 'printf "\nShared agent-learned rule.\n" >> "$CODEX_HOME/AGENTS.md"'
