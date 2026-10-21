@@ -1,0 +1,8 @@
+*
+!Dockerfile
+!skills/**
+!instructions.md
+!entrypoint.sh
+!agent-session.sh
+!dev-finish.sh
+!gh.sh

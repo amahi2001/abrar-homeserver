@@ -12,6 +12,10 @@
       url = "github:JuliusBrussee/caveman/v1.9.1";
       flake = false;
     };
+    ponytail = {
+      url = "github:DietrichGebert/ponytail/09c434ab73ca43761c5d8b0c5d341926c2fba710";
+      flake = false;
+    };
   };
 
   outputs =
@@ -22,13 +26,14 @@
       cloakbrowser,
       codex-cli,
       caveman,
+      ponytail,
     }:
     let
       system = "x86_64-linux";
       buildfleet-server = nixpkgs.lib.nixosSystem {
         system = "x86_64-linux";
         specialArgs = {
-          inherit cloakbrowser caveman;
+          inherit cloakbrowser caveman ponytail;
           codexCli = codex-cli;
         };
         modules = [
@@ -39,11 +44,31 @@
     in
     {
       nixosConfigurations.buildfleet-server = buildfleet-server;
+      packages.${system}.dev = nixpkgs.legacyPackages.${system}.callPackage ./development/package.nix {
+        inherit ponytail caveman;
+      };
 
       # Make `nix flake check` evaluate and build the exact system closure that
       # `nixos-rebuild` deploys, rather than merely checking flake syntax.
       checks.${system} = {
         nixos = buildfleet-server.config.system.build.toplevel;
+        development =
+          buildfleet-server.pkgs.runCommand "development-tests"
+            {
+              nativeBuildInputs = with buildfleet-server.pkgs; [
+                bun
+                git
+                util-linux
+                bash
+              ];
+            }
+            ''
+              export HOME="$TMPDIR/home"
+              mkdir -p "$HOME"
+              for script in ${./development}/*.sh; do bash -n "$script"; done
+              bun test ${./development}/dev.test.ts
+              touch "$out"
+            '';
         bitwarden-sync =
           buildfleet-server.pkgs.runCommand "bitwarden-sync-tests"
             {
