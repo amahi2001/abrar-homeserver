@@ -19,6 +19,8 @@ function fixture() {
   writeFileSync(join(assets, "skills/ponytail/SKILL.md"), "test fixture skill");
   mkdirSync(join(dir, "host-codex"));
   writeFileSync(join(dir, "host-codex/auth.json"), '{"test":"fake-codex-credential"}');
+  mkdirSync(join(dir, "host-claude"));
+  writeFileSync(join(dir, "host-claude/.credentials.json"), '{"claudeAiOauth":{"accessToken":"fake-claude-credential","refreshToken":"fake-claude-refresh"}}');
   const mock = `#!${process.execPath}
 import {appendFileSync,existsSync,writeFileSync} from 'node:fs';
 const name=process.argv[1].split('/').pop(), a=process.argv.slice(2);
@@ -57,6 +59,7 @@ fail('unexpected mock');
   const env = {
     ...process.env, PATH: `${bin}:${process.env.PATH}`, REAL_GIT: realGit,
     DEV_ROOT: join(dir, "projects"), DEV_STATE_ROOT: state, CODEX_HOME: join(dir, "host-codex"),
+    CLAUDE_CONFIG_DIR: join(dir, "host-claude"),
     DEV_ASSETS: assets,
     DEV_LOCK_HELD: "", FAKE_LOG: join(dir, "calls.jsonl"), FAKE_CREATED: join(dir, "created"),
     GIT_AUTHOR_NAME: "Test", GIT_AUTHOR_EMAIL: "test@example.invalid", GIT_COMMITTER_NAME: "Test", GIT_COMMITTER_EMAIL: "test@example.invalid",
@@ -109,8 +112,36 @@ test("creates and verifies a private default repo; credentials stay outside sour
   expect(f.git("ls-files")).toBe(".gitignore\nREADME.md");
   expect(statSync(join(f.state, "credentials/github-token")).mode & 0o777).toBe(0o600);
   expect(readFileSync(join(f.state, "accounts/codex/auth.json"), "utf8")).toContain("fake-codex-credential");
+  expect(statSync(join(f.state, "accounts/claude/.credentials.json")).mode & 0o777).toBe(0o600);
+  expect(readFileSync(join(f.state, "accounts/claude/.credentials.json"), "utf8")).toContain("fake-claude-credential");
   expect(r.out + r.err + JSON.stringify(f.calls())).not.toContain("fake-github-credential");
+  expect(r.out + r.err + JSON.stringify(f.calls())).not.toContain("fake-claude-credential");
+  expect(r.out + r.err + JSON.stringify(f.calls())).not.toContain("fake-claude-refresh");
   expect(f.calls().find(c => c.name === "git" && c.args.includes("push"))?.args).toContain("main");
+});
+
+test("Claude auth is seeded after a later host login and container refreshes survive subsequent starts", () => {
+  const f = fixture(), host = join(f.env.CLAUDE_CONFIG_DIR, ".credentials.json");
+  const original = readFileSync(host, "utf8"); unlinkSync(host);
+  expect(f.cli(["start", "app", "--agent", "claude", "--no-agent"]).code).toBe(0);
+  const saved = join(f.state, "accounts/claude/.credentials.json");
+  expect(existsSync(saved)).toBe(false);
+  writeFileSync(host, original);
+  expect(f.cli(["start", "app", "--agent", "claude", "--no-agent"]).code).toBe(0);
+  expect(readFileSync(saved, "utf8")).toBe(original);
+  writeFileSync(saved, '{"claudeAiOauth":{"accessToken":"refreshed-container-token"}}');
+  writeFileSync(host, '{"claudeAiOauth":{"accessToken":"different-host-token"}}');
+  expect(f.cli(["start", "app", "--agent", "claude", "--no-agent"]).code).toBe(0);
+  expect(readFileSync(saved, "utf8")).toContain("refreshed-container-token");
+  expect(statSync(saved).mode & 0o777).toBe(0o600);
+});
+
+test("Claude auth uses the standard home path when CLAUDE_CONFIG_DIR is unset", () => {
+  const f = fixture();
+  mkdirSync(join(f.dir, ".claude"));
+  writeFileSync(join(f.dir, ".claude/.credentials.json"), '{"claudeAiOauth":{"accessToken":"default-path-token"}}');
+  expect(f.cli(["start", "app", "--no-agent"], { HOME: f.dir, CLAUDE_CONFIG_DIR: "" }).code).toBe(0);
+  expect(readFileSync(join(f.state, "accounts/claude/.credentials.json"), "utf8")).toContain("default-path-token");
 });
 
 test("tool lock updates change the image tag and pass versions to official installers", () => {

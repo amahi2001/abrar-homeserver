@@ -99,11 +99,23 @@ If authentication expires or host/container login refreshes invalidate each othe
 dev shell myproject -- codex login --device-auth
 ```
 
-Claude is installed but requires your initial account sign-in:
+Claude's host `.credentials.json` similarly seeds its container account once,
+with mode `0600`. The launcher respects host `CLAUDE_CONFIG_DIR`, falling back to
+`~/.claude`. Existing container credentials are never overwritten by later starts,
+so Claude can retain refreshed tokens. The writable account directory is shared
+across projects and persists through stop/start, recreation, and image rebuilds.
+Credentials stay outside source, images, snapshots, command arguments, and logs.
+
+After signing into Claude on the server, start a box normally:
 
 ```bash
 dev start myproject --agent claude
 ```
+
+If the host has no saved login, or a copied login expires/cannot refresh, sign in
+once in a box with `dev shell myproject -- claude auth login`. As with Codex,
+separate host/container refreshes can invalidate a copied login; a fresh box login
+is retained instead of being replaced by the host's older credential file.
 
 `CLAUDE_CONFIG_DIR` points at persistent account storage, including `.claude.json`.
 Portable preferences come from the optional agent-config snapshot; unrelated host

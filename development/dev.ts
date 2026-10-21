@@ -215,6 +215,9 @@ export function main(argv = process.argv.slice(2)) {
   const accountAuth = join(accounts, "codex/auth.json");
   const hostAuth = join(process.env.CODEX_HOME || join(homedir(), ".codex"), "auth.json");
   if (!existsSync(accountAuth) && existsSync(hostAuth)) { copyFileSync(hostAuth, accountAuth); chmodSync(accountAuth, 0o600); }
+  const claudeAuth = join(accounts, "claude/.credentials.json");
+  const hostClaudeAuth = join(process.env.CLAUDE_CONFIG_DIR || join(homedir(), ".claude"), ".credentials.json");
+  if (!existsSync(claudeAuth) && existsSync(hostClaudeAuth)) { copyFileSync(hostClaudeAuth, claudeAuth); chmodSync(claudeAuth, 0o600); }
   const codexConfig = join(accounts, "codex/config.toml");
   if (!existsSync(codexConfig)) atomic(codexConfig, 'cli_auth_credentials_store = "file"\n');
 
