@@ -233,6 +233,14 @@ use `dev rebuild <project>` after changing a recipe. The metadata `baseImage`
 records the shared base. Named database volumes survive
 stop/start and rebuild; `dev` never deletes volumes.
 
+## Dev Containers comparison
+
+The optional [side-by-side pilot](pilot/README.md) runs the official Dev Containers
+CLI around this same image and Compose service, with separate disposable projects
+and fake credentials. [Measured results](pilot/comparison.md) compare startup,
+builds, rendered output, agent integration, viewers and persistence. The existing
+launcher and project containers remain in service.
+
 ## NixOS integration and validation
 
 `development.nix` installs `dev` and narrows Docker's existing weekly pruning to

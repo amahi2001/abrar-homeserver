@@ -1,0 +1,12 @@
+{
+  "name": "Side-by-side dev box pilot",
+  "dockerComposeFile": "../compose.yaml",
+  "service": "dev",
+  "runServices": ["dev"],
+  "workspaceFolder": "/workspace/${localEnv:DEV_PROJECT}",
+  "remoteUser": "node",
+  "updateRemoteUserUID": false,
+  "overrideCommand": false,
+  "userEnvProbe": "none",
+  "shutdownAction": "none"
+}
