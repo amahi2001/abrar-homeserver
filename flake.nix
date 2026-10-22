@@ -7,7 +7,7 @@
     cloakbrowser.url = "github:CloakHQ/CloakBrowser";
     # Tracks OpenAI Codex CLI releases independently of stable nixpkgs.
     codex-cli.url = "github:sadjow/codex-cli-nix";
-    # Source for the Caveman skills exposed to Codex and managed Hermes.
+    # Source for the Caveman skills used by managed Hermes.
     caveman = {
       url = "github:JuliusBrussee/caveman/v1.9.1";
       flake = false;
@@ -39,11 +39,29 @@
     in
     {
       nixosConfigurations.buildfleet-server = buildfleet-server;
+      packages.${system}.dev = nixpkgs.legacyPackages.${system}.callPackage ./development/package.nix { };
 
       # Make `nix flake check` evaluate and build the exact system closure that
       # `nixos-rebuild` deploys, rather than merely checking flake syntax.
       checks.${system} = {
         nixos = buildfleet-server.config.system.build.toplevel;
+        development =
+          buildfleet-server.pkgs.runCommand "development-tests"
+            {
+              nativeBuildInputs = with buildfleet-server.pkgs; [
+                bun
+                git
+                util-linux
+                bash
+              ];
+            }
+            ''
+              export HOME="$TMPDIR/home"
+              mkdir -p "$HOME"
+              for script in ${./development}/*.sh; do bash -n "$script"; done
+              bun test --timeout 30000 ${./development}/dev.test.ts
+              touch "$out"
+            '';
         bitwarden-sync =
           buildfleet-server.pkgs.runCommand "bitwarden-sync-tests"
             {

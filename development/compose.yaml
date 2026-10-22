@@ -1,0 +1,47 @@
+services:
+  dev:
+    image: ${DEV_IMAGE:?Run dev build first}
+    pull_policy: never
+    init: true
+    working_dir: /workspace/${DEV_PROJECT}
+    environment:
+      DEV_UID: ${DEV_UID}
+      DEV_GID: ${DEV_GID}
+      DEV_PROJECT: ${DEV_PROJECT}
+      PLAYWRIGHT_CLI_SESSION: ${DEV_PROJECT}
+      GIT_AUTHOR_NAME: ${DEV_GIT_NAME}
+      GIT_AUTHOR_EMAIL: ${DEV_GIT_EMAIL}
+      GIT_COMMITTER_NAME: ${DEV_GIT_NAME}
+      GIT_COMMITTER_EMAIL: ${DEV_GIT_EMAIL}
+      TERM: ${TERM:-xterm-256color}
+    volumes:
+      - ${DEV_SOURCE}:/workspace/${DEV_PROJECT}
+      - ${DEV_PROJECT_STATE}/home:/home/node
+      - ${DEV_ACCOUNTS}/codex:/agent/codex
+      - ${DEV_ACCOUNTS}/claude:/agent/claude
+      - ${DEV_CREDENTIALS}:/run/dev-credentials:ro
+      - ${DEV_AGENT_CONFIG}:/opt/agent-config:ro
+    # Docker enforces loopback for automatically published project services too.
+    networks:
+      default:
+    ports:
+      - "127.0.0.1::3000"
+      - "127.0.0.1::5173"
+      - "127.0.0.1::8000"
+      - "127.0.0.1::8931"
+      - "127.0.0.1::6080"
+    labels:
+      dev.managed: "true"
+      dev.project: ${DEV_PROJECT}
+    healthcheck:
+      test: ["CMD", "test", "-f", "/tmp/dev-ready"]
+      interval: 1s
+      timeout: 1s
+      retries: 30
+      # Initial graph construction can take minutes on large source trees.
+      start_period: 10m
+    shm_size: 1gb
+networks:
+  default:
+    driver_opts:
+      com.docker.network.bridge.host_binding_ipv4: "127.0.0.1"
