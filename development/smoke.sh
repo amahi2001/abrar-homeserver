@@ -16,7 +16,7 @@ printf 'fake-test-credential\n' > "$work/credentials/github-token"
 chmod 600 "$work/credentials/github-token"
 wait_ready() {
   local name=$1
-  for _ in {1..50}; do
+  for _ in {1..300}; do
     if docker exec --user "$(id -u):$(id -g)" "$name" test -f /tmp/dev-ready 2>/dev/null; then return; fi
     sleep 0.1
   done
@@ -42,6 +42,10 @@ start() {
   wait_ready "$name"
 }
 inside() { docker exec --user "$(id -u):$(id -g)" "$one" "$@"; }
+for project in one two; do
+  git -C "$work/$project" init --quiet
+  printf 'export function memorySmoke() { return 42; }\n' > "$work/$project/memory.ts"
+done
 start "$one" one home-one
 start "$two" two home-two
 if [ "${DEV_UI_SMOKE:-0}" = 1 ]; then
@@ -51,7 +55,10 @@ fi
 inside bash -ec '
   test "$(id -u)" = "$DEV_UID"
   test "$(id -g)" = "$DEV_GID"
-  for tool in codex claude bun uv rtk node python3 playwright-cli; do "$tool" --version; done
+  for tool in codex claude bun uv rtk node python3 playwright-cli codebase-memory-mcp; do "$tool" --version; done
+  test -f "$CODEX_HOME/skills/codebase-memory/SKILL.md"
+  test -f "$CLAUDE_CONFIG_DIR/skills/codebase-memory/SKILL.md"
+  codebase-memory-mcp cli --quiet list_projects --format json --detail stats | bun -e '\''const d=await new Response(Bun.stdin.stream()).json(); if(d.projects.length!==1 || d.projects[0].root_path!=="/workspace/one" || d.projects[0].nodes<1) process.exit(1);'\''
   test "$(command -v gh)" = /usr/local/bin/gh
   bash -lc '\''test "$(command -v gh)" = /usr/local/bin/gh'\''
   git init --quiet
@@ -87,6 +94,7 @@ docker exec --user "$(id -u):$(id -g)" "$two" bash -ec '
   test ! -e /workspace/one
   test ! -e "$HOME/.cache/cache-marker"
   test -f "$CLAUDE_CONFIG_DIR/persistence-marker"
+  codebase-memory-mcp cli --quiet list_projects --format json --detail stats | bun -e '\''const d=await new Response(Bun.stdin.stream()).json(); if(d.projects.length!==1 || d.projects[0].root_path!=="/workspace/two") process.exit(1);'\''
 '
 # Pause setup on a restart of the same writable layer to detect a stale marker.
 docker exec -i --user 0 "$one" bash -ec 'cat > /usr/local/bin/install; chmod +x /usr/local/bin/install; touch /tmp/hold-setup' <<'EOF'

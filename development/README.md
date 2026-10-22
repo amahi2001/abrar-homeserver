@@ -327,6 +327,61 @@ and isolation after recreation. It uses temporary homes and fake credentials.
 metadata rejects accidental relocation. `DEV_GITHUB_OWNER` changes the default
 account for new projects and must match the authenticated GitHub identity.
 
+### Codebase Memory
+
+Every image includes the official portable Codebase Memory MCP binary. Its stable
+release, commit-pinned installer and checksum come from agent-config's
+`tools.lock.json`; `bun run update`, host sync, and `dev rebuild PROJECT` update it.
+The image is built once and reused. No model, cloud service or API key is needed.
+
+Startup uses upstream's native `install --clients=claude,codex` with
+`--skip-binary --dir=/opt/codebase-memory-mcp`: MCP entries, skills, agent profiles
+and hooks remain upstream-owned. Shared account configuration is serialized and
+installed once per version. Existing instructions, authentication and other MCPs
+remain in place. Open a new agent session after an update; already running
+sessions cannot acquire new MCP tools. Codex may require native `/hooks` trust
+before its optional hooks execute; MCP tools and skills work independently.
+
+`dev-memory index` recursively indexes source repositories, including nested Git
+repositories and worktrees, in `/workspace`, the project home and current working
+directory. It skips dependency/tool caches and directory symlinks. Initialization
+runs before container readiness and refreshes before `dev-agent` starts, including
+uncommitted edits and checkouts added since startup. Ordinary unchanged
+`dev start --no-agent` reuses the running container without an install or download.
+After cloning another repository during an existing session, run `dev-memory index`
+or use upstream's `index_repository` MCP tool immediately.
+
+Graphs and native settings live in the project's persistent
+`~/.cache/codebase-memory-mcp`; they are not stored in source or shared account
+directories. Each box has independent indexes. Native auto-index and auto-watch
+are enabled; the active MCP session watches its repository. Other repositories
+are refreshed by initialization or explicit reindexing. The optional Lens HTTP
+UI is disabled. Runtime daemon sockets stay in container-local `/tmp`.
+
+Inspect with `codebase-memory-mcp cli --quiet list_projects --format json --detail stats`.
+Remove the integration using upstream's `codebase-memory-mcp uninstall` before
+removing its image install; graphs can be removed separately when no longer needed.
+
+Codebase Memory rollout verified on 2026-10-22:
+
+- Official 0.12.1 portable release deployed through the targeted launcher package;
+  all three idle boxes rebuilt successfully. Previous tagged images remain.
+- Indexed sandbox (28 nodes), agent-config (143 nodes), and Token Eye (9,144 nodes).
+  Real MCP initialize/tools-list/list-projects/search calls passed in every box,
+  returning actual Python, TypeScript and Rust source files respectively.
+- Claude reported the native server connected. Codex app-server discovered all
+  17 tools and the enabled upstream skill without a model turn. RTK hooks, shared
+  instruction imports and existing authentication remained intact. Optional Codex
+  lifecycle hooks are installed but still need native `/hooks` trust.
+- Nix development check: 40 tests, 280 assertions; agent-config: 14 tests,
+  98 assertions. Offline smoke passed after recreation with persistent graphs,
+  independent project indexes, source/home/account markers and instruction edits.
+  Degraded index results fail initialization rather than reporting readiness.
+- Five unchanged sandbox starts took 0.59 / 0.58 / 0.58 / 0.58 / 0.60 seconds;
+  container and branch stayed unchanged, with no image build or download.
+- Sanitized protocol results and timings are retained under
+  `~/.local/state/dev/cbm-validation/` on the host, outside source and credentials.
+
 ### Browser/desktop rollout verification (2026-10-21)
 
 - Nix development check: 27 launcher tests, 188 assertions. Agent-config: 10 tests,

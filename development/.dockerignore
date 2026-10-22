@@ -10,3 +10,4 @@
 !dev-ui.sh
 !playwright-cli.sh
 !browser-state.cjs
+!codebase-memory.ts

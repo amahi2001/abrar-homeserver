@@ -30,6 +30,8 @@ install -m 600 /opt/dev/instructions.md "$CODEX_HOME/.dev-container-instructions
 if [ -f /opt/agent-config/sync.js ]; then
   bun /opt/agent-config/sync.js --container
 fi
+# Upstream owns MCP entries, skills, profiles and hooks for both harnesses.
+dev-memory setup
 # Native Playwright owns this skill; its version stamp belongs to the project home.
 pw_version=$(playwright-cli --version)
 pw_stamp="$HOME/.local/state/dev-playwright-version"
@@ -56,5 +58,6 @@ git config --global credential.https://github.com.helper '!gh auth git-credentia
 git config --global url.https://github.com/.insteadOf git@github.com:
 git config --global init.defaultBranch main
 git config --global push.default current
+dev-memory index
 touch /tmp/dev-ready
 exec "$@"

@@ -99,12 +99,21 @@ export function main(argv = process.argv.slice(2)) {
   const rtk = toolVersions.rtk;
   const playwrightVersion = toolVersions.playwrightCli?.version ?? "0.1.22";
   if (typeof playwrightVersion !== "string" || !/^\d+\.\d+\.\d+$/.test(playwrightVersion)) throw Error("Invalid locked Playwright CLI version");
+  const codebaseMemory = toolVersions.codebaseMemory ?? {
+    version: "0.12.1",
+    installer: "https://raw.githubusercontent.com/DeusData/codebase-memory-mcp/a7158ac2f48ca646b4527341b76f930f2aeff87e/install.sh",
+    installerSha256: "13049c7cc51bc508d68b8ecb8a9fd9574ecb7c6f2c9dd5a19bf7d4c187321145",
+  };
+  if (typeof codebaseMemory.version !== "string" || !/^\d+\.\d+\.\d+$/.test(codebaseMemory.version)
+      || typeof codebaseMemory.installer !== "string" || !/^https:\/\/raw\.githubusercontent\.com\/DeusData\/codebase-memory-mcp\/[a-f0-9]{40}\/install\.sh$/.test(codebaseMemory.installer)
+      || typeof codebaseMemory.installerSha256 !== "string" || !/^[a-f0-9]{64}$/.test(codebaseMemory.installerSha256)) throw Error("Invalid locked Codebase Memory release");
   const personalPackage = join(configExport, "package.json");
   const skillsVersion = existsSync(personalPackage) ? JSON.parse(readFileSync(personalPackage, "utf8")).dependencies.skills : undefined;
   const fingerprint = createHash("sha256");
   if (rtk) fingerprint.update(JSON.stringify(rtk));
   if (skillsVersion) fingerprint.update(skillsVersion);
   fingerprint.update(playwrightVersion);
+  fingerprint.update(JSON.stringify(codebaseMemory));
   function hashFiles(dir: string) {
     for (const entry of readdirSync(dir, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
       const path = join(dir, entry.name);
@@ -112,12 +121,13 @@ export function main(argv = process.argv.slice(2)) {
       else if (entry.isFile()) { fingerprint.update(path.slice(assets.length)); fingerprint.update(readFileSync(path)); }
     }
   }
-  for (const file of ["Dockerfile", "entrypoint.sh", "agent-session.sh", "dev-finish.sh", "gh.sh", "instructions.md", "dev-ui.sh", "ui.md", "playwright-cli.sh", "browser-state.cjs"]) fingerprint.update(readFileSync(join(assets, file)));
+  for (const file of ["Dockerfile", "entrypoint.sh", "agent-session.sh", "dev-finish.sh", "gh.sh", "instructions.md", "dev-ui.sh", "ui.md", "playwright-cli.sh", "browser-state.cjs", "codebase-memory.ts"]) fingerprint.update(readFileSync(join(assets, file)));
   if (existsSync(join(assets, "skills"))) hashFiles(join(assets, "skills"));
   const image = `buildfleet-dev:${fingerprint.digest("hex").slice(0, 16)}`;
 
   function build() {
     const args = ["docker", "build", "--tag", image, "--build-arg", `PLAYWRIGHT_CLI_VERSION=${playwrightVersion}`];
+    args.push("--build-arg", `CODEBASE_MEMORY_VERSION=${codebaseMemory.version}`, "--build-arg", `CODEBASE_MEMORY_INSTALLER=${codebaseMemory.installer}`, "--build-arg", `CODEBASE_MEMORY_INSTALLER_SHA256=${codebaseMemory.installerSha256}`);
     if (rtk) args.push("--build-arg", `RTK_VERSION=v${rtk.version.replace(/^v/, "")}`, "--build-arg", `RTK_INSTALLER=${rtk.installer}`, "--build-arg", `RTK_INSTALLER_SHA256=${rtk.installerSha256}`);
     if (skillsVersion) args.push("--build-arg", `SKILLS_VERSION=${skillsVersion}`);
     run([...args, assets], { inherit: true });
@@ -224,11 +234,12 @@ export function main(argv = process.argv.slice(2)) {
     // Native up skips Compose when dev is running; keep its sidecars running too.
     const sidecars = Object.keys(config.services).filter(service => service !== "dev");
     if (sidecars.length) run(["docker", "compose", "--project-directory", source, "-p", composeProject, "-f", join(projectState, "compose.json"), "up", "-d", "--no-build", "--no-deps", "--wait", ...sidecars], { env: environment() });
-    for (let i = 0; i < 300; i++) {
+    // Give first-time indexing a bounded window; healthy warm boxes return immediately.
+    for (let i = 0; i < 1200; i++) {
       const state = JSON.parse(run(["docker", "inspect", id, "--format", "{{json .State}}"]).stdout);
       if (state.Running && state.Health?.Status === "healthy") return configHash;
       if (!state.Running || state.Health?.Status === "unhealthy") break;
-      Bun.sleepSync(100);
+      Bun.sleepSync(500);
     }
     const logs = run(["docker", "logs", "--tail", "80", id], { allowFailure: true });
     throw Error(`Container did not become healthy.\n${logs.stdout}\n${logs.stderr}`);

@@ -38,6 +38,8 @@ services:
       interval: 1s
       timeout: 1s
       retries: 30
+      # Initial graph construction can take minutes on large source trees.
+      start_period: 10m
     shm_size: 1gb
 networks:
   default:

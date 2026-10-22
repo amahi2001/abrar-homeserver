@@ -29,13 +29,25 @@ RUN npm install -g @playwright/cli@${PLAYWRIGHT_CLI_VERSION} \
     && apt-get update && apt-get install -y --no-install-recommends \
        xvfb openbox dbus-x11 x11vnc novnc websockify xdotool scrot xterm x11-utils \
     && rm -rf /var/lib/apt/lists/*
-COPY instructions.md ui.md /opt/dev/
+ARG CODEBASE_MEMORY_VERSION=0.12.1
+ARG CODEBASE_MEMORY_INSTALLER=https://raw.githubusercontent.com/DeusData/codebase-memory-mcp/a7158ac2f48ca646b4527341b76f930f2aeff87e/install.sh
+ARG CODEBASE_MEMORY_INSTALLER_SHA256=13049c7cc51bc508d68b8ecb8a9fd9574ecb7c6f2c9dd5a19bf7d4c187321145
+RUN curl -fsSL "$CODEBASE_MEMORY_INSTALLER" -o /tmp/cbm-install.sh \
+    && echo "$CODEBASE_MEMORY_INSTALLER_SHA256  /tmp/cbm-install.sh" | sha256sum -c - \
+    && CBM_DOWNLOAD_URL="https://github.com/DeusData/codebase-memory-mcp/releases/download/v${CODEBASE_MEMORY_VERSION}" \
+       bash /tmp/cbm-install.sh --dir=/opt/codebase-memory-mcp --skip-config \
+    && test "$(/opt/codebase-memory-mcp/codebase-memory-mcp --version)" = "codebase-memory-mcp ${CODEBASE_MEMORY_VERSION}" \
+    && ln -s /opt/codebase-memory-mcp/codebase-memory-mcp /usr/local/bin/codebase-memory-mcp \
+    && rm /tmp/cbm-install.sh
+COPY instructions.md ui.md codebase-memory.ts /opt/dev/
 COPY browser-state.cjs /opt/dev/
 COPY playwright-cli.sh /opt/dev/bin/playwright-cli
 COPY dev-ui.sh /usr/local/lib/dev/dev-ui.sh
 COPY entrypoint.sh agent-session.sh dev-finish.sh gh.sh /usr/local/lib/dev/
 RUN chmod +x /usr/local/lib/dev/*.sh \
     && chmod +x /opt/dev/bin/playwright-cli \
+    && chmod +x /opt/dev/codebase-memory.ts \
+    && ln -s /opt/dev/codebase-memory.ts /usr/local/bin/dev-memory \
     && echo 'export PATH="/opt/dev/bin:$PATH"' > /etc/profile.d/dev-ui.sh \
     && ln -s /usr/local/lib/dev/dev-finish.sh /usr/local/bin/dev-finish \
     && ln -s /usr/local/lib/dev/agent-session.sh /usr/local/bin/dev-agent \

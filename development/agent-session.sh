@@ -4,6 +4,8 @@ exec 9> "$HOME/.agent-session.lock"
 flock -n 9 || { echo 'Agent already active for this project. Use dev shell or resume its terminal.' >&2; exit 1; }
 agent=${1:-codex}
 shift || true
+# Refresh dirty files and discover checkouts added since container startup.
+dev-memory index
 case "$agent" in
   codex)
     if ! codex login status >/dev/null 2>&1; then

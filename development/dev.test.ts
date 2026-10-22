@@ -1,8 +1,9 @@
 import { test, expect, afterEach } from "bun:test";
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, statSync, copyFileSync, symlinkSync, unlinkSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, statSync, copyFileSync, symlinkSync, unlinkSync, chmodSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { projectName, repository, githubRemote } from "./dev";
+import "./codebase-memory.test";
 
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
@@ -15,7 +16,7 @@ function fixture() {
   mkdirSync(bin);
   const assets = join(dir, "assets");
   mkdirSync(join(assets, "skills/ponytail"), { recursive: true });
-  for (const file of ["Dockerfile", "entrypoint.sh", "agent-session.sh", "dev-finish.sh", "gh.sh", "instructions.md", "dev-ui.sh", "ui.md", "playwright-cli.sh", "browser-state.cjs"]) copyFileSync(join(import.meta.dir, file), join(assets, file));
+  for (const file of ["Dockerfile", "entrypoint.sh", "agent-session.sh", "dev-finish.sh", "gh.sh", "instructions.md", "dev-ui.sh", "ui.md", "playwright-cli.sh", "browser-state.cjs", "codebase-memory.ts"]) copyFileSync(join(import.meta.dir, file), join(assets, file));
   writeFileSync(join(assets, "skills/ponytail/SKILL.md"), "test fixture skill");
   mkdirSync(join(dir, "host-codex"));
   writeFileSync(join(dir, "host-codex/auth.json"), '{"test":"fake-codex-credential"}');
@@ -145,6 +146,61 @@ test("Playwright lock versions change the image and missing fields retain the pi
   expect(first[2]).not.toBe(second[2]);
   writeFileSync(lock, JSON.stringify({ playwrightCli: { version: "latest" } }));
   expect(f.cli(["build"], { DEV_AGENT_CONFIG: snapshot }).err).toContain("Invalid locked Playwright");
+});
+
+test("Codebase Memory lock and helper changes rebuild the cached image through official installer arguments", () => {
+  const f = fixture(), snapshot = join(f.dir, "memory-snapshot"); mkdirSync(snapshot);
+  const path = join(snapshot, "tools.lock.json");
+  writeFileSync(path, "{}");
+  expect(f.cli(["build"], { DEV_AGENT_CONFIG: snapshot }).code).toBe(0);
+  const first = f.calls().find(c => c.name === "docker" && c.args[0] === "build").args;
+  expect(first).toContain("CODEBASE_MEMORY_VERSION=0.12.1");
+  const codebaseMemory = {
+    version: "0.12.2",
+    installer: "https://raw.githubusercontent.com/DeusData/codebase-memory-mcp/0123456789abcdef0123456789abcdef01234567/install.sh",
+    installerSha256: "a".repeat(64),
+  };
+  const build = () => {
+    f.clear();
+    expect(f.cli(["build"], { DEV_AGENT_CONFIG: snapshot }).code).toBe(0);
+    return f.calls().find(c => c.name === "docker" && c.args[0] === "build").args;
+  };
+  writeFileSync(path, JSON.stringify({ codebaseMemory }));
+  const second = build();
+  expect(second).toContain("CODEBASE_MEMORY_VERSION=0.12.2");
+  expect(second).toContain(`CODEBASE_MEMORY_INSTALLER=${codebaseMemory.installer}`);
+  expect(second).toContain(`CODEBASE_MEMORY_INSTALLER_SHA256=${codebaseMemory.installerSha256}`);
+  expect(second[second.indexOf("--tag") + 1]).not.toBe(first[first.indexOf("--tag") + 1]);
+  codebaseMemory.installerSha256 = "b".repeat(64);
+  writeFileSync(path, JSON.stringify({ codebaseMemory }));
+  const third = build();
+  expect(third[third.indexOf("--tag") + 1]).not.toBe(second[second.indexOf("--tag") + 1]);
+  const helper = join(f.env.DEV_ASSETS, "codebase-memory.ts");
+  chmodSync(helper, 0o600);
+  writeFileSync(helper, readFileSync(helper, "utf8") + "\n// changed helper fixture\n");
+  const fourth = build();
+  expect(fourth[fourth.indexOf("--tag") + 1]).not.toBe(third[third.indexOf("--tag") + 1]);
+});
+
+test("malformed Codebase Memory locks fail before any image build", () => {
+  const f = fixture(), snapshot = join(f.dir, "bad-memory-snapshot"); mkdirSync(snapshot);
+  const path = join(snapshot, "tools.lock.json");
+  const valid = {
+    version: "0.12.1",
+    installer: "https://raw.githubusercontent.com/DeusData/codebase-memory-mcp/0123456789abcdef0123456789abcdef01234567/install.sh",
+    installerSha256: "a".repeat(64),
+  };
+  for (const codebaseMemory of [
+    { ...valid, version: "latest" }, { ...valid, version: 12 },
+    { ...valid, installer: "file:///tmp/installer.sh" }, { ...valid, installer: 42 },
+    { ...valid, installerSha256: "" }, { ...valid, installerSha256: "bad-digest" },
+  ]) {
+    f.clear(); writeFileSync(path, JSON.stringify({ codebaseMemory }));
+    const result = f.cli(["build"], { DEV_AGENT_CONFIG: snapshot });
+    expect(result.code).toBe(1);
+    expect(result.err).toContain("Invalid locked Codebase Memory");
+    expect(readFileSync(f.env.FAKE_LOG, "utf8")).toBe("");
+  }
 });
 
 test("shared Compose publishes both viewers only to loopback and keeps VNC internal", () => {
