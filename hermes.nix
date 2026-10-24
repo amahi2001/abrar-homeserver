@@ -82,6 +82,53 @@ in
         "rtk-rewrite"
         "photon-platform"
       ];
+      # Global exclusions apply to CLI, Desktop and messaging, and survive updates.
+      # Keep the installed files so any skill can be enabled again.
+      skills.disabled = [
+        # Preserve the existing exclusions.
+        "ai-music-generation"
+        "airtable"
+        "ascii-art"
+        "ascii-video"
+        "audiocraft-audio-generation"
+        "baoyu-article-illustrator"
+        "baoyu-comic"
+        "baoyu-infographic"
+        "box"
+        "cavecrew"
+        "caveman-help"
+        "caveman-review"
+        "caveman-stats"
+        "gif-search"
+        "heartmula"
+        "linear"
+        "minecraft-modpack-server"
+        "obsidian"
+        "openhue"
+        "pokemon-player"
+        "songsee"
+        "songwriting-and-ai-music"
+        "teams-meeting-pipeline"
+        "touchdesigner-mcp"
+        "yuanbao"
+        # No recorded use or matching tasks in the conversation and usage history.
+        "comfyui"
+        "dspy"
+        "godmode"
+        "jupyter-live-kernel"
+        "manim-video"
+        "obliteratus"
+        "p5js"
+        "petdex"
+        "pixel-art"
+        "polymarket"
+        "pretext"
+        "research-paper-writing"
+        "sec-financial-research"
+        "segment-anything-model"
+        "spotify"
+        "xurl"
+      ];
       max_turns = 20;
       terminal = {
         backend = "local";
