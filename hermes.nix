@@ -222,10 +222,12 @@ in
   systemd.services.hermes-agent.serviceConfig.SupplementaryGroups = [ "wheel" ];
   systemd.services.hermes-agent.serviceConfig.NoNewPrivileges = lib.mkForce false;
   systemd.services.hermes-agent.serviceConfig.ExecStart = lib.mkForce hermesGateway;
-  # The media watcher persists its notification state here. Keep the gateway
-  # sandbox read-only elsewhere while permitting this single root-owned path.
-  systemd.services.hermes-agent.serviceConfig.ReadWritePaths =
-    lib.mkAfter [ "/var/lib/media-queue" ];
+  # Permit sidecars in organized libraries without remounting the gateway root.
+  systemd.services.hermes-agent.serviceConfig.ReadWritePaths = lib.mkAfter [
+    "/var/lib/media-queue"
+    "/srv/data/media/library/movies"
+    "/srv/data/media/library/tv"
+  ];
 
   # Self-Interruption Prevention
   systemd.services.hermes-agent.restartIfChanged = false;
@@ -239,6 +241,7 @@ in
     pkgs.rtk
     pkgs.bitwarden-cli
     pkgs.nodejs
+    pkgs.jellyfin-ffmpeg
     config.services.transmission.package
   ];
   systemd.services.hermes-agent.environment.PYTHONPATH =
@@ -285,6 +288,7 @@ in
     "d /var/lib/hermes/.hermes/skills/media 0755 hermes hermes -"
     "L+ /var/lib/hermes/.hermes/skills/media/media-queue - - - - /etc/nixos/skills/media-queue"
     "L+ /var/lib/hermes/.hermes/skills/media/media-cleanup - - - - /etc/nixos/skills/media-cleanup"
+    "L+ /var/lib/hermes/.hermes/skills/media/media-subtitles - - - - /etc/nixos/skills/media-subtitles"
     "d /var/lib/hermes/.hermes/scripts 0755 hermes hermes -"
     # A real local copy is required: Hermes rejects scheduler scripts that
     # resolve through a symlink outside ~/.hermes/scripts.
