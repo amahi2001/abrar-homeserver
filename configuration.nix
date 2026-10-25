@@ -13,6 +13,7 @@
     ./desktop.nix
     ./web.nix
     ./containers.nix
+    ./github-actions.nix
     ./development.nix
     ./files.nix
     ./servarr.nix
