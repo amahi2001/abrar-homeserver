@@ -4,6 +4,7 @@ import importlib.util
 import fcntl
 from contextlib import contextmanager
 from datetime import datetime, timezone
+import io
 import json
 from pathlib import Path
 import signal
@@ -635,6 +636,107 @@ class HistoryAndUnitTests(unittest.TestCase):
         self.assertFalse((state / "reboot-required").exists())
 
 
+class RecoveryTests(unittest.TestCase):
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        root = Path(self.temporary.name)
+        self.maintenance_lock = root / "maintenance.lock"
+        self.deployment_lock = root / "deployment.lock"
+        self.calls = []
+        self.states = {name + ".service": "active" for name in update.SERVICES}
+        health = patch.object(update, "health_check")
+        self.health = health.start()
+        self.addCleanup(health.stop)
+
+    def run_command(self, args):
+        self.calls.append(args)
+        if args[:2] == ["systemctl", "show"]:
+            return self.states[args[-1]] + "\n"
+        return ""
+
+    def recover(self, run=None):
+        return update.recover_services(
+            run or self.run_command, maintenance_lock=self.maintenance_lock,
+            deployment_lock=self.deployment_lock,
+        )
+
+    def test_starts_only_failed_or_inactive_critical_services(self):
+        self.states["jellyfin.service"] = "failed"
+        self.states["redis-nextcloud.service"] = "inactive"
+        for name, state in zip(("hermes-agent", "hermes-dashboard", "nginx", "docker"),
+                               ("active", "activating", "reloading", "deactivating")):
+            self.states[name + ".service"] = state
+        self.states["postgresql.service"] = "unknown"
+        self.assertTrue(self.recover())
+        starts = [args for args in self.calls if args[:2] == ["systemctl", "start"]]
+        self.assertEqual(starts, [["systemctl", "start", "jellyfin.service"],
+                                  ["systemctl", "start", "redis-nextcloud.service"]])
+        self.assertFalse(any("restart" in args or "reset-failed" in args for args in self.calls))
+        self.assertFalse(any(name in args[-1] for args in self.calls
+                             for name in ("sonarr", "radarr", "github-actions", "dev-")))
+        self.health.assert_called_once()
+
+    def test_failed_start_does_not_prevent_other_services_recovering(self):
+        self.states["jellyfin.service"] = self.states["redis-nextcloud.service"] = "failed"
+
+        def run(args):
+            result = self.run_command(args)
+            if args == ["systemctl", "start", "jellyfin.service"]:
+                raise RuntimeError("start limit remains in effect")
+            return result
+
+        self.health.side_effect = RuntimeError("Jellyfin is still unavailable")
+        with self.assertRaisesRegex(RuntimeError, "still unavailable"):
+            self.recover(run)
+        self.assertIn(["systemctl", "start", "redis-nextcloud.service"], self.calls)
+        self.health.assert_called_once()
+
+    def test_either_maintenance_lock_skips_all_probes_and_mutations(self):
+        for path in (self.maintenance_lock, self.deployment_lock):
+            with self.subTest(path=path.name), path.open("a") as lock:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                self.assertFalse(self.recover())
+        self.assertEqual(self.calls, [])
+        self.health.assert_not_called()
+
+    def test_both_locks_remain_held_through_recovery_and_health_check(self):
+        self.states["jellyfin.service"] = "failed"
+
+        def assert_locked():
+            for path in (self.maintenance_lock, self.deployment_lock):
+                with path.open("a") as lock, self.assertRaises(BlockingIOError):
+                    fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+        def run(args):
+            assert_locked()
+            return self.run_command(args)
+
+        self.health.side_effect = lambda run: assert_locked()
+        self.assertTrue(self.recover(run))
+
+    def test_unhealthy_active_services_are_reported_without_restarting(self):
+        self.health.side_effect = RuntimeError("Hermes gateway is not healthy")
+        with self.assertRaisesRegex(RuntimeError, "Hermes gateway"):
+            self.recover()
+        self.assertTrue(all(args[:2] == ["systemctl", "show"] for args in self.calls))
+
+    def test_recover_cli_never_runs_an_update(self):
+        with patch("sys.argv", ["system-update", "--recover"]), \
+                patch.object(update, "recover_services") as recover, \
+                patch.object(update, "update") as perform, \
+                patch.object(update.signal, "signal"), patch.object(update.os, "umask"):
+            self.assertEqual(update.main(), 0)
+        recover.assert_called_once()
+        perform.assert_not_called()
+
+    def test_check_and_recover_are_mutually_exclusive(self):
+        with patch("sys.argv", ["system-update", "--check", "--recover"]), \
+                patch("sys.stderr", new_callable=io.StringIO), self.assertRaises(SystemExit) as error:
+            update.main()
+        self.assertEqual(error.exception.code, 2)
+
+
 class HealthTests(unittest.TestCase):
     def test_missing_optional_units_do_not_force_unrelated_app_restarts(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -664,11 +766,31 @@ class HealthTests(unittest.TestCase):
 
     def test_health_uses_local_endpoints_and_excludes_on_demand_services(self):
         update.health_check(self.run_command, "0.22.2")
-        services = self.calls[0]
+        services = [unit for args in self.calls if args[:2] == ["systemctl", "is-active"]
+                    for unit in args[3:]]
         self.assertNotIn("sonarr.service", services)
         self.assertNotIn("radarr.service", services)
         self.assertTrue(all("example.com" not in args for args in self.calls))
         self.assertTrue(any("--resolve" in args for args in self.calls))
+
+    def test_recovery_reports_a_failed_non_http_service(self):
+        def run(args):
+            if args[:2] == ["systemctl", "show"]:
+                return "failed" if args[-1] == "samba-smbd.service" else "active"
+            if args == ["systemctl", "start", "samba-smbd.service"]:
+                raise RuntimeError("Samba start failed")
+            if args[:3] == ["systemctl", "is-active", "--quiet"]:
+                # systemctl succeeds if any named unit is active.
+                if not any(unit != "samba-smbd.service" for unit in args[3:]):
+                    raise RuntimeError("Samba remains failed")
+            return self.run_command(args)
+
+        with tempfile.TemporaryDirectory() as directory:
+            with self.assertRaisesRegex(RuntimeError, "Samba remains failed"):
+                update.recover_services(
+                    run, maintenance_lock=Path(directory) / "maintenance.lock",
+                    deployment_lock=Path(directory) / "deployment.lock",
+                )
 
     def test_nextcloud_maintenance_and_pending_migrations_fail_health(self):
         for key in ("maintenance", "needsDbUpgrade"):

@@ -117,6 +117,30 @@ in
     '';
   };
 
+  systemd.services.critical-services-recovery = {
+    description = "Recover stopped critical services and check application health";
+    after = [ "network-online.target" ];
+    wants = [ "network-online.target" ];
+    onFailure = [ "maintenance-alert@%n.service" ];
+    restartIfChanged = false;
+    stopIfChanged = false;
+    serviceConfig = {
+      Type = "oneshot";
+      ExecStart = "${updater}/bin/system-update --recover";
+      TimeoutStartSec = "5min";
+      UMask = "0077";
+      Nice = 10;
+    };
+  };
+  systemd.timers.critical-services-recovery = {
+    wantedBy = [ "timers.target" ];
+    timerConfig = {
+      OnBootSec = "2min";
+      OnUnitInactiveSec = "1min";
+      AccuracySec = "1s";
+    };
+  };
+
   systemd.services.codex-app-server-refresh = {
     description = "Refresh outdated remote Codex app servers when idle";
     serviceConfig = {
