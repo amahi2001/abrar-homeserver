@@ -14,6 +14,7 @@
     ./web.nix
     ./containers.nix
     ./development.nix
+    ./token-eye.nix
     ./files.nix
     ./servarr.nix
     ./hermes.nix
