@@ -117,6 +117,30 @@ in
     '';
   };
 
+  systemd.services.critical-services-recovery = {
+    description = "Recover stopped critical services and check application health";
+    after = [ "network-online.target" ];
+    wants = [ "network-online.target" ];
+    onFailure = [ "maintenance-alert@%n.service" ];
+    restartIfChanged = false;
+    stopIfChanged = false;
+    serviceConfig = {
+      Type = "oneshot";
+      ExecStart = "${updater}/bin/system-update --recover";
+      TimeoutStartSec = "5min";
+      UMask = "0077";
+      Nice = 10;
+    };
+  };
+  systemd.timers.critical-services-recovery = {
+    wantedBy = [ "timers.target" ];
+    timerConfig = {
+      OnBootSec = "2min";
+      OnUnitInactiveSec = "1min";
+      AccuracySec = "1s";
+    };
+  };
+
   systemd.services.codex-app-server-refresh = {
     description = "Refresh outdated remote Codex app servers when idle";
     serviceConfig = {
@@ -128,6 +152,35 @@ in
       UMask = "0077";
     };
   };
+
+  systemd.services.codex-remote-control = {
+    description = "Keep Codex Remote Control enabled and running";
+    after = [ "network-online.target" ];
+    wants = [ "network-online.target" ];
+    restartIfChanged = false;
+    stopIfChanged = false;
+    environment.HOME = "/home/buildfleet";
+    serviceConfig = {
+      Type = "oneshot";
+      User = "buildfleet";
+      Group = "users";
+      WorkingDirectory = "/home/buildfleet";
+      ExecStart = "/run/current-system/sw/bin/bash -lc 'exec /run/current-system/sw/bin/codex remote-control start --json'";
+      # Codex detaches its daemon; keep it alive after this command exits.
+      KillMode = "process";
+      TimeoutStartSec = "2min";
+      UMask = "0077";
+    };
+  };
+  systemd.timers.codex-remote-control = {
+    wantedBy = [ "timers.target" ];
+    timerConfig = {
+      OnBootSec = "30s";
+      OnUnitInactiveSec = "30s";
+      AccuracySec = "1s";
+    };
+  };
+
   systemd.timers.codex-app-server-refresh = {
     wantedBy = [ "timers.target" ];
     timerConfig = {

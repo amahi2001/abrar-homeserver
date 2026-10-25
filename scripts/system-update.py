@@ -176,7 +176,8 @@ def hermes_status(run):
 
 def health_check(run, expected_hermes=None):
     # On-demand Sonarr/Radarr and external Internet access are not required.
-    run(["systemctl", "is-active", "--quiet", *(s + ".service" for s in SERVICES)])
+    for name in SERVICES:
+        run(["systemctl", "is-active", "--quiet", name + ".service"])
     curl(run, "http://127.0.0.1:8080/")
     dns = run(["dig", "+time=5", "+tries=1", "@127.0.0.1", "localhost", "A"])
     if "status: NOERROR" not in dns or not re.search(r"\b127\.0\.0\.1\b", dns):
@@ -195,6 +196,29 @@ def health_check(run, expected_hermes=None):
         raise RuntimeError("Hermes gateway is not healthy")
     if expected_hermes is not None and status.get("version") != expected_hermes:
         raise RuntimeError(f"Hermes reports {status.get('version')}; expected {expected_hermes}")
+
+
+def recover_services(run, *, maintenance_lock=Path("/run/lock/nixos-flake-update.lock"),
+                     deployment_lock=Path("/run/lock/host-deployment.lock")):
+    with ExitStack() as locks:
+        for path in (maintenance_lock, deployment_lock):
+            lock = locks.enter_context(path.open("a"))
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                print("Maintenance is running; skipping service recovery until the next timer")
+                return False
+        for name in SERVICES:
+            unit = name + ".service"
+            state = run(["systemctl", "show", "--property=ActiveState", "--value", unit]).strip()
+            if state in ("inactive", "failed"):
+                try:
+                    run(["systemctl", "start", unit])
+                except (RuntimeError, OSError, subprocess.SubprocessError) as error:
+                    print(f"Could not start {unit}: {error}")
+        health_check(run)
+        print("All critical services are running and healthy")
+        return True
 
 
 def wait_healthy(run, expected_hermes=None, *, attempts=18, sleep=time.sleep):
@@ -576,7 +600,9 @@ def update(task, *, source=Path("/etc/nixos-deployed"),
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("task", choices=("all", "codex", "hermes"), nargs="?", default="all")
-    parser.add_argument("--check", action="store_true", help="Check service health without changing the host")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--check", action="store_true", help="Check service health without changing the host")
+    mode.add_argument("--recover", action="store_true", help="Start stopped critical services and check health")
     parser.add_argument("--source", type=Path, default=Path("/etc/nixos-deployed"))
     parser.add_argument("--state-dir", type=Path, default=Path("/var/lib/nixos-updates"))
     parser.add_argument("--backup-hook", type=Path)
@@ -589,12 +615,16 @@ def main():
     signal.signal(signal.SIGTERM, interrupted)
     signal.signal(signal.SIGINT, interrupted)
     try:
-        if args.check:
+        if args.check or args.recover:
             def check_log(message, *, console=True):
                 if console:
                     print(message)
-            health_check(lambda command_args: command(command_args, check_log))
-            print("All managed service health checks passed")
+            run = lambda command_args: command(command_args, check_log)
+            if args.recover:
+                recover_services(run)
+            else:
+                health_check(run)
+                print("All managed service health checks passed")
             return 0
         with Path("/run/lock/nixos-flake-update.lock").open("w") as lock:
             try:
