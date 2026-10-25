@@ -37,6 +37,15 @@ Sonarr and Radarr are stopped while idle. Hermes starts them only for explicit
 library-management work, imports with verified hard links so Transmission can
 continue seeding, and stops them afterward.
 
+## Agent development environments
+
+Use `dev start <project>` to launch Codex inside a persistent Linux container,
+or add `--agent claude`. New unassigned projects receive private GitHub repos;
+agents work and push on task branches. See [development/README.md](development/README.md)
+for login, previews, customization, and verification. Personal skills, hooks, and
+portable Codex/Claude settings are synced from the separate private
+`amahi2001/agent-config` repository; its local snapshot is applied on container startup.
+
 ## Repository layout
 
 ```text
@@ -95,15 +104,25 @@ their declared runtimes.
 ```bash
 cd /etc/nixos
 
-# The host mounts these paths read-only by default.
-sudo mount -o remount,rw /
-sudo mount -o remount,rw /run
-
 # Format, evaluate/build the flake check, then deploy.
 nix fmt
 nix flake check
 sudo nixos-rebuild switch --flake /etc/nixos#buildfleet-server
 ```
+
+The host `/` and `/run` are writable. Hermes gateway commands see a separate
+read-only systemd sandbox (`ProtectSystem=strict`), with explicit writable media
+paths for subtitle sidecars. Never remount `/` or `/run` to bypass it. From a
+gateway session, run activation through the host system manager:
+
+```bash
+sudo systemd-run --wait --pipe --collect \
+  /run/current-system/sw/bin/nixos-rebuild switch --flake /etc/nixos#buildfleet-server
+```
+
+`hermes.nix` owns the media allowlist and exposes Jellyfin's existing `ffprobe`
+on the gateway PATH. The repository owns `skills/media-subtitles`; its runtime
+skill is a symlink. See `AGENTS.md` for namespace checks and restart guidance.
 
 For a non-deploying system validation:
 

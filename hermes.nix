@@ -82,6 +82,53 @@ in
         "rtk-rewrite"
         "photon-platform"
       ];
+      # Global exclusions apply to CLI, Desktop and messaging, and survive updates.
+      # Keep the installed files so any skill can be enabled again.
+      skills.disabled = [
+        # Preserve the existing exclusions.
+        "ai-music-generation"
+        "airtable"
+        "ascii-art"
+        "ascii-video"
+        "audiocraft-audio-generation"
+        "baoyu-article-illustrator"
+        "baoyu-comic"
+        "baoyu-infographic"
+        "box"
+        "cavecrew"
+        "caveman-help"
+        "caveman-review"
+        "caveman-stats"
+        "gif-search"
+        "heartmula"
+        "linear"
+        "minecraft-modpack-server"
+        "obsidian"
+        "openhue"
+        "pokemon-player"
+        "songsee"
+        "songwriting-and-ai-music"
+        "teams-meeting-pipeline"
+        "touchdesigner-mcp"
+        "yuanbao"
+        # No recorded use or matching tasks in the conversation and usage history.
+        "comfyui"
+        "dspy"
+        "godmode"
+        "jupyter-live-kernel"
+        "manim-video"
+        "obliteratus"
+        "p5js"
+        "petdex"
+        "pixel-art"
+        "polymarket"
+        "pretext"
+        "research-paper-writing"
+        "sec-financial-research"
+        "segment-anything-model"
+        "spotify"
+        "xurl"
+      ];
       max_turns = 20;
       terminal = {
         backend = "local";
@@ -175,10 +222,12 @@ in
   systemd.services.hermes-agent.serviceConfig.SupplementaryGroups = [ "wheel" ];
   systemd.services.hermes-agent.serviceConfig.NoNewPrivileges = lib.mkForce false;
   systemd.services.hermes-agent.serviceConfig.ExecStart = lib.mkForce hermesGateway;
-  # The media watcher persists its notification state here. Keep the gateway
-  # sandbox read-only elsewhere while permitting this single root-owned path.
-  systemd.services.hermes-agent.serviceConfig.ReadWritePaths =
-    lib.mkAfter [ "/var/lib/media-queue" ];
+  # Permit sidecars in organized libraries without remounting the gateway root.
+  systemd.services.hermes-agent.serviceConfig.ReadWritePaths = lib.mkAfter [
+    "/var/lib/media-queue"
+    "/srv/data/media/library/movies"
+    "/srv/data/media/library/tv"
+  ];
 
   # Self-Interruption Prevention
   systemd.services.hermes-agent.restartIfChanged = false;
@@ -192,6 +241,7 @@ in
     pkgs.rtk
     pkgs.bitwarden-cli
     pkgs.nodejs
+    pkgs.jellyfin-ffmpeg
     config.services.transmission.package
   ];
   systemd.services.hermes-agent.environment.PYTHONPATH =
@@ -238,6 +288,7 @@ in
     "d /var/lib/hermes/.hermes/skills/media 0755 hermes hermes -"
     "L+ /var/lib/hermes/.hermes/skills/media/media-queue - - - - /etc/nixos/skills/media-queue"
     "L+ /var/lib/hermes/.hermes/skills/media/media-cleanup - - - - /etc/nixos/skills/media-cleanup"
+    "L+ /var/lib/hermes/.hermes/skills/media/media-subtitles - - - - /etc/nixos/skills/media-subtitles"
     "d /var/lib/hermes/.hermes/scripts 0755 hermes hermes -"
     # A real local copy is required: Hermes rejects scheduler scripts that
     # resolve through a symlink outside ~/.hermes/scripts.
@@ -263,24 +314,8 @@ in
     "L+ /etc/nixos/.agents/skills/nixos-hermes-setup - - - - /var/lib/hermes/.hermes/skills/devops/nixos-hermes-setup"
     "L+ /etc/nixos/.agents/skills/cloakbrowser-nixos-setup - - - - /var/lib/hermes/.hermes/skills/devops/cloakbrowser-nixos-setup"
 
-    # Caveman is a prompt-only skill.  Link its upstream source from the Nix
-    # store so upgrades are pinned in flake.lock and rebuilds cannot overwrite
-    # it.  Codex reads the global skill directory and the repository link;
-    # Hermes reads its managed productivity skill directory.
-    "L+ /home/buildfleet/.codex/skills/caveman - - - - ${caveman}/skills/caveman"
-    "L+ /home/buildfleet/.codex/skills/caveman-commit - - - - ${caveman}/skills/caveman-commit"
-    "L+ /home/buildfleet/.codex/skills/caveman-review - - - - ${caveman}/skills/caveman-review"
-    "L+ /home/buildfleet/.codex/skills/caveman-help - - - - ${caveman}/skills/caveman-help"
-    "L+ /home/buildfleet/.codex/skills/caveman-stats - - - - ${caveman}/skills/caveman-stats"
-    "L+ /home/buildfleet/.codex/skills/caveman-compress - - - - ${caveman}/skills/caveman-compress"
-    "L+ /home/buildfleet/.codex/skills/cavecrew - - - - ${caveman}/skills/cavecrew"
-    "L+ /etc/nixos/.agents/skills/caveman - - - - ${caveman}/skills/caveman"
-    "L+ /etc/nixos/.agents/skills/caveman-commit - - - - ${caveman}/skills/caveman-commit"
-    "L+ /etc/nixos/.agents/skills/caveman-review - - - - ${caveman}/skills/caveman-review"
-    "L+ /etc/nixos/.agents/skills/caveman-help - - - - ${caveman}/skills/caveman-help"
-    "L+ /etc/nixos/.agents/skills/caveman-stats - - - - ${caveman}/skills/caveman-stats"
-    "L+ /etc/nixos/.agents/skills/caveman-compress - - - - ${caveman}/skills/caveman-compress"
-    "L+ /etc/nixos/.agents/skills/cavecrew - - - - ${caveman}/skills/cavecrew"
+    # Keep Hermes skills pinned in flake.lock.
+    # Personal global agent skills are synced from the separate agent-config repo.
     "L+ /var/lib/hermes/.hermes/skills/productivity/caveman - - - - ${caveman}/skills/caveman"
     "L+ /var/lib/hermes/.hermes/skills/productivity/caveman-commit - - - - ${caveman}/skills/caveman-commit"
     "L+ /var/lib/hermes/.hermes/skills/productivity/caveman-review - - - - ${caveman}/skills/caveman-review"
