@@ -391,12 +391,24 @@ in
   };
   systemd.services.hermes-dashboard.serviceConfig.SupplementaryGroups = [ "wheel" ];
 
+  # Shared writable control directories make Hermes reject its own gateway.
+  systemd.tmpfiles.settings."00-hermes-control" =
+    lib.genAttrs [ "/var/lib/hermes" "/var/lib/hermes/.hermes" ] (_: {
+      d = {
+        mode = "2750";
+        user = "hermes";
+        group = "hermes";
+      };
+    });
+  system.activationScripts.hermes-control-permissions =
+    lib.stringAfter [ "hermes-agent-setup" ] ''
+      chmod 2750 /var/lib/hermes /var/lib/hermes/.hermes
+    '';
+
   # Create Hermes data directories & Symlinks
   systemd.tmpfiles.rules = [
     # Make sudo available on the gateway subprocess PATH (NixOS puts it at /run/wrappers/bin)
     "L+ /usr/bin/sudo - - - - /run/wrappers/bin/sudo"
-    "d /var/lib/hermes           0755 hermes hermes -" # Allow hermes group access
-    "d /var/lib/hermes/.hermes   0755 hermes hermes -" # Config dir accessible to group
     "d /var/lib/hermes/.hermes/skills/productivity 0755 hermes hermes -"
     "d /var/lib/hermes/.hermes/skills/media 0755 hermes hermes -"
     "L+ /var/lib/hermes/.hermes/skills/media/media-queue - - - - /etc/nixos/skills/media-queue"
@@ -406,6 +418,7 @@ in
     # A real local copy is required: Hermes rejects scheduler scripts that
     # resolve through a symlink outside ~/.hermes/scripts.
     "C+ /var/lib/hermes/.hermes/scripts/media-queue-watch.sh 0755 hermes hermes - /etc/nixos/skills/media-queue/scripts/media-queue-watch.sh"
+    "C+ /var/lib/hermes/.hermes/scripts/morning_brew_daily.py 0750 hermes hermes - /etc/nixos/scripts/morning_brew_daily.py"
     "z /var/lib/hermes/.hermes/.env 0640 hermes hermes -" # Secrets readable only by Hermes
     "z /var/lib/hermes/.hermes/config.yaml 0644 hermes hermes -" # Config readable by group
     "d /var/lib/hermes/.config/warden-mcp-bw-profiles 0755 hermes hermes -"
