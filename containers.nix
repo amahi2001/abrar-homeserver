@@ -1,5 +1,10 @@
 # Docker and OCI containers
-{ config, pkgs, lib, ... }:
+{
+  config,
+  pkgs,
+  lib,
+  ...
+}:
 
 let
   adguardHomeDnsConfig = pkgs.writeShellScript "adguardhome-dns-config" ''
@@ -14,60 +19,27 @@ let
     fi
   '';
 
-  adguardHomeUpdate = pkgs.writeShellScript "adguardhome-update" ''
-    set -euo pipefail
-
-    docker="${pkgs.docker}/bin/docker"
-    systemctl="${pkgs.systemd}/bin/systemctl"
-    curl="${pkgs.curl}/bin/curl"
-    dig="${pkgs.dnsutils}/bin/dig"
-    grep="${pkgs.gnugrep}/bin/grep"
-    image="adguard/adguardhome:latest"
-    rollback_image="adguard/adguardhome:rollback"
-    service="docker-adguardhome.service"
-
-    before="$($docker image inspect "$image" --format '{{.Id}}')"
-    echo "Pulling $image (current: $before)"
-    $docker pull "$image"
-    after="$($docker image inspect "$image" --format '{{.Id}}')"
-
-    if [ "$before" = "$after" ]; then
-      echo "AdGuard Home image unchanged."
-      exit 0
-    fi
-
-    echo "New AdGuard Home image found: $after"
-    $docker image tag "$before" "$rollback_image"
-    $systemctl restart "$service"
-
-    healthy=false
-    for _ in {1..30}; do
-      if $systemctl is-active --quiet "$service" \
-        && $curl --fail --silent --show-error --max-time 5 -o /dev/null http://127.0.0.1:8080/ \
-        && $dig +time=5 +tries=1 @127.0.0.1 example.com A | $grep -q 'status: NOERROR'; then
-        healthy=true
-        break
-      fi
-      sleep 2
-    done
-
-    if [ "$healthy" != true ]; then
-      echo "AdGuard Home health check failed; restoring $before."
-      $docker image tag "$rollback_image" "$image"
-      $systemctl restart "$service"
-      $systemctl is-active --quiet "$service"
-      exit 1
-    fi
-
-    $docker image rm "$rollback_image" || true
-    echo "AdGuard Home update healthy: $before -> $after"
-  '';
+  adguardHomeUpdate = pkgs.writeShellApplication {
+    name = "adguardhome-update";
+    runtimeInputs = with pkgs; [
+      docker
+      systemd
+      curl
+      dnsutils
+      coreutils
+      python3
+    ];
+    text = ''
+      exec python3 -P ${./scripts/container-update.py} adguard
+    '';
+  };
 in
 {
   # Docker
   virtualisation.docker = {
     enable = true;
     enableOnBoot = true;
+    liveRestore = true;
     autoPrune = {
       enable = true;
       dates = "Sun *-*-* 05:00:00 America/New_York";
@@ -91,6 +63,8 @@ in
       "/var/lib/adguardhome/conf:/opt/adguardhome/conf"
       "/var/lib/adguardhome/work:/opt/adguardhome/work"
     ];
+    # The maintenance job controls pulls, so rollback tags remain authoritative.
+    pull = "never";
   };
 
   # Run after the OCI module removes the old container, while DNS is stopped.
@@ -117,8 +91,12 @@ in
     wants = [ "network-online.target" ];
     serviceConfig = {
       Type = "oneshot";
-      ExecStart = adguardHomeUpdate;
-      TimeoutStartSec = "10min";
+      ExecStart = "${adguardHomeUpdate}/bin/adguardhome-update";
+      StateDirectory = "container-updates";
+      StateDirectoryMode = "0700";
+      UMask = "0077";
+      TimeoutStartSec = "20min";
+      TimeoutStopSec = "5min";
     };
   };
 

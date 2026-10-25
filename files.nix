@@ -7,6 +7,19 @@
 }:
 
 let
+  vpnContainerUpdate = pkgs.writeShellApplication {
+    name = "vpn-container-update";
+    runtimeInputs = with pkgs; [
+      docker
+      systemd
+      coreutils
+      python3
+    ];
+    text = ''
+      exec python3 -P ${./scripts/container-update.py} "$@"
+    '';
+  };
+
   mediaQueue = pkgs.writeShellApplication {
     name = "media-queue";
     runtimeInputs = [
@@ -14,7 +27,7 @@ let
       pkgs.python3
     ];
     text = ''
-      exec ${pkgs.python3}/bin/python ${./skills/media-queue/scripts/media_queue.py} "$@"
+      exec ${pkgs.python3}/bin/python -P ${./skills/media-queue/scripts/media_queue.py} "$@"
     '';
   };
 
@@ -35,7 +48,7 @@ let
       [ "$#" -ge 1 ] || usage
       case "$1" in
         organize-tv|organize-movie)
-          exec ${pkgs.python3}/bin/python ${./skills/media-queue/scripts/media_library.py} "$@"
+          exec ${pkgs.python3}/bin/python -P ${./skills/media-queue/scripts/media_library.py} "$@"
           ;;
       esac
       [ "$#" -eq 2 ] || usage
@@ -87,7 +100,7 @@ let
       mediaLibrary
     ];
     text = ''
-      exec ${pkgs.python3}/bin/python ${./skills/media-queue/scripts/media_organizer.py} "$@"
+      exec ${pkgs.python3}/bin/python -P ${./skills/media-queue/scripts/media_organizer.py} "$@"
     '';
   };
 
@@ -100,7 +113,7 @@ let
       mediaLibrary
     ];
     text = ''
-      exec ${pkgs.python3}/bin/python ${./skills/media-cleanup/scripts/media_cleanup.py} "$@"
+      exec ${pkgs.python3}/bin/python -P ${./skills/media-cleanup/scripts/media_cleanup.py} "$@"
     '';
   };
 
@@ -222,8 +235,9 @@ in
   # the Git tree and the Nix store.
   virtualisation.oci-containers.containers = {
     gluetun = {
-      # Pinned after a verified pull: upgrades remain an explicit review step.
-      image = "qmcgaw/gluetun@sha256:1a5bf4b4820a879cdf8d93d7ef0d2d963af56670c9ebff8981860b6804ebc8ab";
+      image = "qmcgaw/gluetun:latest";
+      # Only the coordinated updater pulls, preserving image rollback on start.
+      pull = "never";
       autoStart = true;
       devices = [ "/dev/net/tun:/dev/net/tun" ];
       extraOptions = [ "--cap-add=NET_ADMIN" ];
@@ -241,7 +255,8 @@ in
     };
 
     transmission-vpn = {
-      image = "lscr.io/linuxserver/transmission@sha256:7356451f32395838628b241f33bcd7130df9302777fc23f80cbc7ca8b4997c02";
+      image = "lscr.io/linuxserver/transmission:latest";
+      pull = "never";
       autoStart = true;
       dependsOn = [ "gluetun" ];
       environmentFiles = [ "/var/lib/secrets/transmission-rpc.env" ];
@@ -264,6 +279,14 @@ in
     };
   };
 
+  systemd.services.docker-gluetun = {
+    # Recover Transmission after a recreated VPN namespace, including crashes.
+    unitConfig.Upholds = "docker-transmission-vpn.service";
+    postStart = ''
+      ${vpnContainerUpdate}/bin/vpn-container-update vpn-ready
+    '';
+  };
+
   # Keep an immutable declarative baseline for the container on each start;
   # the image may add its own non-security defaults around it.  The RPC
   # password is generated once at activation and stays outside the Nix store.
@@ -274,9 +297,44 @@ in
     # too. It cannot leak without the shared namespace, and this makes the
     # fail-closed relationship explicit at the service-manager layer.
     bindsTo = [ "docker-gluetun.service" ];
+    partOf = [ "docker-gluetun.service" ];
     serviceConfig.ExecStartPre = lib.mkBefore [
       "+${transmissionVpnSettingsSetup}"
     ];
+    # Docker starting does not mean Transmission's authenticated RPC is ready.
+    # Ordered consumers wait for this post-start probe to finish successfully.
+    serviceConfig.TimeoutStartSec = lib.mkForce "5min";
+    postStart = ''
+      ${vpnContainerUpdate}/bin/vpn-container-update transmission-ready
+    '';
+  };
+
+  systemd.services.vpn-container-update = {
+    description = "Guarded Gluetun and Transmission image update";
+    after = [
+      "docker.service"
+      "network-online.target"
+    ];
+    wants = [ "network-online.target" ];
+    serviceConfig = {
+      Type = "oneshot";
+      ExecStart = "${vpnContainerUpdate}/bin/vpn-container-update vpn";
+      StateDirectory = "container-updates";
+      StateDirectoryMode = "0700";
+      UMask = "0077";
+      TimeoutStartSec = "30min";
+      TimeoutStopSec = "5min";
+    };
+  };
+
+  systemd.timers.vpn-container-update = {
+    description = "Weekly guarded VPN container update";
+    wantedBy = [ "timers.target" ];
+    timerConfig = {
+      OnCalendar = "Wed *-*-* 05:30:00 America/New_York";
+      Persistent = true;
+      RandomizedDelaySec = "15min";
+    };
   };
 
   # Poll completed torrents independently of Hermes so downloads added through
@@ -285,7 +343,7 @@ in
   systemd.services.media-organizer = {
     description = "Organize completed Transmission media for Jellyfin";
     after = [ "docker-transmission-vpn.service" ];
-    wants = [ "docker-transmission-vpn.service" ];
+    requires = [ "docker-transmission-vpn.service" ];
     serviceConfig = {
       Type = "oneshot";
       ExecStart = "${mediaOrganizer}/bin/media-organizer run";

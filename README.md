@@ -76,10 +76,9 @@ Runtime state and credentials do not belong in Git. They live under
 
 ## JavaScript runtime
 
-Bun 1.4.3 is pinned by version and SHA-256 in `configuration.nix`, overriding
-the older stable nixpkgs package for interactive use and services. Update the
-pin and archive hash together, then run `nix flake check` before deploying.
-No unrelated flake inputs need updating for a Bun release.
+Bun 1.4.4 and the fixed Node release lines are minimum security versions in
+`configuration.nix` and `runtime-security.nix`. Newer nixpkgs packages take precedence. Development-image
+Node and Bun pins advance through the guarded system updater.
 
 Use `bun run script.ts` for local scripts and `bunx --bun <npm-package>` for
 package executables. The `--bun` flag makes Node shebangs use Bun. Deno and
@@ -141,16 +140,12 @@ nix flake check
 nix run nixpkgs#gitleaks -- dir --redact --no-banner .
 ```
 
-Automatic input updates run only when the live checkout is on a clean `main`
-branch. Each updater validates the resulting system before creating one
-lock-file-only commit. It skips review branches and dirty worktrees, preventing
-timer-generated commits from mixing with manual server work.
-
-Codex updates are deployed daily at 04:30–04:45 Eastern after validation,
-using `nixos-rebuild switch` with the current validated configuration. This
-can also deploy other input pins awaiting the weekly system upgrade. The job
-checks the deployed package even when the version pin is unchanged, so failed deployments are
-retried. Update jobs share a lock to avoid concurrent flake edits.
+Automatic updates build and test an isolated copy of the last deployed flake.
+Uncommitted administrator changes remain separate. System inputs deploy weekly;
+Codex deploys daily at 04:30–04:45 Eastern. Stateful application changes receive
+quiesced backups, service health checks, and recovery on failure. Docker upgrades
+also protect active CI and dev work. See [automatic maintenance and recovery](UPDATES.md)
+for schedules, coverage, retained state, and external update limits.
 
 `codex-app-server-refresh` checks the remote app server every five minutes.
 An outdated server is retired only after checking that its chats are idle and
@@ -170,7 +165,7 @@ for the secret scan.
 - Roll back a deployment: select an older generation in GRUB or run
   `sudo nixos-rebuild switch --rollback`
 - Inspect services: `systemctl status hermes-agent docker-gluetun docker-transmission-vpn prowlarr`
-- Inspect timers: `systemctl list-timers codex-cli-update codex-app-server-refresh nixos-flake-update nixos-upgrade`
+- Inspect timers: `systemctl list-timers --all`
 
 ## License
 

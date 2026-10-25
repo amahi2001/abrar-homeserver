@@ -40,10 +40,12 @@
     serviceConfig = {
       Type = "oneshot";
       RemainAfterExit = true;
+      # The daemon's systemd start completes before its backend/interface is ready.
+      ExecStartPre = "${config.services.tailscale.package}/bin/tailscale wait --timeout=60s";
       # Tailscale may require a one-time admin approval before Serve can start.
       # Do not let that interactive approval block a full system activation.
-      TimeoutStartSec = "20s";
-      ExecStart = "${config.services.tailscale.package}/bin/tailscale serve --bg --https=443 http://127.0.0.1:9091";
+      TimeoutStartSec = "90s";
+      ExecStart = "${pkgs.coreutils}/bin/timeout 20s ${config.services.tailscale.package}/bin/tailscale serve --bg --https=443 http://127.0.0.1:9091";
     };
   };
 }

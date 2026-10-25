@@ -160,7 +160,8 @@ dev rebuild myproject
 project container, retaining bind-mounted source, home, caches, and account state.
 It refuses while an agent session holds the project lock. Ordinary `start` uses
 the cached image without pulling or installing tools. Base image digest and
-Agent/Bun/uv versions are pinned; RTK, Playwright CLI and Skills CLI follow the personal config
+Agent/Bun/uv versions are pinned and advance through weekly validated maintenance;
+RTK, Playwright CLI and Skills CLI follow the personal config
 lockfiles when a snapshot is present. Changed tool locks select a new image so
 updates are built once and reused across projects. Debian packages resolve at explicit image
 build time. Both x86_64 Linux and the server's existing Docker daemon are required.

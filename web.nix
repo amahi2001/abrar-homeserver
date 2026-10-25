@@ -17,8 +17,14 @@
   # Retry transient provider failures within the five-minute update interval.
   # Keep the token in the credential file and curl's stdin, never its argv.
   systemd.services.duckdns = {
-    after = [ "network-online.target" ];
-    wants = [ "network-online.target" ];
+    after = [
+      "network-online.target"
+      "docker-adguardhome.service"
+    ];
+    wants = [
+      "network-online.target"
+      "docker-adguardhome.service"
+    ];
     serviceConfig = {
       Type = lib.mkForce "oneshot";
       TimeoutStartSec = "180s";
@@ -30,7 +36,7 @@
 
       if ! response="$(${pkgs.curl}/bin/curl --fail --silent --show-error \
         --connect-timeout 10 --max-time 20 \
-        --retry 4 --retry-delay 5 --retry-max-time 120 \
+        --retry 24 --retry-all-errors --retry-delay 5 --retry-max-time 120 \
         --config - <<< "url = \"https://www.duckdns.org/update?verbose=true&domains=$domains&token=$token&ip=\"")"; then
         echo "DuckDNS update failed after bounded retries; the next timer run will retry."
         exit 1

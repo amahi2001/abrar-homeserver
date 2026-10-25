@@ -21,6 +21,8 @@
     ./hermes.nix
     ./tailscale.nix
     ./update.nix
+    ./mcp-updates.nix
+    ./runtime-security.nix
   ];
 
   # Bootloader
@@ -91,18 +93,34 @@
 
   # System packages
   nixpkgs.config.allowUnfree = true;
-  # Stable nixpkgs currently ships Bun 1.3.13. Pin the upstream stable release
-  # for both interactive commands and services without updating unrelated inputs.
+  # Enforce security floors until nixpkgs catches up; never downgrade a newer package.
   nixpkgs.overlays = [
-    (_final: prev: {
-      bun = prev.bun.overrideAttrs (_old: rec {
-        version = "1.4.3";
-        src = prev.fetchurl {
-          url = "https://github.com/oven-sh/bun/releases/download/bun-v${version}/bun-linux-x64.zip";
-          hash = "sha256-PnMFKNiXdfA/h/BcBnh8TfQJnQo38/JS57gpyyOBbhg=";
-        };
-      });
-    })
+    (
+      _final: prev:
+      let
+        atLeast =
+          package: version: override:
+          if lib.versionOlder package.version version then package.overrideAttrs override else package;
+      in
+      {
+        # Stable lags the CLI's fixes; prefer the newer already-locked package.
+        bitwarden-cli =
+          let
+            candidate = codexCli.inputs.nixpkgs.legacyPackages.${prev.stdenv.hostPlatform.system}.bitwarden-cli;
+          in
+          if lib.versionOlder prev.bitwarden-cli.version candidate.version then
+            candidate
+          else
+            prev.bitwarden-cli;
+        bun = atLeast prev.bun "1.4.4" (_old: rec {
+          version = "1.4.4";
+          src = prev.fetchurl {
+            url = "https://github.com/oven-sh/bun/releases/download/bun-v${version}/bun-linux-x64.zip";
+            hash = "sha256-v4zL+ysLgBWeD5ptFcVTF63YB3U028YTCj7bUvzLOVw=";
+          };
+        });
+      }
+    )
   ];
   environment.systemPackages = with pkgs; [
     wget

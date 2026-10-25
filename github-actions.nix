@@ -21,16 +21,20 @@ in
       runner = "github-actions-${repository}";
       url = "https://github.com/amahi2001/${repository}";
       unit = "${config.systemd.units."${runner}.service".unit}/${runner}.service";
+      runnerImage = "${image}-${repository}";
     in
     {
       virtualisation.oci-containers.containers.${runner} = {
-        inherit image;
+        image = runnerImage;
         serviceName = runner;
         pull = "never";
         environment = {
           RUNNER_URL = url;
           RUNNER_NAME = "buildfleet-server-${repository}";
           RUNNER_LABELS = "buildfleet-server,ubuntu-24.04";
+          FORCE_JAVASCRIPT_ACTIONS_TO_NODE24 = "true";
+          ACTIONS_RUNNER_FORCED_INTERNAL_NODE_VERSION = "node24";
+          ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION = "false";
         };
         environmentFiles = [ "/run/${runner}/runner.env" ];
         volumes = [
@@ -53,6 +57,9 @@ in
       };
 
       systemd.services.${runner} = {
+        # Activation can otherwise start newly declared runners before the
+        # Docker transaction is ready to accept jobs again.
+        unitConfig.ConditionPathExists = "!/run/nixos-fleet-maintenance/paused";
         description = "GitHub Actions runner for ${repository}";
         after = [ "githubactions.slice" ];
         requires = [ "githubactions.slice" ];
@@ -61,9 +68,17 @@ in
         stopIfChanged = false;
         preStart = lib.mkAfter ''
           set -euo pipefail
-          if ! docker image inspect ${lib.escapeShellArg image} >/dev/null 2>&1; then
-            docker build --tag ${lib.escapeShellArg image} ${./github-actions}
-          fi
+          # Serialize first builds across repository services. Maintenance tags
+          # each repository independently, preserving its known-good image.
+          (
+            ${pkgs.util-linux}/bin/flock 9
+            if ! docker image inspect ${lib.escapeShellArg runnerImage} >/dev/null 2>&1; then
+              if ! docker image inspect ${lib.escapeShellArg image} >/dev/null 2>&1; then
+                docker build --tag ${lib.escapeShellArg image} ${./github-actions}
+              fi
+              docker image tag ${lib.escapeShellArg image} ${lib.escapeShellArg runnerImage}
+            fi
+          ) 9>/run/lock/github-actions-image.lock
           GH_TOKEN="$(cat "$CREDENTIALS_DIRECTORY/github-token")"
           export GH_TOKEN
           ${pkgs.gh}/bin/gh api repos/amahi2001/${repository} \
@@ -95,6 +110,51 @@ in
   systemd.tmpfiles.rules = [
     "d /var/lib/github-actions 0700 root root -"
   ];
+
+  systemd.services.github-actions-maintenance = {
+    description = "Refresh GitHub runner images and replace idle listeners";
+    after = [
+      "network-online.target"
+      "docker.service"
+    ];
+    wants = [ "network-online.target" ];
+    requires = [ "docker.service" ];
+    restartIfChanged = false;
+    stopIfChanged = false;
+    path = [
+      pkgs.docker
+      pkgs.gh
+      pkgs.systemd
+    ];
+    serviceConfig = {
+      Type = "oneshot";
+      ExecStart = "${pkgs.python3}/bin/python -P ${./github-actions/maintain.py} --context ${./github-actions} --image ${image} ${lib.escapeShellArgs repositories}";
+      LoadCredential = "github-token:/var/lib/secrets/github-actions-token";
+      StateDirectory = "github-actions/maintenance";
+      StateDirectoryMode = "0700";
+      TimeoutStartSec = "2h";
+      # Python unwinds the dispatch-freeze guard when maintenance is stopped.
+      KillSignal = "SIGINT";
+      UMask = "0077";
+    };
+  };
+  systemd.timers.github-actions-maintenance = {
+    description = "Retry deferred runner refreshes and rebuild packages weekly";
+    wantedBy = [ "timers.target" ];
+    timerConfig = {
+      OnBootSec = "15min";
+      OnUnitInactiveSec = "1h";
+      RandomizedDelaySec = "5min";
+    };
+  };
+  environment.etc."systemd/system.control/github-actions-maintenance.service".source = "${
+    config.systemd.units."github-actions-maintenance.service".unit
+  }/github-actions-maintenance.service";
+  environment.etc."systemd/system.control/github-actions-maintenance.timer".source = "${
+    config.systemd.units."github-actions-maintenance.timer".unit
+  }/github-actions-maintenance.timer";
+  environment.etc."systemd/system.control/timers.target.wants/github-actions-maintenance.timer".source =
+    "${config.systemd.units."github-actions-maintenance.timer".unit}/github-actions-maintenance.timer";
 
   # Bound the whole CI fleet, including containers started by the Docker daemon.
   systemd.slices.githubactions = {

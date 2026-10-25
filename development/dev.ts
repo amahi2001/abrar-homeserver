@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync, chmodSync, copyFileSync, readdirSync, lstatSync, unlinkSync, realpathSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync, chmodSync, copyFileSync, readdirSync, lstatSync, unlinkSync, realpathSync, readlinkSync, symlinkSync, openSync, closeSync, fstatSync, constants } from "node:fs";
 import { homedir, hostname, userInfo } from "node:os";
 import { join, resolve, dirname } from "node:path";
 
@@ -10,7 +10,7 @@ const help = `Usage:
   dev stop PROJECT
   dev view PROJECT [browser|desktop] [--stop]
   dev list
-  dev setup
+  dev setup [--refresh-runtime]
   dev build
   dev rebuild PROJECT
 
@@ -56,6 +56,33 @@ function atomic(path: string, data: string, mode = 0o600) {
   renameSync(temp, path);
 }
 
+export function withAgentDispatchLock<T>(home: string, action: () => T): T {
+  if (!lstatSync(home).isDirectory()) throw Error("Cannot verify the shared project home directory.");
+  const path = join(home, ".agent-session.lock");
+  const fd = openSync(path, constants.O_CREAT | constants.O_RDWR | constants.O_NOFOLLOW, 0o600);
+  try {
+    if (!fstatSync(fd).isFile()) throw Error("Invalid project agent lock.");
+    // flock locks the shared open-file description: the parent's FD keeps it
+    // held after this helper exits, even while the container is replaced.
+    const lock = Bun.spawnSync(["flock", "-n", "0"], { stdin: fd, stdout: "pipe", stderr: "pipe" });
+    if (lock.exitCode !== 0) throw Error("Agent active or dispatch lock unavailable; preserving the running container.");
+    const current = lstatSync(path), held = fstatSync(fd);
+    if (current.dev !== held.dev || current.ino !== held.ino) throw Error("Project agent lock changed; retry when idle.");
+    return action();
+  } finally { closeSync(fd); }
+}
+
+function deploymentLock(project?: string): () => void {
+  if (project && process.env.DEV_HOST_LOCK_HELD === project) return () => {};
+  let fd: number | undefined = openSync(process.env.DEV_DEPLOYMENT_LOCK || "/run/lock/host-deployment.lock", constants.O_CREAT | constants.O_RDWR | constants.O_NOFOLLOW, 0o660);
+  const release = () => { if (fd !== undefined) { closeSync(fd); fd = undefined; } };
+  try {
+    const lock = Bun.spawnSync(["flock", "-s", "0"], { stdin: fd, stdout: "pipe", stderr: "pipe" });
+    if (lock.exitCode !== 0 || !fstatSync(fd).isFile()) throw Error("Cannot acquire the host deployment lock; retry after maintenance.");
+    return release;
+  } catch (error) { release(); throw error; }
+}
+
 type Metadata = { repo: string; privateDefault: boolean; source: string; composeProject: string; image: string; baseImage?: string; configHash?: string };
 
 export function main(argv = process.argv.slice(2)) {
@@ -81,18 +108,33 @@ export function main(argv = process.argv.slice(2)) {
     if (version !== nativeVersion) throw Error(`Dev Containers CLI ${nativeVersion} required; run dev setup. Found: ${version || "not installed"}`);
   }
   if (command === "setup") {
+    if ((rawProject && rawProject !== "--refresh-runtime") || rest.length) throw Error("Usage: dev setup [--refresh-runtime]");
+    const refreshRuntime = rawProject === "--refresh-runtime";
     const lock = join(homedir(), ".local/share/devcontainers.setup.lock");
     mkdirSync(dirname(lock), { recursive: true, mode: 0o700 });
     if (!process.env.DEV_SETUP_LOCKED) {
-      process.exitCode = run(["flock", lock, process.execPath, import.meta.path, "setup"], { inherit: true, allowFailure: true, env: { DEV_SETUP_LOCKED: "1" } }).code;
+      process.exitCode = run(["flock", lock, process.execPath, import.meta.path, ...argv], { inherit: true, allowFailure: true, env: { DEV_SETUP_LOCKED: "1" } }).code;
       return;
     }
-    if (existsSync(nativeCli) && run([nativeCli, "--version"], { allowFailure: true }).stdout === nativeVersion) { console.log(`Dev Containers CLI ${nativeVersion} ready.`); return; }
+    if (!refreshRuntime && existsSync(nativeCli) && run([nativeCli, "--version"], { allowFailure: true }).stdout === nativeVersion) { console.log(`Dev Containers CLI ${nativeVersion} ready.`); return; }
     const installer = `${lock}.install.sh`;
+    const previousLinks = ["node/current", "cli/current"].map(relative => {
+      const path = join(nativePrefix, relative);
+      return { path, target: existsSync(path) && lstatSync(path).isSymbolicLink() ? readlinkSync(path) : undefined };
+    });
     try {
       run(["curl", "-fsSL", "https://raw.githubusercontent.com/devcontainers/cli/main/scripts/install.sh", "-o", installer]);
       run(["sh", installer, "--version", nativeVersion, "--node-version", "24", "--prefix", nativePrefix], { inherit: true });
       nativeReady();
+      const version = run([join(nativePrefix, "node/current/bin/node"), "--version"]).stdout;
+      const parts = /^v24\.(\d+)\.(\d+)$/.exec(version);
+      if (!parts || Number(parts[1]) < 22 || (Number(parts[1]) === 22 && Number(parts[2]) < 1)) throw Error(`Patched Node.js 24 required; installer returned ${version}`);
+    } catch (error) {
+      for (const { path, target } of previousLinks) if (target) {
+        const temp = `${path}.${process.pid}.rollback`;
+        symlinkSync(target, temp); renameSync(temp, path);
+      }
+      throw error;
     } finally { if (existsSync(installer)) unlinkSync(installer); }
     return;
   }
@@ -126,13 +168,17 @@ export function main(argv = process.argv.slice(2)) {
   const image = `buildfleet-dev:${fingerprint.digest("hex").slice(0, 16)}`;
 
   function build() {
-    const args = ["docker", "build", "--tag", image, "--build-arg", `PLAYWRIGHT_CLI_VERSION=${playwrightVersion}`];
+    const args = ["docker", "build", "--tag", image, "--pull", "--build-arg", `APT_REFRESH=${Math.floor(Date.now() / (7 * 86400000))}`, "--build-arg", `PLAYWRIGHT_CLI_VERSION=${playwrightVersion}`];
     args.push("--build-arg", `CODEBASE_MEMORY_VERSION=${codebaseMemory.version}`, "--build-arg", `CODEBASE_MEMORY_INSTALLER=${codebaseMemory.installer}`, "--build-arg", `CODEBASE_MEMORY_INSTALLER_SHA256=${codebaseMemory.installerSha256}`);
     if (rtk) args.push("--build-arg", `RTK_VERSION=v${rtk.version.replace(/^v/, "")}`, "--build-arg", `RTK_INSTALLER=${rtk.installer}`, "--build-arg", `RTK_INSTALLER_SHA256=${rtk.installerSha256}`);
     if (skillsVersion) args.push("--build-arg", `SKILLS_VERSION=${skillsVersion}`);
     run([...args, assets], { inherit: true });
   }
-  if (command === "build") { build(); return; }
+  if (command === "build") {
+    const release = deploymentLock();
+    try { build(); console.log(image); return; }
+    finally { release(); }
+  }
   if (command === "list") {
     console.log("Viewer mappings: browser = 8931/tcp | desktop = 6080/tcp (SSH tunnel required)");
     run(["docker", "ps", "-a", "--filter", "label=dev.managed=true", "--format", "table {{.Label \"dev.project\"}}\t{{.Status}}\t{{.Ports}}"], { inherit: true });
@@ -215,34 +261,44 @@ export function main(argv = process.argv.slice(2)) {
   }
   function startContainer(force = false) {
     const config = JSON.parse(compose(["config", "--format", "json"]).stdout);
-    const configHash = createHash("sha256").update(JSON.stringify(config)).update(JSON.stringify(nativeConfig)).digest("hex");
-    const recreate = force || metadata?.configHash !== configHash;
-    if (recreate) checkpointBrowser();
-    if (config.services.dev.build && (force || run(["docker", "image", "inspect", config.services.dev.image], { allowFailure: true }).code)) {
+    const home = join(projectState, "home");
+    const mounts = config.services.dev.volumes?.filter((mount: any) => mount.target === "/home/node");
+    if (mounts?.length !== 1 || mounts[0].type !== "bind" || resolve(mounts[0].source) !== home) throw Error("Cannot verify the shared project home mount; preserving the running container.");
+    const existing = container();
+    if (existing) {
+      const mounted = JSON.parse(run(["docker", "inspect", existing, "--format", "{{json .Mounts}}"]).stdout).filter((mount: any) => mount.Destination === "/home/node");
+      if (mounted.length !== 1 || mounted[0].Type !== "bind" || mounted[0].Source !== home) throw Error("Running container has an unknown project home mount; preserving it.");
+    }
+    return withAgentDispatchLock(home, () => {
+      const configHash = createHash("sha256").update(JSON.stringify(config)).update(JSON.stringify(nativeConfig)).digest("hex");
+      const recreate = force || metadata?.configHash !== configHash;
+      if (recreate) checkpointBrowser();
+      if (config.services.dev.build && (force || run(["docker", "image", "inspect", config.services.dev.image], { allowFailure: true }).code)) {
+        configure(config);
+        native("build");
+      }
+      // The project image was prepared once; ordinary starts must never rebuild it.
+      delete config.services.dev.build;
       configure(config);
-      native("build");
-    }
-    // The project image was prepared once; ordinary starts must never rebuild it.
-    delete config.services.dev.build;
-    configure(config);
-    let id = container();
-    if (recreate || !id || run(["docker", "inspect", id, "--format", "{{.State.Health.Status}}"]).stdout !== "healthy") {
-      const result = native("up", recreate ? ["--remove-existing-container"] : []);
-      id = JSON.parse(result.stdout).containerId;
-      if (typeof id !== "string" || !id) throw Error("Dev Containers CLI returned no container ID");
-    }
-    // Native up skips Compose when dev is running; keep its sidecars running too.
-    const sidecars = Object.keys(config.services).filter(service => service !== "dev");
-    if (sidecars.length) run(["docker", "compose", "--project-directory", source, "-p", composeProject, "-f", join(projectState, "compose.json"), "up", "-d", "--no-build", "--no-deps", "--wait", ...sidecars], { env: environment() });
-    // Give first-time indexing a bounded window; healthy warm boxes return immediately.
-    for (let i = 0; i < 1200; i++) {
-      const state = JSON.parse(run(["docker", "inspect", id, "--format", "{{json .State}}"]).stdout);
-      if (state.Running && state.Health?.Status === "healthy") return configHash;
-      if (!state.Running || state.Health?.Status === "unhealthy") break;
-      Bun.sleepSync(500);
-    }
-    const logs = run(["docker", "logs", "--tail", "80", id], { allowFailure: true });
-    throw Error(`Container did not become healthy.\n${logs.stdout}\n${logs.stderr}`);
+      let id = container();
+      if (recreate || !id || run(["docker", "inspect", id, "--format", "{{.State.Health.Status}}"]).stdout !== "healthy") {
+        const result = native("up", recreate ? ["--remove-existing-container"] : []);
+        id = JSON.parse(result.stdout).containerId;
+        if (typeof id !== "string" || !id) throw Error("Dev Containers CLI returned no container ID");
+      }
+      // Native up skips Compose when dev is running; keep its sidecars running too.
+      const sidecars = Object.keys(config.services).filter(service => service !== "dev");
+      if (sidecars.length) run(["docker", "compose", "--project-directory", source, "-p", composeProject, "-f", join(projectState, "compose.json"), "up", "-d", "--no-build", "--no-deps", "--wait", ...sidecars], { env: environment() });
+      // Give first-time indexing a bounded window; healthy warm boxes return immediately.
+      for (let i = 0; i < 1200; i++) {
+        const state = JSON.parse(run(["docker", "inspect", id, "--format", "{{json .State}}"]).stdout);
+        if (state.Running && state.Health?.Status === "healthy") return configHash;
+        if (!state.Running || state.Health?.Status === "unhealthy") break;
+        Bun.sleepSync(500);
+      }
+      const logs = run(["docker", "logs", "--tail", "80", id], { allowFailure: true });
+      throw Error(`Container did not become healthy.\n${logs.stdout}\n${logs.stderr}`);
+    });
   }
 
   if (command === "view") {
@@ -274,9 +330,12 @@ export function main(argv = process.argv.slice(2)) {
   }
   if (command === "stop") {
     if (!metadata) throw Error("Project not initialized.");
-    nativeReady();
-    checkpointBrowser();
-    compose(["stop"], true); return;
+    const release = deploymentLock(project);
+    try {
+      nativeReady();
+      checkpointBrowser();
+      compose(["stop"], true); return;
+    } finally { release(); }
   }
 
   mkdirSync(projectState, { recursive: true, mode: 0o700 });
@@ -289,114 +348,120 @@ export function main(argv = process.argv.slice(2)) {
     process.exitCode = child.code;
     return;
   }
-  nativeReady();
-  if (metadata) {
-    const id = container();
-    if (id && run(["docker", "exec", "--user", `${process.getuid!()}:${process.getgid!()}`, id, "flock", "-n", "/home/node/.agent-session.lock", "true"], { allowFailure: true }).code) throw Error("Agent active; finish its session before starting or rebuilding.");
-  }
-  if (command === "rebuild") {
-    if (!metadata) throw Error("Project not initialized.");
-    build();
-    const previous = { ...metadata };
-    metadata.image = workspaceImage;
-    metadata.baseImage = image;
-    try {
-      const config = JSON.parse(compose(["config", "--format", "json"]).stdout);
-      if (!config.services.dev.build) run(["docker", "image", "tag", image, workspaceImage]);
-      metadata.configHash = startContainer(true);
-    } catch (error) { metadata = previous; throw error; }
+  // Core deployment holds this mutex exclusively while enumerating/stopping
+  // the fleet. Include new/stopped projects, then release before agent attach.
+  const releasePreparation = deploymentLock(project);
+  try {
+    nativeReady();
+    if (metadata) {
+      const id = container();
+      if (id && run(["docker", "exec", "--user", `${process.getuid!()}:${process.getgid!()}`, id, "flock", "-n", "/home/node/.agent-session.lock", "true"], { allowFailure: true }).code) throw Error("Agent active; finish its session before starting or rebuilding.");
+    }
+    if (command === "rebuild") {
+      if (!metadata) throw Error("Project not initialized.");
+      build();
+      const previous = { ...metadata };
+      metadata.image = workspaceImage;
+      metadata.baseImage = image;
+      try {
+        const config = JSON.parse(compose(["config", "--format", "json"]).stdout);
+        if (!config.services.dev.build) run(["docker", "image", "tag", image, workspaceImage]);
+        metadata.configHash = startContainer(true);
+      } catch (error) { metadata = previous; throw error; }
+      atomic(metadataPath, JSON.stringify(metadata, null, 2) + "\n");
+      console.log(`${project} rebuilt; source, home, caches, and account state preserved.`);
+      return;
+    }
+
+    const started = performance.now();
+    run(["docker", "info", "--format", "{{.ServerVersion}}"]);
+    if (!existsSync(join(source, ".git")) && existsSync(source) && readdirSync(source).length) throw Error(`Project directory ${source} is nonempty and is not a Git repository; move it or initialize it explicitly.`);
+    const bootstrap = join(projectState, "bootstrap-push");
+    const repo = repoOption || metadata?.repo || (existsSync(join(source, ".git")) ? githubRemote(git("remote", "get-url", "origin")) : `${process.env.DEV_GITHUB_OWNER || "amahi2001"}/${project}`);
+    repository(repo);
+    if (metadata && metadata.repo.toLowerCase() !== repo.toLowerCase()) throw Error(`Project already belongs to ${metadata.repo}; use a different project name for ${repo}.`);
+    const privateDefault = metadata?.privateDefault ?? (!repoOption && (existsSync(bootstrap) || !existsSync(join(source, ".git"))));
+    const needsProvision = !metadata;
+    // Warm starts use saved local identity; token retrieval performs no GitHub network request.
+    if (needsProvision) {
+      const result = run(["gh", "api", `repos/${repo}`], { allowFailure: true });
+      if (result.code === 0) {
+        const found = JSON.parse(result.stdout);
+        if (found.full_name.toLowerCase() !== repo.toLowerCase()) throw Error("GitHub redirected to another repository; assign its canonical name explicitly.");
+        if (privateDefault && !found.private) throw Error(`Default repository ${repo} exists but is public. Assign it explicitly or choose a different project name.`);
+      } else {
+        if (!result.stderr.includes("HTTP 404")) throw Error(`Cannot verify GitHub repository: ${result.stderr}`);
+        if (repoOption) throw Error(`Assigned repository ${repo} is missing or inaccessible. No replacement created.`);
+        const login = JSON.parse(run(["gh", "api", "user"]).stdout).login;
+        if (repo.split("/")[0].toLowerCase() !== login.toLowerCase()) throw Error("Default owner must match the authenticated GitHub account.");
+        run(["gh", "repo", "create", repo, "--private"], { inherit: true });
+        const created = JSON.parse(run(["gh", "api", `repos/${repo}`]).stdout);
+        if (!created.private || created.full_name.toLowerCase() !== repo.toLowerCase()) throw Error("Repository privacy/identity verification failed.");
+      }
+    }
+
+    for (const dir of [root, projectState, join(projectState, "home"), accounts, join(accounts, "codex"), join(accounts, "claude"), credentials]) {
+      mkdirSync(dir, { recursive: true, mode: 0o700 });
+      if (dir !== root) chmodSync(dir, 0o700);
+    }
+    const token = run(["gh", "auth", "token", "--hostname", "github.com"]).stdout;
+    if (!token) throw Error("GitHub token unavailable. Run gh auth login on the host.");
+    atomic(join(credentials, "github-token"), token + "\n");
+    const accountAuth = join(accounts, "codex/auth.json");
+    const hostAuth = join(process.env.CODEX_HOME || join(homedir(), ".codex"), "auth.json");
+    if (!existsSync(accountAuth) && existsSync(hostAuth)) { copyFileSync(hostAuth, accountAuth); chmodSync(accountAuth, 0o600); }
+    const claudeAuth = join(accounts, "claude/.credentials.json");
+    const hostClaudeAuth = join(process.env.CLAUDE_CONFIG_DIR || join(homedir(), ".claude"), ".credentials.json");
+    if (!existsSync(claudeAuth) && existsSync(hostClaudeAuth)) { copyFileSync(hostClaudeAuth, claudeAuth); chmodSync(claudeAuth, 0o600); }
+    const codexConfig = join(accounts, "codex/config.toml");
+    if (!existsSync(codexConfig)) atomic(codexConfig, 'cli_auth_credentials_store = "file"\n');
+
+    if (!existsSync(join(source, ".git"))) {
+      mkdirSync(source, { recursive: true });
+      const remoteRefs = run(["git", "ls-remote", `https://github.com/${repo}.git`], {
+        env: { GH_TOKEN: token, GIT_CONFIG_COUNT: "1", GIT_CONFIG_KEY_0: "credential.https://github.com.helper", GIT_CONFIG_VALUE_0: "!gh auth git-credential" },
+      }).stdout;
+      if (remoteRefs) run(["gh", "repo", "clone", repo, source], { inherit: true });
+      else {
+        git("init", "-b", "main");
+        git("remote", "add", "origin", `https://github.com/${repo}.git`);
+        writeFileSync(join(source, "README.md"), `# ${project}\n\nAgent development workspace. Run \`dev start ${project}\` on the server.\n`);
+        writeFileSync(join(source, ".gitignore"), ".env\n.env.*\n!.env.example\n*.key\n*.pem\n*.secret\nnode_modules/\n.venv/\n__pycache__/\n.codex/\n.claude/\n.claude.json\n.dev-state/\n");
+        git("add", "--", "README.md", ".gitignore");
+        git("commit", "-m", "Initialize private development workspace");
+        atomic(bootstrap, repo);
+      }
+    }
+    if (githubRemote(git("remote", "get-url", "origin")).toLowerCase() !== repo.toLowerCase()) throw Error("Local origin differs from the assigned repository; reconcile it before starting.");
+    if (existsSync(bootstrap)) {
+      if (readFileSync(bootstrap, "utf8") !== repo) throw Error("Pending bootstrap belongs to another repository; preserve its local commit and reconcile the remote.");
+      run(["git", "-C", source, "-c", "credential.https://github.com.helper=!gh auth git-credential", "push", "-u", "origin", "main"], { inherit: true });
+      unlinkSync(bootstrap);
+    }
+    const branch = git("symbolic-ref", "--quiet", "--short", "HEAD");
+    if (task || !branch.startsWith("agent/")) {
+      if (task && git("status", "--porcelain")) throw Error("Uncommitted changes present. Resume without --task or finish them first.");
+      const name = `agent/${task || "work"}-${new Date().toISOString().replace(/[-:.TZ]/g, "")}-${process.pid}`;
+      git("switch", "-c", name);
+    }
+    const excludes = resolve(source, git("rev-parse", "--git-path", "info/exclude"));
+    const existingExcludes = existsSync(excludes) ? readFileSync(excludes, "utf8") : "";
+    if (!existingExcludes.includes("# dev runtime")) atomic(excludes, existingExcludes + "\n# dev runtime\n.env\n.env.*\n!.env.example\n.codex/\n.claude/\n.claude.json\nauth.json\nnode_modules/\n.venv/\n", 0o644);
+    if (run(["docker", "image", "inspect", image], { allowFailure: true }).code) build();
+    const workspaceExists = run(["docker", "image", "inspect", workspaceImage], { allowFailure: true }).code === 0;
+    metadata = { ...metadata, repo, privateDefault, source, composeProject, image: workspaceImage, baseImage: image };
+    if (!workspaceExists && !JSON.parse(compose(["config", "--format", "json"]).stdout).services.dev.build) run(["docker", "image", "tag", image, workspaceImage]);
+    // Retain repository identity on failed first startup; readiness is committed below.
+    if (!existsSync(metadataPath)) atomic(metadataPath, JSON.stringify(metadata, null, 2) + "\n");
+    metadata.configHash = startContainer();
     atomic(metadataPath, JSON.stringify(metadata, null, 2) + "\n");
-    console.log(`${project} rebuilt; source, home, caches, and account state preserved.`);
-    return;
-  }
-
-  const started = performance.now();
-  run(["docker", "info", "--format", "{{.ServerVersion}}"]);
-  if (!existsSync(join(source, ".git")) && existsSync(source) && readdirSync(source).length) throw Error(`Project directory ${source} is nonempty and is not a Git repository; move it or initialize it explicitly.`);
-  const bootstrap = join(projectState, "bootstrap-push");
-  const repo = repoOption || metadata?.repo || (existsSync(join(source, ".git")) ? githubRemote(git("remote", "get-url", "origin")) : `${process.env.DEV_GITHUB_OWNER || "amahi2001"}/${project}`);
-  repository(repo);
-  if (metadata && metadata.repo.toLowerCase() !== repo.toLowerCase()) throw Error(`Project already belongs to ${metadata.repo}; use a different project name for ${repo}.`);
-  const privateDefault = metadata?.privateDefault ?? (!repoOption && (existsSync(bootstrap) || !existsSync(join(source, ".git"))));
-  const needsProvision = !metadata;
-  // Warm starts use saved local identity; token retrieval performs no GitHub network request.
-  if (needsProvision) {
-    const result = run(["gh", "api", `repos/${repo}`], { allowFailure: true });
-    if (result.code === 0) {
-      const found = JSON.parse(result.stdout);
-      if (found.full_name.toLowerCase() !== repo.toLowerCase()) throw Error("GitHub redirected to another repository; assign its canonical name explicitly.");
-      if (privateDefault && !found.private) throw Error(`Default repository ${repo} exists but is public. Assign it explicitly or choose a different project name.`);
-    } else {
-      if (!result.stderr.includes("HTTP 404")) throw Error(`Cannot verify GitHub repository: ${result.stderr}`);
-      if (repoOption) throw Error(`Assigned repository ${repo} is missing or inaccessible. No replacement created.`);
-      const login = JSON.parse(run(["gh", "api", "user"]).stdout).login;
-      if (repo.split("/")[0].toLowerCase() !== login.toLowerCase()) throw Error("Default owner must match the authenticated GitHub account.");
-      run(["gh", "repo", "create", repo, "--private"], { inherit: true });
-      const created = JSON.parse(run(["gh", "api", `repos/${repo}`]).stdout);
-      if (!created.private || created.full_name.toLowerCase() !== repo.toLowerCase()) throw Error("Repository privacy/identity verification failed.");
+    console.log(`${project} ready in ${((performance.now() - started) / 1000).toFixed(2)}s | ${repo} | ${git("branch", "--show-current")}`);
+    console.log(`Source: ${source}\nPreview mappings: dev list | Shell: dev shell ${project}`);
+    releasePreparation();
+    if (!noAgent) {
+      process.exitCode = native("exec", ["dev-agent", agent, ...agentArgs], true, true).code;
     }
-  }
-
-  for (const dir of [root, projectState, join(projectState, "home"), accounts, join(accounts, "codex"), join(accounts, "claude"), credentials]) {
-    mkdirSync(dir, { recursive: true, mode: 0o700 });
-    if (dir !== root) chmodSync(dir, 0o700);
-  }
-  const token = run(["gh", "auth", "token", "--hostname", "github.com"]).stdout;
-  if (!token) throw Error("GitHub token unavailable. Run gh auth login on the host.");
-  atomic(join(credentials, "github-token"), token + "\n");
-  const accountAuth = join(accounts, "codex/auth.json");
-  const hostAuth = join(process.env.CODEX_HOME || join(homedir(), ".codex"), "auth.json");
-  if (!existsSync(accountAuth) && existsSync(hostAuth)) { copyFileSync(hostAuth, accountAuth); chmodSync(accountAuth, 0o600); }
-  const claudeAuth = join(accounts, "claude/.credentials.json");
-  const hostClaudeAuth = join(process.env.CLAUDE_CONFIG_DIR || join(homedir(), ".claude"), ".credentials.json");
-  if (!existsSync(claudeAuth) && existsSync(hostClaudeAuth)) { copyFileSync(hostClaudeAuth, claudeAuth); chmodSync(claudeAuth, 0o600); }
-  const codexConfig = join(accounts, "codex/config.toml");
-  if (!existsSync(codexConfig)) atomic(codexConfig, 'cli_auth_credentials_store = "file"\n');
-
-  if (!existsSync(join(source, ".git"))) {
-    mkdirSync(source, { recursive: true });
-    const remoteRefs = run(["git", "ls-remote", `https://github.com/${repo}.git`], {
-      env: { GH_TOKEN: token, GIT_CONFIG_COUNT: "1", GIT_CONFIG_KEY_0: "credential.https://github.com.helper", GIT_CONFIG_VALUE_0: "!gh auth git-credential" },
-    }).stdout;
-    if (remoteRefs) run(["gh", "repo", "clone", repo, source], { inherit: true });
-    else {
-      git("init", "-b", "main");
-      git("remote", "add", "origin", `https://github.com/${repo}.git`);
-      writeFileSync(join(source, "README.md"), `# ${project}\n\nAgent development workspace. Run \`dev start ${project}\` on the server.\n`);
-      writeFileSync(join(source, ".gitignore"), ".env\n.env.*\n!.env.example\n*.key\n*.pem\n*.secret\nnode_modules/\n.venv/\n__pycache__/\n.codex/\n.claude/\n.claude.json\n.dev-state/\n");
-      git("add", "--", "README.md", ".gitignore");
-      git("commit", "-m", "Initialize private development workspace");
-      atomic(bootstrap, repo);
-    }
-  }
-  if (githubRemote(git("remote", "get-url", "origin")).toLowerCase() !== repo.toLowerCase()) throw Error("Local origin differs from the assigned repository; reconcile it before starting.");
-  if (existsSync(bootstrap)) {
-    if (readFileSync(bootstrap, "utf8") !== repo) throw Error("Pending bootstrap belongs to another repository; preserve its local commit and reconcile the remote.");
-    run(["git", "-C", source, "-c", "credential.https://github.com.helper=!gh auth git-credential", "push", "-u", "origin", "main"], { inherit: true });
-    unlinkSync(bootstrap);
-  }
-  const branch = git("symbolic-ref", "--quiet", "--short", "HEAD");
-  if (task || !branch.startsWith("agent/")) {
-    if (task && git("status", "--porcelain")) throw Error("Uncommitted changes present. Resume without --task or finish them first.");
-    const name = `agent/${task || "work"}-${new Date().toISOString().replace(/[-:.TZ]/g, "")}-${process.pid}`;
-    git("switch", "-c", name);
-  }
-  const excludes = resolve(source, git("rev-parse", "--git-path", "info/exclude"));
-  const existingExcludes = existsSync(excludes) ? readFileSync(excludes, "utf8") : "";
-  if (!existingExcludes.includes("# dev runtime")) atomic(excludes, existingExcludes + "\n# dev runtime\n.env\n.env.*\n!.env.example\n.codex/\n.claude/\n.claude.json\nauth.json\nnode_modules/\n.venv/\n", 0o644);
-  if (run(["docker", "image", "inspect", image], { allowFailure: true }).code) build();
-  const workspaceExists = run(["docker", "image", "inspect", workspaceImage], { allowFailure: true }).code === 0;
-  metadata = { ...metadata, repo, privateDefault, source, composeProject, image: workspaceImage, baseImage: image };
-  if (!workspaceExists && !JSON.parse(compose(["config", "--format", "json"]).stdout).services.dev.build) run(["docker", "image", "tag", image, workspaceImage]);
-  // Retain repository identity on failed first startup; readiness is committed below.
-  if (!existsSync(metadataPath)) atomic(metadataPath, JSON.stringify(metadata, null, 2) + "\n");
-  metadata.configHash = startContainer();
-  atomic(metadataPath, JSON.stringify(metadata, null, 2) + "\n");
-  console.log(`${project} ready in ${((performance.now() - started) / 1000).toFixed(2)}s | ${repo} | ${git("branch", "--show-current")}`);
-  console.log(`Source: ${source}\nPreview mappings: dev list | Shell: dev shell ${project}`);
-  if (!noAgent) {
-    process.exitCode = native("exec", ["dev-agent", agent, ...agentArgs], true, true).code;
-  }
+  } finally { releasePreparation(); }
 }
 
 if (import.meta.main) {

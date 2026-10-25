@@ -1,13 +1,45 @@
 {
   config,
+  options,
   pkgs,
   lib,
   cloakbrowser,
   caveman,
+  hermesAgent,
   ...
 }:
 
 let
+  # The upstream lock's 50.0.1 wheel statically embeds vulnerable OpenSSL 4.0.2.
+  # Use pyproject.nix's package overlay so the remaining locked graph stays intact.
+  hermesPythonSecurity = final: prev: {
+    brotlicffi =
+      if lib.versionOlder prev.brotlicffi.version "1.2.1.0" then
+        prev.brotlicffi.overrideAttrs (_: {
+          version = "1.2.1.0";
+          src = pkgs.fetchurl {
+            url = "https://files.pythonhosted.org/packages/f1/93/e2735a441a0f071b8094a2b9baadad5fb9811708c088b294ccb0e90aeb46/brotlicffi-1.2.1.0-cp39-abi3-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl";
+            sha256 = "0a7281a39de91432e90c27ab9c4f9feb3a9cf33fda3873534c2a88270d9f60a2";
+          };
+        })
+      else
+        prev.brotlicffi;
+    cryptography =
+      if
+        lib.versionAtLeast prev.cryptography.version "50.0.0"
+        && lib.versionOlder prev.cryptography.version "50.0.2"
+      then
+        prev.cryptography.overrideAttrs (_: {
+          version = "50.0.2";
+          src = pkgs.fetchurl {
+            url = "https://files.pythonhosted.org/packages/21/69/64cef1f702bf6657e0cc186ed1a2891d50d29fb41586b254e1c07adea261/cryptography-50.0.2-cp311-abi3-manylinux2014_x86_64.manylinux_2_17_x86_64.whl";
+            sha256 = "630ebfea3bf689d075f82316324ff7433dc447fe6bc1bfc76524b74b4a9567d2";
+          };
+        })
+      else
+        prev.cryptography;
+  };
+
   webSearchFallback = pkgs.writeTextDir "lib/python3.12/site-packages/sitecustomize.py" (
     builtins.readFile ./hermes-web-search-fallback.py
   );
@@ -41,6 +73,13 @@ let
   '';
 in
 {
+  system.checks = [
+    (pkgs.runCommand "hermes-cryptography-security-check" { } ''
+      ${config.services.hermes-agent.package.hermesVenv}/bin/python3 -P ${./scripts/check-hermes-crypto.py}
+      touch "$out"
+    '')
+  ];
+
   # Add hermes user to nixconfig group (hermes user is created by hermes-agent module)
   users.users.hermes.extraGroups = [
     "wheel"
@@ -50,6 +89,59 @@ in
   # Hermes Agent - AI assistant with GPT-6 Luna via OpenAI Codex
   services.hermes-agent = {
     enable = true;
+
+    # Hermes pins its own nixpkgs; replace both its Node runtime and npm wrapper dependency.
+    package = options.services.hermes-agent.package.default.override (
+      original:
+      {
+        callPackage =
+          let
+            patchedCallPackage =
+              path: args:
+              let
+                accepted = builtins.functionArgs (if builtins.isFunction path then path else import path);
+                patched = {
+                  nodejs = pkgs.nodejs_26;
+                  nodejs_22 = pkgs.nodejs_22;
+                  nodejs_24 = pkgs.nodejs_24;
+                  nodejs_26 = pkgs.nodejs_26;
+                  callPackage = patchedCallPackage;
+                };
+                result = original.callPackage path (args // builtins.intersectAttrs accepted patched);
+              in
+              if
+                builtins.attrNames accepted == [
+                  "buildPackages"
+                  "newScope"
+                  "pkgs"
+                  "python"
+                  "stdenv"
+                ]
+              then
+                result
+                // {
+                  overrideScope = overlay: result.overrideScope (lib.composeExtensions overlay hermesPythonSecurity);
+                }
+              else
+                result;
+          in
+          patchedCallPackage;
+      }
+      // lib.optionalAttrs (options.services.hermes-agent.package.default.version == "0.0.0") (
+        let
+          pinned = (builtins.fromJSON (builtins.readFile ./flake.lock)).nodes.hermes-agent.original;
+          release = builtins.match "v([0-9]{1,3}\\.[0-9]+\\.[0-9]+)" (pinned.ref or "");
+        in
+        # New upstream sources obtain their runtime identity from this build stamp.
+        assert lib.assertMsg (
+          release != null && hermesAgent ? rev
+        ) "Hermes requires a GitHub release input with a locked commit for its runtime version stamp";
+        {
+          version = builtins.head release;
+          rev = hermesAgent.rev;
+        }
+      )
+    );
 
     # Extra Python deps and dependency groups for platform adapters and providers
     extraDependencyGroups = [
@@ -181,6 +273,24 @@ in
 
     # MCP Servers
     mcpServers = {
+      cloakbrowser = {
+        command = "/var/lib/hermes/.hermes/.venv/bin/cloakbrowsermcp";
+        args = [
+          "--caps"
+          "all"
+        ];
+        env = {
+          CLOAKBROWSER_BINARY_PATH = "${
+            cloakbrowser.packages.${pkgs.stdenv.hostPlatform.system}.default
+          }/bin/cloakbrowser-chrome";
+          LD_LIBRARY_PATH = lib.makeLibraryPath [ pkgs.stdenv.cc.cc.lib ];
+          PLAYWRIGHT_NODEJS_PATH = "${pkgs.nodejs}/bin/node";
+        };
+        timeout = 120;
+        connect_timeout = 60;
+        enabled = true;
+      };
+
       warden-mcp = {
         # Hermes writes environmentFiles into its generated dotenv, but MCP
         # subprocesses do not inherit those values. Load the protected source
@@ -190,8 +300,9 @@ in
           . /var/lib/hermes/env
           set +a
           export BW_BIN=${pkgs.bitwarden-cli}/bin/bw
-          exec ${pkgs.nodejs}/bin/node \
-            /var/lib/hermes/.hermes/warden-mcp/node_modules/@icoretech/warden-mcp/bin/warden-mcp.js \
+          exec ${pkgs.python3}/bin/python -P ${./scripts/warden-runtime.py} \
+            ${pkgs.nodejs_22}/bin/node ${pkgs.nodejs}/bin/node \
+            /var/lib/hermes/.hermes/warden-mcp/node_modules/@icoretech/warden-mcp/package.json \
             "$@"
         ''}";
         args = [ "--stdio" ];
@@ -246,9 +357,11 @@ in
   ];
   systemd.services.hermes-agent.environment.PYTHONPATH =
     "${webSearchFallback}/lib/python3.12/site-packages";
+  systemd.services.hermes-agent.environment.PLAYWRIGHT_NODEJS_PATH = "${pkgs.nodejs}/bin/node";
   systemd.services.hermes-dashboard.path = [ pkgs.rtk ];
   systemd.services.hermes-dashboard.environment.PYTHONPATH =
     "${webSearchFallback}/lib/python3.12/site-packages";
+  systemd.services.hermes-dashboard.environment.PLAYWRIGHT_NODEJS_PATH = "${pkgs.nodejs}/bin/node";
 
   # Separate dashboard service for Hermes Desktop app
   systemd.services.hermes-dashboard = {

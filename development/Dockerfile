@@ -1,11 +1,12 @@
-FROM node:24-bookworm-slim@sha256:a5f4366e834695d5f363b920c104953a535d3a9864d1bdf74566a0ebe01daee5
+FROM node:24.22.1-bookworm-slim@sha256:55fb5f5a527ea2c5c4a95f963e48ef90aa38c7b346054fdc8ee9957a2b55d205
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
-ARG CODEX_VERSION=0.163.0
-ARG CLAUDE_VERSION=2.1.306
-ARG BUN_VERSION=1.4.3
-ARG UV_VERSION=0.13.4
+ARG CODEX_VERSION=0.164.0
+ARG CLAUDE_VERSION=2.1.310
+ARG BUN_VERSION=1.4.4
+ARG UV_VERSION=0.13.5
 ARG SKILLS_VERSION=1.7.4
-RUN apt-get update && apt-get install -y --no-install-recommends \
+ARG APT_REFRESH=bootstrap
+RUN test -n "$APT_REFRESH" && apt-get update && apt-get upgrade -y && apt-get install -y --no-install-recommends \
     bash ca-certificates curl git gh ripgrep fd-find jq less unzip \
     python3 python3-venv python3-pip build-essential pkg-config openssh-client \
     procps util-linux sudo && rm -rf /var/lib/apt/lists/*
