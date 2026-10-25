@@ -105,20 +105,42 @@ Without these, `nixos-rebuild switch` stops hermes-agent, killing any running AI
 
 ## Filesystem Notes
 
-### Read-Only Mounts
-Both `/` and `/run` are mounted read-only by default. Before `nixos-rebuild`:
+### Host and service mount namespaces
 
-```bash
-sudo mount -o remount,rw /
-sudo mount -o remount,rw /run
-```
+The host uses a writable ext4 `/` and writable tmpfs `/run`. Hermes gateway
+commands run in a separate systemd mount namespace with `ProtectSystem=strict`.
+A read-only path there is a service sandbox restriction, not evidence that the
+host root was configured read-only. `/nix/store` is intentionally read-only.
+
+Never remount `/` or `/run` for media files, Git edits, or system activation.
+These rules supersede historical remount examples in the NixOS skills and their
+references. Do not try to make the host root read-only: services, logs, state,
+and media share that filesystem, so doing so would interrupt normal operation.
+Do not stop processes to force a remount.
+
+The gateway's `ReadWritePaths` in `hermes.nix` permits subtitle sidecars under
+`/srv/data/media/library/movies` and `/srv/data/media/library/tv`. If an authorized
+write still fails with `EROFS`, inspect the destination's `VFS-OPTIONS` and the
+service allowlist; correct that narrow allowlist instead of weakening the root
+sandbox. Use `sudo` for Unix ownership/permission requirements only.
 
 ### Applying Changes
 ```bash
-sudo mount -o remount,rw /
-sudo mount -o remount,rw /run
-sudo nixos-rebuild switch
+sudo nixos-rebuild switch --flake /etc/nixos#buildfleet-server
 ```
+
+Run activation from the host namespace. From a sandboxed gateway session, use
+the host system manager instead:
+
+```bash
+sudo systemd-run --wait --pipe --collect \
+  /run/current-system/sw/bin/nixos-rebuild switch --flake /etc/nixos#buildfleet-server
+```
+
+After changing the gateway allowlist, restart it from the host only once active
+conversations are idle; a new namespace restores `ProtectSystem=strict`. Check
+inside that namespace that `/` has `ro` in `VFS-OPTIONS` and the two organized
+media paths have `rw`. The host `/` should remain `rw`.
 
 ## Firewall
 
@@ -196,7 +218,7 @@ together. Both sets of links are managed by `tmpfiles.rules` in `hermes.nix`.
 | Desktop app can't connect | Using api_server instead of dashboard | Desktop connects to `hermes dashboard`, not api_server |
 | `ModuleNotFoundError: dashboard_auth` | Using default hermes-agent package | Install `hermes-agent#full` variant |
 | Rebuild kills agent session | Missing restartIfChanged | Add `restartIfChanged = false; stopIfChanged = false` |
-| `/run` read-only during rebuild | Forgot to remount | Run `mount -o remount,rw /run` first |
+| `/run` read-only during rebuild | Activation attempted inside a service sandbox | Run activation through the host system manager; never remount |
 | Group changes not applied | Used restart instead of stop+start | Full stop + start cycle required |
 | Dev stop+start hangs | Dependencies on agent service | Dashboard `after = [ "hermes-agent.service" ]` |
 
