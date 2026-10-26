@@ -195,10 +195,11 @@ together. Both sets of links are managed by `tmpfiles.rules` in `hermes.nix`.
 - Docker + docker-compose, AdGuard Home, nginx, certbot, etc.
 
 ### Other Services
-- **nginx** (port 443) — TLS termination for `buildfleet.duckdns.org`
+- **nginx** (port 443) — TLS termination for `cloud.amahi.dev`, `vault.amahi.dev`, and `jellyfin.amahi.dev`
 - **AdGuard Home** (Docker, ports 53/8080) — DNS ad blocking + admin UI
-- **Nextcloud** — file storage and synchronization
-- **Vaultwarden** — password manager at `/vault/`
+- **Nextcloud** — file storage and synchronization at `https://cloud.amahi.dev`
+- **Vaultwarden** — password manager at `https://vault.amahi.dev`
+- **Jellyfin** — media playback at `https://jellyfin.amahi.dev`
 - **Gluetun + Transmission** — VPN-isolated download service
 - **Prowlarr + FlareSolverr** — media search/indexer services
 - **Sonarr + Radarr** — on-demand library organization

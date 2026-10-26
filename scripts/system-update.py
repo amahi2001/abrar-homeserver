@@ -26,7 +26,7 @@ SERVICES = (
     "redis-nextcloud", "samba-smbd", "samba-nmbd", "samba-wsdd",
     "hermes-agent", "hermes-dashboard",
 )
-HOST = "buildfleet.duckdns.org"
+HOST = "cloud.amahi.dev"
 CONFIG = "nixosConfigurations.buildfleet-server.config"
 APPLICATION_UNITS = tuple(name + ".service" for name in (
     "hermes-agent", "hermes-dashboard", "vaultwarden", "jellyfin", "prowlarr",
@@ -188,7 +188,7 @@ def health_check(run, expected_hermes=None):
             or nextcloud.get("maintenance") is not False
             or nextcloud.get("needsDbUpgrade") is not False):
         raise RuntimeError("Nextcloud is not ready: " + json.dumps(nextcloud))
-    curl(run, "http://127.0.0.1:8222/vault/alive")
+    curl(run, "http://127.0.0.1:8222/alive")
     if curl(run, "http://127.0.0.1:8096/health").strip() != "Healthy":
         raise RuntimeError("Jellyfin health check failed")
     status = hermes_status(run)

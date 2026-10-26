@@ -52,13 +52,12 @@
     '';
   };
 
-  # ACME / Let's Encrypt (DuckDNS DNS challenge)
+  # ACME / Let's Encrypt: HTTP validation for amahi.dev, DNS for legacy names.
   security.acme = {
     acceptTerms = true;
     defaults = {
       email = "buildfleet@proton.me";
       group = "nginx";
-      dnsProvider = "duckdns";
       dnsPropagationCheck = true;
     };
     certs."buildfleet.duckdns.org" = {
@@ -95,13 +94,32 @@
     virtualHosts."buildfleet.duckdns.org" = {
       enableACME = true;
       forceSSL = true;
-      locations."= /vault" = {
-        extraConfig = "return 301 https://buildfleet.duckdns.org/vault/;";
+      locations."~ ^/vault(?:/([^\\r\\n]*))?$" = {
+        extraConfig = "return 308 https://vault.amahi.dev/$1$is_args$args;";
       };
-      locations."/vault/" = {
+      locations."/" = {
+        extraConfig = "return 308 https://cloud.amahi.dev$request_uri;";
+      };
+    };
+
+    virtualHosts."cloud.amahi.dev" = {
+      enableACME = true;
+      forceSSL = true;
+    };
+
+    virtualHosts."vault.amahi.dev" = {
+      enableACME = true;
+      forceSSL = true;
+      locations."/" = {
         proxyPass = "http://127.0.0.1:8222";
         proxyWebsockets = true;
       };
+    };
+
+    virtualHosts."jellyfin.amahi.dev" = {
+      enableACME = true;
+      forceSSL = true;
+      locations = config.services.nginx.virtualHosts."jellyfin.buildfleet.duckdns.org".locations;
     };
 
     # Keep Jellyfin at the root of its own hostname so existing LAN and
@@ -127,7 +145,7 @@
   services.vaultwarden = {
     enable = true;
     config = {
-      DOMAIN = "https://buildfleet.duckdns.org/vault";
+      DOMAIN = "https://vault.amahi.dev";
       # The administrative account already exists; keep public registration
       # closed on this Internet-facing endpoint.
       SIGNUPS_ALLOWED = false;

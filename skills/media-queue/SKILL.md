@@ -157,7 +157,7 @@ Jellyfin is always on and reads these paths:
 
 Use `http://192.168.1.89:8096` on trusted home Wi-Fi and
 `http://buildfleet-server.tailcb7cdb.ts.net:8096` over Tailscale. For access
-without Tailscale, use `https://jellyfin.buildfleet.duckdns.org`. Port 8096 is
+without Tailscale, use `https://jellyfin.amahi.dev`. Port 8096 is
 restricted to Wi-Fi and Tailscale; Nginx serves public HTTPS. Jellyfin runs on
 the host network; it must never be moved into or routed through Gluetun.
 

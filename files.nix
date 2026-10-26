@@ -367,12 +367,11 @@ in
   };
 
   # Google Drive-like UI, desktop/mobile sync, sharing, and WebDAV. The
-  # existing Nginx/ACME virtual host supplies HTTPS at the root URL; Vaultwarden
-  # keeps its more-specific /vault/ location.
+  # dedicated Nginx/ACME virtual host supplies HTTPS at the root URL.
   services.nextcloud = {
     enable = true;
     package = pkgs.nextcloud33;
-    hostName = "buildfleet.duckdns.org";
+    hostName = "cloud.amahi.dev";
     https = true;
     datadir = "/srv/data/nextcloud";
     maxUploadSize = "20G";
@@ -385,6 +384,7 @@ in
     };
     settings = {
       overwriteprotocol = "https";
+      "overwrite.cli.url" = "https://cloud.amahi.dev";
       default_phone_region = "US";
     };
   };

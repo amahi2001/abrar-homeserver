@@ -771,7 +771,10 @@ class HealthTests(unittest.TestCase):
         self.assertNotIn("sonarr.service", services)
         self.assertNotIn("radarr.service", services)
         self.assertTrue(all("example.com" not in args for args in self.calls))
-        self.assertTrue(any("--resolve" in args for args in self.calls))
+        nextcloud = next(args for args in self.calls if args[-1].endswith("status.php"))
+        self.assertEqual(nextcloud[-1], "https://cloud.amahi.dev/status.php")
+        self.assertEqual(nextcloud[nextcloud.index("--resolve") + 1], "cloud.amahi.dev:443:127.0.0.1")
+        self.assertIn("http://127.0.0.1:8222/alive", [args[-1] for args in self.calls])
 
     def test_recovery_reports_a_failed_non_http_service(self):
         def run(args):
