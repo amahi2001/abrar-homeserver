@@ -87,6 +87,26 @@ Over SSH, if the bus is absent, set `XDG_RUNTIME_DIR=/run/user/1000` and
 Do not dump private Codex config/runtime tokens. Compare numeric counters around
 an ordinary Codex turn to establish traffic; a configured route alone is no proof.
 
+### Evaluating security grafts
+
+On Nix 2.34.9, `nix flake check --no-build` enables read-only evaluation. This
+configuration's runtime security grafts use an imported derivation to inspect
+references. On an uncached source tree, the check can calculate a `references.nix.drv`
+path without registering it, then fail to import it as "not valid". This is not
+evidence of store corruption. Materialize the derivations first, then check:
+
+```sh
+nix eval --raw --option eval-cache false \
+  .#nixosConfigurations.buildfleet-server.config.system.build.toplevel.drvPath >/dev/null
+nix flake check --no-build --no-write-lock-file
+```
+
+The first command may build security-graft prerequisites; it does not activate
+the system. Normal `nix flake check` also permits that work and builds all checks.
+Do not remove security grafts or delete caches/store data to work around this.
+The previously missing derivation was generated and the same no-build check
+passed on 2026-10-27. See [Nix's check mode](https://github.com/NixOS/nix/blob/2.34.9/src/nix/flake.cc#L324-L329).
+
 For recovery, first apply `token-eye routing off --apply` and verify both accounts
 are restored, then stop the proxy and timer. Restore only the saved TokenEye paths
 from the archive, reload the user manager, and start the original units. Remove
