@@ -3,6 +3,14 @@ let
   home = "/home/buildfleet";
   # Runtime strings keep the private application and credentials out of this flake.
   checkout = "${home}/projects/token-eye";
+  networkGuard = pkgs.writeShellApplication {
+    name = "token-eye-network-guard";
+    runtimeInputs = [
+      pkgs.iptables
+      pkgs.util-linux
+    ];
+    text = builtins.readFile ./scripts/token-eye-network-guard.sh;
+  };
   commands = pkgs.symlinkJoin {
     name = "token-eye-commands";
     paths =
@@ -91,6 +99,7 @@ let
     paths = [
       commands
       units
+      networkGuard
     ];
   };
   links = [
@@ -132,6 +141,27 @@ in
   environment.systemPackages = [ commands ];
   systemd.packages = [ units ];
   users.users.buildfleet.linger = true;
+  systemd.services.token-eye-network-guard = {
+    description = "Restrict the authenticated Headroom gateway to local project bridges";
+    wantedBy = [ "multi-user.target" ];
+    after = [ "docker.service" ];
+    requires = [ "docker.service" ];
+    partOf = [ "docker.service" ];
+    before = [ "user@1000.service" ];
+    serviceConfig = {
+      Type = "oneshot";
+      RemainAfterExit = true;
+      ExecStart = "${networkGuard}/bin/token-eye-network-guard";
+      Restart = "on-failure";
+      RestartSec = 5;
+      UMask = "0077";
+    };
+  };
+  networking.firewall.extraCommands = ''
+    if ${pkgs.iptables}/bin/iptables -w -S DOCKER-USER >/dev/null 2>&1; then
+      ${networkGuard}/bin/token-eye-network-guard
+    fi
+  '';
   # Package base units coexist with development.nix's maintenance retry drop-in.
   systemd.user.units."token-eye-headroom.service".wantedBy = [ "default.target" ];
   systemd.user.units."token-eye-dogfood.timer".wantedBy = [ "timers.target" ];
