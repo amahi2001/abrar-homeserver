@@ -107,6 +107,25 @@ Do not remove security grafts or delete caches/store data to work around this.
 The previously missing derivation was generated and the same no-build check
 passed on 2026-10-27. See [Nix's check mode](https://github.com/NixOS/nix/blob/2.34.9/src/nix/flake.cc#L324-L329).
 
+### Physical restart verification
+
+Buildfleet was physically restarted on 2026-10-27. The boot ID changed and the
+booted system matched the expected deployed generation. With no manual Headroom
+startup or routing changes, the proxy, network guard and two-day timer became
+active, and both account routes stayed configured. The same no-build flake check
+passed after boot; unauthenticated gateway stats returned 401.
+
+A private one-time verifier ran ordinary ephemeral Codex turns on the host and in
+another existing project box. Each added two proxy requests and returned the
+expected marker, without routing arguments or wrappers. TokenEye recorded four
+requests, zero failures and 460 estimated tokens saved in the new proxy lifetime.
+The automatic boot health check subsequently succeeded. Project containers use
+no Docker restart policy: the TokenEye service resumed its existing box, and the
+verifier resumed only the previously running test box under its native startup
+lock. No box was recreated. The temporary verifier startup entry was removed
+after verification; its private numeric report remains in
+`~/.local/state/token-eye-restart-verification/report.json`.
+
 For recovery, first apply `token-eye routing off --apply` and verify both accounts
 are restored, then stop the proxy and timer. Restore only the saved TokenEye paths
 from the archive, reload the user manager, and start the original units. Remove
