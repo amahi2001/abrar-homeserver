@@ -165,7 +165,7 @@ in
       User = "buildfleet";
       Group = "users";
       WorkingDirectory = "/home/buildfleet";
-      ExecStart = "/run/current-system/sw/bin/bash -lc 'exec /run/current-system/sw/bin/codex remote-control start --json'";
+      ExecStart = "/run/current-system/sw/bin/bash -lc 'exec ${codexRefreshPython}/bin/python -P ${./scripts}/codex-remote-control.py'";
       # Codex detaches its daemon; keep it alive after this command exits.
       KillMode = "process";
       TimeoutStartSec = "2min";

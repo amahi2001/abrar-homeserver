@@ -1,6 +1,7 @@
 """Regression checks for automatic retirement of remote app servers."""
 
 import importlib.util
+import json
 from pathlib import Path
 import signal
 import socket
@@ -195,6 +196,22 @@ class ListenerTests(unittest.TestCase):
                 sock.listen()
                 with self.assertRaises(RuntimeError):
                     refresh.listener_pid(path)
+
+
+class RpcParamsTests(unittest.TestCase):
+    def test_unit_params_can_be_null_without_changing_existing_default_calls(self):
+        rpc = refresh.Rpc.__new__(refresh.Rpc)
+        rpc.request_id = 0
+        rpc.ws = Mock()
+        rpc.ws.recv.side_effect = [
+            json.dumps({"id": 1, "result": {"status": "connected"}}),
+            json.dumps({"id": 2, "result": {"data": []}}),
+        ]
+        self.assertEqual(rpc.call("remoteControl/status/read", None), {"status": "connected"})
+        self.assertEqual(rpc.call("thread/loaded/list"), {"data": []})
+        sent = [json.loads(call.args[0]) for call in rpc.ws.send.call_args_list]
+        self.assertIsNone(sent[0]["params"])
+        self.assertEqual(sent[1]["params"], {})
 
 
 if __name__ == "__main__":

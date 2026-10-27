@@ -17,6 +17,8 @@ import time
 
 import websocket
 
+_DEFAULT_PARAMS = object()
+
 
 def log(message):
     print(f"[codex-app-server-refresh] {message}", flush=True)
@@ -66,10 +68,11 @@ class Rpc:
     def close(self):
         self.ws.close()
 
-    def call(self, method, params=None):
+    def call(self, method, params=_DEFAULT_PARAMS):
         self.request_id += 1
         self.ws.send(json.dumps({
-            "id": self.request_id, "method": method, "params": params or {},
+            "id": self.request_id, "method": method,
+            "params": {} if params is _DEFAULT_PARAMS else params,
         }))
         deadline = time.monotonic() + 10
         while True:
