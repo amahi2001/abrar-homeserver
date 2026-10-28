@@ -161,6 +161,21 @@ installed CLI. Busy servers stay running and are checked again on the next
 timer; this also catches CLI upgrades applied manually or by the weekly job.
 Failures are visible in `journalctl -u codex-cli-update -u codex-app-server-refresh`.
 
+`codex-remote-control` checks Remote Control 30 seconds after boot and every
+30 seconds afterward. It uses the existing private app-server socket, preserves
+connected servers, and enables Remote Control through the native protocol when
+disabled or errored. Only an absent server uses `codex remote-control start`.
+This avoids the managed-daemon ownership error for desktop/SSH-owned servers
+without restarting chats or creating a competing server. Successful runs verify
+the native connection reaches `connected`; failures remain visible in the
+service journal. Logs contain fixed outcomes, never pairing codes or account/
+device identifiers. The timer and helper are declared in `update.nix`.
+
+```bash
+systemctl status codex-remote-control.service codex-remote-control.timer
+journalctl -u codex-remote-control.service -n 20
+```
+
 The repository is public. Never place real credentials in examples, commits,
 issues, or pull-request text. The ignore rules are a safety net, not a substitute
 for the secret scan.
