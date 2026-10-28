@@ -6,8 +6,19 @@ desktop services, and their dependencies. Security overrides are minimum version
 newer nixpkgs packages take precedence. NixOS release-branch upgrades, Nextcloud,
 and database major-version migrations remain deliberate administrative operations.
 
-The obsolete unmanaged Hermes WebUI on host port 8787 and its dead Tailscale
-Serve endpoint on 8443 have been retired. The managed Hermes dashboard uses 9119.
+The stable private Hermes URL is `https://hermes.amahi.dev`, served by Nginx
+over Tailscale and proxied to the managed dashboard on port 9119. Its DNS-only
+`A` record points to `100.91.234.17`. ACME DNS validation delegates
+`_acme-challenge.hermes.amahi.dev` through a `CNAME` to
+`_acme-challenge.buildfleet.duckdns.org`, using the existing DuckDNS credential.
+Nginx also preserves Transmission at `https://buildfleet-server.tailcb7cdb.ts.net`;
+its certificate is issued and renewed with `tailscale cert`.
+
+These endpoints are Nix-managed contracts: maintenance must preserve their URLs
+when replacing backends, and must not retire them because no client is connected.
+Deployment health gates must check the stable HTTPS endpoints and Hermes
+authentication. Keep `http://buildfleet-server.tailcb7cdb.ts.net:9119` as a private
+backup, and verify authenticated WebSocket access after endpoint changes.
 
 Temporary Nix runtime replacements supply patched Node.js, Brotli, c-ares,
 OpenSSL, and SQLite where stable nixpkgs is behind. Library replacements check exported

@@ -196,6 +196,22 @@ def health_check(run, expected_hermes=None):
         raise RuntimeError("Hermes gateway is not healthy")
     if expected_hermes is not None and status.get("version") != expected_hermes:
         raise RuntimeError(f"Hermes reports {status.get('version')}; expected {expected_hermes}")
+    endpoint_status = json.loads(curl(
+        run, "https://hermes.amahi.dev/api/status", "--noproxy", "*",
+        "--resolve", "hermes.amahi.dev:443:100.91.234.17"))
+    if (endpoint_status.get("gateway_running") is not True
+            or endpoint_status.get("overall") not in (None, "ok")
+            or endpoint_status.get("auth_required") is not True
+            or endpoint_status.get("version") != status.get("version")):
+        raise RuntimeError("Hermes HTTPS endpoint is not healthy or does not match the local gateway")
+    transmission_code = run([
+        "curl", "--silent", "--show-error", "--max-time", "10", "--noproxy", "*",
+        "--resolve", "buildfleet-server.tailcb7cdb.ts.net:443:100.91.234.17",
+        "--output", "/dev/null", "--write-out", "%{http_code}",
+        "https://buildfleet-server.tailcb7cdb.ts.net/transmission/rpc",
+    ]).strip()
+    if transmission_code != "401":
+        raise RuntimeError(f"Transmission HTTPS endpoint did not require login: HTTP {transmission_code}")
 
 
 def recover_services(run, *, maintenance_lock=Path("/run/lock/nixos-flake-update.lock"),

@@ -157,7 +157,11 @@ networking.firewall.interfaces.tailscale0 = {
 
 - MagicDNS: `buildfleet-server.tailcb7cdb.ts.net`
 - Tailscale IP: `100.91.234.17`
-- Dashboard URL: `http://buildfleet-server.tailcb7cdb.ts.net:9119`
+- Stable dashboard URL: `https://hermes.amahi.dev` (Tailscale only)
+- Direct backup: `http://buildfleet-server.tailcb7cdb.ts.net:9119`
+- Preserve client URLs when replacing backends. No connected clients does not
+  establish that an endpoint is unused; do not retire it on that basis.
+- Keep the HTTPS and authentication deployment health checks for this endpoint.
 
 ## Agent Integrations
 

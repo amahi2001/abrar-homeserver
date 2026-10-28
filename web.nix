@@ -5,7 +5,20 @@
   lib,
   ...
 }:
-
+let
+  tailnetListen = [
+    {
+      addr = "100.91.234.17";
+      port = 443;
+      ssl = true;
+    }
+    {
+      addr = "[fd7a:115c:a1e0::3601:eaab]";
+      port = 443;
+      ssl = true;
+    }
+  ];
+in
 {
   # DuckDNS dynamic DNS
   services.duckdns = {
@@ -81,6 +94,14 @@
       reloadServices = [ "nginx" ];
       webroot = null;
     };
+    # Cloudflare delegates _acme-challenge.hermes.amahi.dev to the existing
+    # DuckDNS challenge record, so renewal needs no public HTTP endpoint.
+    certs."hermes.amahi.dev" = {
+      dnsProvider = "duckdns";
+      credentialFiles."DUCKDNS_TOKEN_FILE" = "/var/lib/secrets/duckdns-token-value";
+      reloadServices = [ "nginx" ];
+      webroot = null;
+    };
   };
 
   # Nginx reverse proxy
@@ -90,6 +111,45 @@
     recommendedTlsSettings = true;
     recommendedOptimisation = true;
     recommendedGzipSettings = true;
+
+    # Address-specific vhosts cannot be selected through the public listener.
+    virtualHosts."hermes.amahi.dev" = {
+      listen = tailnetListen;
+      enableACME = true;
+      onlySSL = true;
+      extraConfig = ''
+        allow 100.64.0.0/10;
+        allow fd7a:115c:a1e0::/48;
+        deny all;
+      '';
+      locations."/" = {
+        proxyPass = "http://127.0.0.1:9119";
+        proxyWebsockets = true;
+        extraConfig = ''
+          proxy_buffering off;
+          proxy_read_timeout 3600s;
+          proxy_send_timeout 3600s;
+          access_log off;
+        '';
+      };
+    };
+
+    # Preserve Transmission's existing URL when nginx takes over tailnet :443.
+    virtualHosts."buildfleet-server.tailcb7cdb.ts.net" = {
+      listen = tailnetListen;
+      onlySSL = true;
+      sslCertificate = "/var/lib/tailscale-nginx-cert/cert.pem";
+      sslCertificateKey = "/var/lib/tailscale-nginx-cert/key.pem";
+      extraConfig = ''
+        allow 100.64.0.0/10;
+        allow fd7a:115c:a1e0::/48;
+        deny all;
+      '';
+      locations."/" = {
+        proxyPass = "http://127.0.0.1:9091";
+        proxyWebsockets = true;
+      };
+    };
 
     virtualHosts."buildfleet.duckdns.org" = {
       enableACME = true;
@@ -140,6 +200,8 @@
       };
     };
   };
+
+  services.hermes-agent.settings.dashboard.public_url = "https://hermes.amahi.dev";
 
   # Vaultwarden password manager
   services.vaultwarden = {

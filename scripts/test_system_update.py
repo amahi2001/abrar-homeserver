@@ -757,14 +757,17 @@ class HealthTests(unittest.TestCase):
             if args[-1].endswith("/health"):
                 return "Healthy"
             if args[-1].endswith("/api/status"):
-                return json.dumps({"gateway_running": True, "overall": "ok", "version": "0.22.2"})
+                return json.dumps({"gateway_running": True, "overall": "ok", "version": "0.22.2",
+                                   "auth_required": True})
+            if args[-1].endswith("/transmission/rpc"):
+                return "401"
         return ""
 
     def setUp(self):
         self.calls = []
         self.nextcloud = {"installed": True, "maintenance": False, "needsDbUpgrade": False}
 
-    def test_health_uses_local_endpoints_and_excludes_on_demand_services(self):
+    def test_health_uses_local_and_tailnet_endpoints_and_excludes_on_demand_services(self):
         update.health_check(self.run_command, "0.22.2")
         services = [unit for args in self.calls if args[:2] == ["systemctl", "is-active"]
                     for unit in args[3:]]
@@ -775,6 +778,48 @@ class HealthTests(unittest.TestCase):
         self.assertEqual(nextcloud[-1], "https://cloud.amahi.dev/status.php")
         self.assertEqual(nextcloud[nextcloud.index("--resolve") + 1], "cloud.amahi.dev:443:127.0.0.1")
         self.assertIn("http://127.0.0.1:8222/alive", [args[-1] for args in self.calls])
+        hermes = next(args for args in self.calls if args[-1] == "https://hermes.amahi.dev/api/status")
+        self.assertEqual(hermes[hermes.index("--resolve") + 1], "hermes.amahi.dev:443:100.91.234.17")
+        self.assertEqual(hermes[hermes.index("--noproxy") + 1], "*")
+        self.assertIn("http://127.0.0.1:9119/api/status", [args[-1] for args in self.calls])
+        transmission = next(args for args in self.calls if args[-1].endswith("/transmission/rpc"))
+        self.assertEqual(transmission[transmission.index("--resolve") + 1],
+                         "buildfleet-server.tailcb7cdb.ts.net:443:100.91.234.17")
+        self.assertEqual(transmission[transmission.index("--noproxy") + 1], "*")
+        self.assertNotIn("--fail", transmission)
+
+    def test_failed_hermes_https_endpoint_fails_health_despite_healthy_local_gateway(self):
+        def run(args):
+            if args[-1] == "https://hermes.amahi.dev/api/status":
+                raise RuntimeError("TLS certificate verification failed")
+            return self.run_command(args)
+
+        with self.assertRaisesRegex(RuntimeError, "TLS certificate verification failed"):
+            update.health_check(run)
+
+    def test_hermes_https_endpoint_must_match_healthy_local_gateway(self):
+        for key, value in (("gateway_running", False), ("overall", "failed"),
+                           ("auth_required", False), ("version", "0.16.0")):
+            with self.subTest(key=key):
+                def run(args):
+                    if args[-1] == "https://hermes.amahi.dev/api/status":
+                        return json.dumps({"gateway_running": True, "overall": "ok", "version": "0.22.2",
+                                           "auth_required": True, key: value})
+                    return self.run_command(args)
+
+                with self.assertRaisesRegex(RuntimeError, "Hermes HTTPS endpoint is not healthy"):
+                    update.health_check(run)
+
+    def test_transmission_https_endpoint_must_require_login(self):
+        for status in ("200", "409", "502"):
+            with self.subTest(status=status):
+                def run(args):
+                    if args[-1].endswith("/transmission/rpc"):
+                        return status
+                    return self.run_command(args)
+
+                with self.assertRaisesRegex(RuntimeError, "Transmission HTTPS endpoint did not require login"):
+                    update.health_check(run)
 
     def test_recovery_reports_a_failed_non_http_service(self):
         def run(args):
