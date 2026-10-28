@@ -6,6 +6,22 @@
   ...
 }:
 let
+  hermesPython = config.services.hermes-agent.package.hermesVenv;
+  hermesWebuiStart = pkgs.writeShellScriptBin "hermes-webui-start" ''
+    set -euo pipefail
+    webui_agent_dir="$(${hermesPython}/bin/python3 -I -B -c 'import importlib.util, os; print(os.path.dirname(importlib.util.find_spec("run_agent").origin))')"
+    exec /run/wrappers/bin/sudo -n -u hermes ${pkgs.coreutils}/bin/env \
+      HERMES_HOME=/var/lib/hermes/.hermes \
+      HERMES_WEBUI_STATE_DIR=/var/lib/hermes/.hermes/webui \
+      HERMES_WEBUI_PYTHON=${hermesPython}/bin/python3 \
+      HERMES_WEBUI_AGENT_DIR="$webui_agent_dir" \
+      HERMES_WEBUI_SERVER_CWD=/var/lib/hermes/workspace \
+      HERMES_WEBUI_HOST=127.0.0.1 HERMES_WEBUI_PORT=8787 \
+      HERMES_WEBUI_TRUST_FORWARDED_PROTO=1 \
+      HERMES_WEBUI_DISABLE_LOCAL_VENV=1 HERMES_WEBUI_START_GRACE=30 \
+      PYTHONDONTWRITEBYTECODE=1 \
+      /var/lib/hermes/hermes-webui/ctl.sh start --skip-agent-install
+  '';
   tailnetListen = [
     {
       addr = "100.91.234.17";
@@ -20,6 +36,8 @@ let
   ];
 in
 {
+  environment.systemPackages = [ hermesWebuiStart ];
+
   # DuckDNS dynamic DNS
   services.duckdns = {
     enable = true;
@@ -123,7 +141,7 @@ in
         deny all;
       '';
       locations."/" = {
-        proxyPass = "http://127.0.0.1:9119";
+        proxyPass = "http://127.0.0.1:8787";
         proxyWebsockets = true;
         extraConfig = ''
           proxy_buffering off;
@@ -200,8 +218,6 @@ in
       };
     };
   };
-
-  services.hermes-agent.settings.dashboard.public_url = "https://hermes.amahi.dev";
 
   # Vaultwarden password manager
   services.vaultwarden = {

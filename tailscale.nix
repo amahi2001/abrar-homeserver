@@ -26,31 +26,7 @@
   # Note: NixOS module only sets this automatically for "client" / "both", not "server"
   networking.firewall.checkReversePath = "loose";
 
-  # Nginx preserves Transmission's existing tailnet hostname alongside Hermes.
-  # Serve intercepts all :443 traffic, even for custom SNI names, so release
-  # its persistent listener only after the replacement nginx vhost is ready.
-  systemd.services.tailscale-serve-transmission = {
-    description = "Release Tailscale HTTPS port to the private nginx vhosts";
-    wantedBy = [ "multi-user.target" ];
-    after = [
-      "tailscaled.service"
-      "docker-transmission-vpn.service"
-      "nginx.service"
-    ];
-    requires = [
-      "tailscaled.service"
-      "nginx.service"
-    ];
-    serviceConfig = {
-      Type = "oneshot";
-      RemainAfterExit = true;
-      # The daemon's systemd start completes before its backend/interface is ready.
-      ExecStartPre = "${config.services.tailscale.package}/bin/tailscale wait --timeout=60s";
-      TimeoutStartSec = "90s";
-      ExecStart = "${pkgs.coreutils}/bin/timeout 20s ${config.services.tailscale.package}/bin/tailscale serve --bg --https=443 off";
-    };
-  };
-
+  # Nginx owns tailnet HTTPS; rebuilds must not modify existing Serve routes.
   systemd.services.tailscale-nginx-cert = {
     description = "Renew nginx certificate for the existing Tailscale hostname";
     after = [ "tailscaled.service" ];

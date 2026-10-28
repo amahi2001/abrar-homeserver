@@ -196,22 +196,29 @@ def health_check(run, expected_hermes=None):
         raise RuntimeError("Hermes gateway is not healthy")
     if expected_hermes is not None and status.get("version") != expected_hermes:
         raise RuntimeError(f"Hermes reports {status.get('version')}; expected {expected_hermes}")
-    endpoint_status = json.loads(curl(
-        run, "https://hermes.amahi.dev/api/status", "--noproxy", "*",
+    endpoint_health = json.loads(curl(
+        run, "https://hermes.amahi.dev/health?deep=1", "--noproxy", "*",
         "--resolve", "hermes.amahi.dev:443:100.91.234.17"))
-    if (endpoint_status.get("gateway_running") is not True
-            or endpoint_status.get("overall") not in (None, "ok")
-            or endpoint_status.get("auth_required") is not True
-            or endpoint_status.get("version") != status.get("version")):
-        raise RuntimeError("Hermes HTTPS endpoint is not healthy or does not match the local gateway")
-    transmission_code = run([
-        "curl", "--silent", "--show-error", "--max-time", "10", "--noproxy", "*",
-        "--resolve", "buildfleet-server.tailcb7cdb.ts.net:443:100.91.234.17",
-        "--output", "/dev/null", "--write-out", "%{http_code}",
-        "https://buildfleet-server.tailcb7cdb.ts.net/transmission/rpc",
-    ]).strip()
-    if transmission_code != "401":
-        raise RuntimeError(f"Transmission HTTPS endpoint did not require login: HTTP {transmission_code}")
+    if endpoint_health.get("status") != "ok":
+        raise RuntimeError("Hermes WebUI HTTPS endpoint is not healthy")
+    endpoint_auth = json.loads(curl(
+        run, "https://hermes.amahi.dev/api/auth/status", "--noproxy", "*",
+        "--resolve", "hermes.amahi.dev:443:100.91.234.17"))
+    if (endpoint_auth.get("auth_enabled") is not True
+            or endpoint_auth.get("password_auth_enabled") is not True
+            or endpoint_auth.get("logged_in") is not False):
+        raise RuntimeError("Hermes WebUI HTTPS endpoint does not require password login")
+    for name, host, path in (
+        ("Hermes WebUI", "hermes.amahi.dev", "/api/sessions"),
+        ("Transmission", "buildfleet-server.tailcb7cdb.ts.net", "/transmission/rpc"),
+    ):
+        code = run([
+            "curl", "--silent", "--show-error", "--max-time", "10", "--noproxy", "*",
+            "--resolve", f"{host}:443:100.91.234.17",
+            "--output", "/dev/null", "--write-out", "%{http_code}", f"https://{host}{path}",
+        ]).strip()
+        if code != "401":
+            raise RuntimeError(f"{name} HTTPS endpoint did not require login: HTTP {code}")
 
 
 def recover_services(run, *, maintenance_lock=Path("/run/lock/nixos-flake-update.lock"),

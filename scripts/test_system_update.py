@@ -754,12 +754,16 @@ class HealthTests(unittest.TestCase):
         if args[0] == "curl":
             if args[-1].endswith("status.php"):
                 return json.dumps(self.nextcloud)
+            if args[-1] == "https://hermes.amahi.dev/health?deep=1":
+                return json.dumps({"status": "ok"})
+            if args[-1].endswith("/api/auth/status"):
+                return json.dumps({"auth_enabled": True, "password_auth_enabled": True, "logged_in": False})
             if args[-1].endswith("/health"):
                 return "Healthy"
             if args[-1].endswith("/api/status"):
                 return json.dumps({"gateway_running": True, "overall": "ok", "version": "0.22.2",
                                    "auth_required": True})
-            if args[-1].endswith("/transmission/rpc"):
+            if args[-1].endswith(("/api/sessions", "/transmission/rpc")):
                 return "401"
         return ""
 
@@ -778,10 +782,15 @@ class HealthTests(unittest.TestCase):
         self.assertEqual(nextcloud[-1], "https://cloud.amahi.dev/status.php")
         self.assertEqual(nextcloud[nextcloud.index("--resolve") + 1], "cloud.amahi.dev:443:127.0.0.1")
         self.assertIn("http://127.0.0.1:8222/alive", [args[-1] for args in self.calls])
-        hermes = next(args for args in self.calls if args[-1] == "https://hermes.amahi.dev/api/status")
+        hermes = next(args for args in self.calls if args[-1] == "https://hermes.amahi.dev/health?deep=1")
         self.assertEqual(hermes[hermes.index("--resolve") + 1], "hermes.amahi.dev:443:100.91.234.17")
         self.assertEqual(hermes[hermes.index("--noproxy") + 1], "*")
         self.assertIn("http://127.0.0.1:9119/api/status", [args[-1] for args in self.calls])
+        self.assertIn("https://hermes.amahi.dev/api/auth/status", [args[-1] for args in self.calls])
+        protected = next(args for args in self.calls if args[-1] == "https://hermes.amahi.dev/api/sessions")
+        self.assertEqual(protected[protected.index("--resolve") + 1], "hermes.amahi.dev:443:100.91.234.17")
+        self.assertEqual(protected[protected.index("--noproxy") + 1], "*")
+        self.assertNotIn("--fail", protected)
         transmission = next(args for args in self.calls if args[-1].endswith("/transmission/rpc"))
         self.assertEqual(transmission[transmission.index("--resolve") + 1],
                          "buildfleet-server.tailcb7cdb.ts.net:443:100.91.234.17")
@@ -790,24 +799,46 @@ class HealthTests(unittest.TestCase):
 
     def test_failed_hermes_https_endpoint_fails_health_despite_healthy_local_gateway(self):
         def run(args):
-            if args[-1] == "https://hermes.amahi.dev/api/status":
+            if args[-1] == "https://hermes.amahi.dev/health?deep=1":
                 raise RuntimeError("TLS certificate verification failed")
             return self.run_command(args)
 
         with self.assertRaisesRegex(RuntimeError, "TLS certificate verification failed"):
             update.health_check(run)
 
-    def test_hermes_https_endpoint_must_match_healthy_local_gateway(self):
-        for key, value in (("gateway_running", False), ("overall", "failed"),
-                           ("auth_required", False), ("version", "0.16.0")):
-            with self.subTest(key=key):
+    def test_hermes_webui_https_endpoint_must_be_ready(self):
+        for status in ("degraded", None):
+            with self.subTest(status=status):
                 def run(args):
-                    if args[-1] == "https://hermes.amahi.dev/api/status":
-                        return json.dumps({"gateway_running": True, "overall": "ok", "version": "0.22.2",
-                                           "auth_required": True, key: value})
+                    if args[-1] == "https://hermes.amahi.dev/health?deep=1":
+                        return json.dumps({"status": status})
                     return self.run_command(args)
 
-                with self.assertRaisesRegex(RuntimeError, "Hermes HTTPS endpoint is not healthy"):
+                with self.assertRaisesRegex(RuntimeError, "Hermes WebUI HTTPS endpoint is not healthy"):
+                    update.health_check(run)
+
+    def test_hermes_webui_https_endpoint_must_require_password_login(self):
+        for key, value in (("auth_enabled", False), ("password_auth_enabled", False),
+                           ("logged_in", True), ("auth_enabled", None)):
+            with self.subTest(key=key, value=value):
+                def run(args):
+                    if args[-1] == "https://hermes.amahi.dev/api/auth/status":
+                        return json.dumps({"auth_enabled": True, "password_auth_enabled": True,
+                                           "logged_in": False, key: value})
+                    return self.run_command(args)
+
+                with self.assertRaisesRegex(RuntimeError, "Hermes WebUI HTTPS endpoint does not require password login"):
+                    update.health_check(run)
+
+    def test_hermes_webui_sessions_must_reject_unauthenticated_requests(self):
+        for status in ("200", "302", "502"):
+            with self.subTest(status=status):
+                def run(args):
+                    if args[-1] == "https://hermes.amahi.dev/api/sessions":
+                        return status
+                    return self.run_command(args)
+
+                with self.assertRaisesRegex(RuntimeError, "Hermes WebUI HTTPS endpoint did not require login"):
                     update.health_check(run)
 
     def test_transmission_https_endpoint_must_require_login(self):

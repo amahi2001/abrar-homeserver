@@ -29,6 +29,16 @@ Two **separate** systemd services:
 | `hermes-agent.service` | Gateway for Telegram/CLI conversations | n/a (outbound) |
 | `hermes-dashboard.service` | Web UI for Hermes Desktop app | 9119 (Tailscale only) |
 
+Hermex uses the separate existing WebUI checkout at
+`/var/lib/hermes/hermes-webui`, launched with `ctl.sh` and bound to
+`127.0.0.1:8787`. Nginx serves it at `https://hermes.amahi.dev` on the
+Tailscale addresses only. Preserve its `.env`, password, and WebUI state.
+Do not replace this backend with the built-in dashboard on 9119. No boot
+autostart service has been authorized; use `hermes-webui-start` manually.
+This Nix-managed command invokes the existing `ctl.sh` with the current
+Hermes runtime, localhost binding, and secure proxy-cookie settings without
+installing dependencies or configuring boot startup.
+
 ### Critical: Desktop App ≠ api_server
 
 The **Hermes Desktop app** connects to `hermes dashboard` (web UI with TUI chat), NOT the `api_server` platform adapter. The `api_server` is for OpenAI-compatible API clients (Open WebUI, LobeChat). The dashboard is a separate systemd service defined in `hermes.nix`.
@@ -157,8 +167,8 @@ networking.firewall.interfaces.tailscale0 = {
 
 - MagicDNS: `buildfleet-server.tailcb7cdb.ts.net`
 - Tailscale IP: `100.91.234.17`
-- Stable dashboard URL: `https://hermes.amahi.dev` (Tailscale only)
-- Direct backup: `http://buildfleet-server.tailcb7cdb.ts.net:9119`
+- Stable Hermex/WebUI URL: `https://hermes.amahi.dev` (Tailscale only)
+- Separate built-in dashboard: `http://buildfleet-server.tailcb7cdb.ts.net:9119`
 - Preserve client URLs when replacing backends. No connected clients does not
   establish that an endpoint is unused; do not retire it on that basis.
 - Keep the HTTPS and authentication deployment health checks for this endpoint.
