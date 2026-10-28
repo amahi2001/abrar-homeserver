@@ -29,6 +29,16 @@ Two **separate** systemd services:
 | `hermes-agent.service` | Gateway for Telegram/CLI conversations | n/a (outbound) |
 | `hermes-dashboard.service` | Web UI for Hermes Desktop app | 9119 (Tailscale only) |
 
+Hermex uses the separate existing WebUI checkout at
+`/var/lib/hermes/hermes-webui`, launched with `ctl.sh` and bound to
+`127.0.0.1:8787`. Nginx serves it at `https://hermes.amahi.dev` on the
+Tailscale addresses only. Preserve its `.env`, password, and WebUI state.
+Do not replace this backend with the built-in dashboard on 9119. No boot
+autostart service has been authorized; use `hermes-webui-start` manually.
+This Nix-managed command invokes the existing `ctl.sh` with the current
+Hermes runtime, localhost binding, and secure proxy-cookie settings without
+installing dependencies or configuring boot startup.
+
 ### Critical: Desktop App ≠ api_server
 
 The **Hermes Desktop app** connects to `hermes dashboard` (web UI with TUI chat), NOT the `api_server` platform adapter. The `api_server` is for OpenAI-compatible API clients (Open WebUI, LobeChat). The dashboard is a separate systemd service defined in `hermes.nix`.
@@ -157,7 +167,11 @@ networking.firewall.interfaces.tailscale0 = {
 
 - MagicDNS: `buildfleet-server.tailcb7cdb.ts.net`
 - Tailscale IP: `100.91.234.17`
-- Dashboard URL: `http://buildfleet-server.tailcb7cdb.ts.net:9119`
+- Stable Hermex/WebUI URL: `https://hermes.amahi.dev` (Tailscale only)
+- Separate built-in dashboard: `http://buildfleet-server.tailcb7cdb.ts.net:9119`
+- Preserve client URLs when replacing backends. No connected clients does not
+  establish that an endpoint is unused; do not retire it on that basis.
+- Keep the HTTPS and authentication deployment health checks for this endpoint.
 
 ## Agent Integrations
 
@@ -195,10 +209,11 @@ together. Both sets of links are managed by `tmpfiles.rules` in `hermes.nix`.
 - Docker + docker-compose, AdGuard Home, nginx, certbot, etc.
 
 ### Other Services
-- **nginx** (port 443) — TLS termination for `buildfleet.duckdns.org`
+- **nginx** (port 443) — TLS termination for `cloud.amahi.dev`, `vault.amahi.dev`, and `jellyfin.amahi.dev`
 - **AdGuard Home** (Docker, ports 53/8080) — DNS ad blocking + admin UI
-- **Nextcloud** — file storage and synchronization
-- **Vaultwarden** — password manager at `/vault/`
+- **Nextcloud** — file storage and synchronization at `https://cloud.amahi.dev`
+- **Vaultwarden** — password manager at `https://vault.amahi.dev`
+- **Jellyfin** — media playback at `https://jellyfin.amahi.dev`
 - **Gluetun + Transmission** — VPN-isolated download service
 - **Prowlarr + FlareSolverr** — media search/indexer services
 - **Sonarr + Radarr** — on-demand library organization

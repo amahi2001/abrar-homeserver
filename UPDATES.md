@@ -6,8 +6,27 @@ desktop services, and their dependencies. Security overrides are minimum version
 newer nixpkgs packages take precedence. NixOS release-branch upgrades, Nextcloud,
 and database major-version migrations remain deliberate administrative operations.
 
-The obsolete unmanaged Hermes WebUI on host port 8787 and its dead Tailscale
-Serve endpoint on 8443 have been retired. The managed Hermes dashboard uses 9119.
+The stable private Hermes URL is `https://hermes.amahi.dev`, served by Nginx
+over Tailscale and proxied to the existing Hermes WebUI on `127.0.0.1:8787`.
+This is the `nesquena/hermes-webui` backend expected by Hermex, separate from
+the built-in dashboard on port 9119. The existing checkout, `.env`, password,
+and WebUI state are preserved. Its DNS-only `A` record points to
+`100.91.234.17`. ACME DNS validation delegates
+`_acme-challenge.hermes.amahi.dev` through a `CNAME` to
+`_acme-challenge.buildfleet.duckdns.org`, using the existing DuckDNS credential.
+Nginx also preserves Transmission at `https://buildfleet-server.tailcb7cdb.ts.net`;
+its certificate is issued and renewed with `tailscale cert`.
+
+These endpoints are Nix-managed contracts: maintenance must preserve their URLs
+when replacing backends, and must not retire them because no client is connected.
+Deployment health gates must check the stable HTTPS endpoints and Hermes
+authentication. The built-in dashboard remains separately available at
+`http://buildfleet-server.tailcb7cdb.ts.net:9119`. WebUI is started manually
+with `hermes-webui-start`, which wraps its existing `ctl.sh` with the current
+Hermes runtime and localhost/proxy settings; no boot autostart service is
+configured. After reboot, run that command before expecting WebUI health
+gates to pass. Verify WebUI login, authenticated session access, and SSE
+streaming after endpoint changes.
 
 Temporary Nix runtime replacements supply patched Node.js, Brotli, c-ares,
 OpenSSL, and SQLite where stable nixpkgs is behind. Library replacements check exported

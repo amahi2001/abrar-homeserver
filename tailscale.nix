@@ -26,26 +26,41 @@
   # Note: NixOS module only sets this automatically for "client" / "both", not "server"
   networking.firewall.checkReversePath = "loose";
 
-  # Give Transmission a stable, private HTTPS endpoint without publishing its
-  # RPC port.  Tailscale Serve terminates TLS on the tailnet and proxies only
-  # to the Docker mapping on server loopback.
-  systemd.services.tailscale-serve-transmission = {
-    description = "Tailscale Serve proxy for Transmission";
-    wantedBy = [ "multi-user.target" ];
-    after = [
-      "tailscaled.service"
-      "docker-transmission-vpn.service"
-    ];
+  # Nginx owns tailnet HTTPS; rebuilds must not modify existing Serve routes.
+  systemd.services.tailscale-nginx-cert = {
+    description = "Renew nginx certificate for the existing Tailscale hostname";
+    after = [ "tailscaled.service" ];
     requires = [ "tailscaled.service" ];
+    before = [ "nginx.service" ];
     serviceConfig = {
       Type = "oneshot";
-      RemainAfterExit = true;
-      # The daemon's systemd start completes before its backend/interface is ready.
+      StateDirectory = "tailscale-nginx-cert";
+      StateDirectoryMode = "0750";
+      Group = "nginx";
+      UMask = "0027";
+      TimeoutStartSec = "120s";
       ExecStartPre = "${config.services.tailscale.package}/bin/tailscale wait --timeout=60s";
-      # Tailscale may require a one-time admin approval before Serve can start.
-      # Do not let that interactive approval block a full system activation.
-      TimeoutStartSec = "90s";
-      ExecStart = "${pkgs.coreutils}/bin/timeout 20s ${config.services.tailscale.package}/bin/tailscale serve --bg --https=443 http://127.0.0.1:9091";
     };
+    script = ''
+      ${config.services.tailscale.package}/bin/tailscale cert --min-validity=168h \
+        --cert-file /var/lib/tailscale-nginx-cert/cert.pem \
+        --key-file /var/lib/tailscale-nginx-cert/key.pem \
+        buildfleet-server.tailcb7cdb.ts.net
+      ${pkgs.coreutils}/bin/chmod 0640 /var/lib/tailscale-nginx-cert/{cert,key}.pem
+      if ${pkgs.systemd}/bin/systemctl is-active --quiet nginx.service; then
+        ${pkgs.systemd}/bin/systemctl reload --no-block nginx.service
+      fi
+    '';
+  };
+  systemd.timers.tailscale-nginx-cert = {
+    wantedBy = [ "timers.target" ];
+    timerConfig = {
+      OnCalendar = "daily";
+      Persistent = true;
+    };
+  };
+  systemd.services.nginx = {
+    wants = [ "tailscale-nginx-cert.service" ];
+    after = [ "tailscale-nginx-cert.service" ];
   };
 }

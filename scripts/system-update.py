@@ -26,7 +26,7 @@ SERVICES = (
     "redis-nextcloud", "samba-smbd", "samba-nmbd", "samba-wsdd",
     "hermes-agent", "hermes-dashboard",
 )
-HOST = "buildfleet.duckdns.org"
+HOST = "cloud.amahi.dev"
 CONFIG = "nixosConfigurations.buildfleet-server.config"
 APPLICATION_UNITS = tuple(name + ".service" for name in (
     "hermes-agent", "hermes-dashboard", "vaultwarden", "jellyfin", "prowlarr",
@@ -188,7 +188,7 @@ def health_check(run, expected_hermes=None):
             or nextcloud.get("maintenance") is not False
             or nextcloud.get("needsDbUpgrade") is not False):
         raise RuntimeError("Nextcloud is not ready: " + json.dumps(nextcloud))
-    curl(run, "http://127.0.0.1:8222/vault/alive")
+    curl(run, "http://127.0.0.1:8222/alive")
     if curl(run, "http://127.0.0.1:8096/health").strip() != "Healthy":
         raise RuntimeError("Jellyfin health check failed")
     status = hermes_status(run)
@@ -196,6 +196,29 @@ def health_check(run, expected_hermes=None):
         raise RuntimeError("Hermes gateway is not healthy")
     if expected_hermes is not None and status.get("version") != expected_hermes:
         raise RuntimeError(f"Hermes reports {status.get('version')}; expected {expected_hermes}")
+    endpoint_health = json.loads(curl(
+        run, "https://hermes.amahi.dev/health?deep=1", "--noproxy", "*",
+        "--resolve", "hermes.amahi.dev:443:100.91.234.17"))
+    if endpoint_health.get("status") != "ok":
+        raise RuntimeError("Hermes WebUI HTTPS endpoint is not healthy")
+    endpoint_auth = json.loads(curl(
+        run, "https://hermes.amahi.dev/api/auth/status", "--noproxy", "*",
+        "--resolve", "hermes.amahi.dev:443:100.91.234.17"))
+    if (endpoint_auth.get("auth_enabled") is not True
+            or endpoint_auth.get("password_auth_enabled") is not True
+            or endpoint_auth.get("logged_in") is not False):
+        raise RuntimeError("Hermes WebUI HTTPS endpoint does not require password login")
+    for name, host, path in (
+        ("Hermes WebUI", "hermes.amahi.dev", "/api/sessions"),
+        ("Transmission", "buildfleet-server.tailcb7cdb.ts.net", "/transmission/rpc"),
+    ):
+        code = run([
+            "curl", "--silent", "--show-error", "--max-time", "10", "--noproxy", "*",
+            "--resolve", f"{host}:443:100.91.234.17",
+            "--output", "/dev/null", "--write-out", "%{http_code}", f"https://{host}{path}",
+        ]).strip()
+        if code != "401":
+            raise RuntimeError(f"{name} HTTPS endpoint did not require login: HTTP {code}")
 
 
 def recover_services(run, *, maintenance_lock=Path("/run/lock/nixos-flake-update.lock"),

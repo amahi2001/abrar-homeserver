@@ -5,8 +5,39 @@
   lib,
   ...
 }:
-
+let
+  hermesPython = config.services.hermes-agent.package.hermesVenv;
+  hermesWebuiStart = pkgs.writeShellScriptBin "hermes-webui-start" ''
+    set -euo pipefail
+    webui_agent_dir="$(${hermesPython}/bin/python3 -I -B -c 'import importlib.util, os; print(os.path.dirname(importlib.util.find_spec("run_agent").origin))')"
+    exec /run/wrappers/bin/sudo -n -u hermes ${pkgs.coreutils}/bin/env \
+      HERMES_HOME=/var/lib/hermes/.hermes \
+      HERMES_WEBUI_STATE_DIR=/var/lib/hermes/.hermes/webui \
+      HERMES_WEBUI_PYTHON=${hermesPython}/bin/python3 \
+      HERMES_WEBUI_AGENT_DIR="$webui_agent_dir" \
+      HERMES_WEBUI_SERVER_CWD=/var/lib/hermes/workspace \
+      HERMES_WEBUI_HOST=127.0.0.1 HERMES_WEBUI_PORT=8787 \
+      HERMES_WEBUI_TRUST_FORWARDED_PROTO=1 \
+      HERMES_WEBUI_DISABLE_LOCAL_VENV=1 HERMES_WEBUI_START_GRACE=30 \
+      PYTHONDONTWRITEBYTECODE=1 \
+      /var/lib/hermes/hermes-webui/ctl.sh start --skip-agent-install
+  '';
+  tailnetListen = [
+    {
+      addr = "100.91.234.17";
+      port = 443;
+      ssl = true;
+    }
+    {
+      addr = "[fd7a:115c:a1e0::3601:eaab]";
+      port = 443;
+      ssl = true;
+    }
+  ];
+in
 {
+  environment.systemPackages = [ hermesWebuiStart ];
+
   # DuckDNS dynamic DNS
   services.duckdns = {
     enable = true;
@@ -52,13 +83,12 @@
     '';
   };
 
-  # ACME / Let's Encrypt (DuckDNS DNS challenge)
+  # ACME / Let's Encrypt: HTTP validation for amahi.dev, DNS for legacy names.
   security.acme = {
     acceptTerms = true;
     defaults = {
       email = "buildfleet@proton.me";
       group = "nginx";
-      dnsProvider = "duckdns";
       dnsPropagationCheck = true;
     };
     certs."buildfleet.duckdns.org" = {
@@ -82,6 +112,14 @@
       reloadServices = [ "nginx" ];
       webroot = null;
     };
+    # Cloudflare delegates _acme-challenge.hermes.amahi.dev to the existing
+    # DuckDNS challenge record, so renewal needs no public HTTP endpoint.
+    certs."hermes.amahi.dev" = {
+      dnsProvider = "duckdns";
+      credentialFiles."DUCKDNS_TOKEN_FILE" = "/var/lib/secrets/duckdns-token-value";
+      reloadServices = [ "nginx" ];
+      webroot = null;
+    };
   };
 
   # Nginx reverse proxy
@@ -92,16 +130,74 @@
     recommendedOptimisation = true;
     recommendedGzipSettings = true;
 
+    # Address-specific vhosts cannot be selected through the public listener.
+    virtualHosts."hermes.amahi.dev" = {
+      listen = tailnetListen;
+      enableACME = true;
+      onlySSL = true;
+      extraConfig = ''
+        allow 100.64.0.0/10;
+        allow fd7a:115c:a1e0::/48;
+        deny all;
+      '';
+      locations."/" = {
+        proxyPass = "http://127.0.0.1:8787";
+        proxyWebsockets = true;
+        extraConfig = ''
+          proxy_buffering off;
+          proxy_read_timeout 3600s;
+          proxy_send_timeout 3600s;
+          access_log off;
+        '';
+      };
+    };
+
+    # Preserve Transmission's existing URL when nginx takes over tailnet :443.
+    virtualHosts."buildfleet-server.tailcb7cdb.ts.net" = {
+      listen = tailnetListen;
+      onlySSL = true;
+      sslCertificate = "/var/lib/tailscale-nginx-cert/cert.pem";
+      sslCertificateKey = "/var/lib/tailscale-nginx-cert/key.pem";
+      extraConfig = ''
+        allow 100.64.0.0/10;
+        allow fd7a:115c:a1e0::/48;
+        deny all;
+      '';
+      locations."/" = {
+        proxyPass = "http://127.0.0.1:9091";
+        proxyWebsockets = true;
+      };
+    };
+
     virtualHosts."buildfleet.duckdns.org" = {
       enableACME = true;
       forceSSL = true;
-      locations."= /vault" = {
-        extraConfig = "return 301 https://buildfleet.duckdns.org/vault/;";
+      locations."~ ^/vault(?:/([^\\r\\n]*))?$" = {
+        extraConfig = "return 308 https://vault.amahi.dev/$1$is_args$args;";
       };
-      locations."/vault/" = {
+      locations."/" = {
+        extraConfig = "return 308 https://cloud.amahi.dev$request_uri;";
+      };
+    };
+
+    virtualHosts."cloud.amahi.dev" = {
+      enableACME = true;
+      forceSSL = true;
+    };
+
+    virtualHosts."vault.amahi.dev" = {
+      enableACME = true;
+      forceSSL = true;
+      locations."/" = {
         proxyPass = "http://127.0.0.1:8222";
         proxyWebsockets = true;
       };
+    };
+
+    virtualHosts."jellyfin.amahi.dev" = {
+      enableACME = true;
+      forceSSL = true;
+      locations = config.services.nginx.virtualHosts."jellyfin.buildfleet.duckdns.org".locations;
     };
 
     # Keep Jellyfin at the root of its own hostname so existing LAN and
@@ -127,7 +223,7 @@
   services.vaultwarden = {
     enable = true;
     config = {
-      DOMAIN = "https://buildfleet.duckdns.org/vault";
+      DOMAIN = "https://vault.amahi.dev";
       # The administrative account already exists; keep public registration
       # closed on this Internet-facing endpoint.
       SIGNUPS_ALLOWED = false;

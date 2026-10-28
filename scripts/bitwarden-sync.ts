@@ -271,7 +271,7 @@ async function main() {
   const VW_CLIENTSECRET = process.env.VW_CLIENTSECRET;
   const VW_EMAIL = process.env.VW_EMAIL;
   const VW_PASSWORD = process.env.VW_PASSWORD;
-  const VW_SERVER_URL = process.env.VW_SERVER_URL || "https://buildfleet.duckdns.org/vault";
+  const VW_SERVER_URL = process.env.VW_SERVER_URL || "https://vault.amahi.dev";
 
   if (!BW_CLIENTID || !BW_CLIENTSECRET || !BW_PASSWORD || !VW_PASSWORD || (!VW_CLIENTID && !VW_EMAIL)) {
     console.error("Missing required environment variables!");

@@ -10,9 +10,9 @@ root is the live flake: `/etc/nixos#buildfleet-server`.
 | Hermes Agent | Telegram/CLI automation and media workflow | Outbound only |
 | Hermes Dashboard | Hermes Desktop web/TUI endpoint | Tailscale `:9119` |
 | Cockpit | Server administration | Tailscale `:9090` |
-| Nextcloud | File storage, sync, sharing, and WebDAV | Public HTTPS root |
-| Vaultwarden | Password manager | Public HTTPS `/vault/` |
-| Jellyfin | Movies and TV playback | Public HTTPS `jellyfin.buildfleet.duckdns.org`; LAN and Tailscale `:8096` |
+| Nextcloud | File storage, sync, sharing, and WebDAV | Public HTTPS `cloud.amahi.dev` |
+| Vaultwarden | Password manager | Public HTTPS `vault.amahi.dev` |
+| Jellyfin | Movies and TV playback | Public HTTPS `jellyfin.amahi.dev`; LAN and Tailscale `:8096` |
 | AdGuard Home | Network DNS filtering and admin UI | DNS `:53`, LAN UI `:8080` |
 | Gluetun + Transmission | VPN-isolated downloads with a fail-closed network namespace | RPC on server loopback `:9091` |
 | Prowlarr | Search/indexer aggregation for Hermes | Tailscale `:9696` |
@@ -20,6 +20,13 @@ root is the live flake: `/etc/nixos#buildfleet-server`.
 | Samba + WSD | Read-only media and writable inbox shares | Home Wi-Fi and Tailscale `:445` |
 | Tailscale | Remote administration and exit-node routing | Tailnet |
 | XFCE + Bluetooth | Local recovery console | Starts only when requested |
+
+Cloudflare DNS-only CNAMEs for `vault.amahi.dev`, `cloud.amahi.dev`, and
+`jellyfin.amahi.dev` point to `buildfleet.duckdns.org`. DuckDNS continues updating
+the home IP. Old Nextcloud and Vaultwarden browser links redirect to their new
+domains. Update Nextcloud and password-manager clients to use the new HTTPS
+URLs directly. The old Jellyfin hostname remains a compatibility alias; new
+clients should use `https://jellyfin.amahi.dev`.
 
 Jellyfin's runtime network settings in `/var/lib/jellyfin/config/network.xml`
 trust `127.0.0.1` as the Nginx proxy and publish the server URL from each
