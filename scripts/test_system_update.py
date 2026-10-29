@@ -761,8 +761,7 @@ class HealthTests(unittest.TestCase):
             if args[-1].endswith("/health"):
                 return "Healthy"
             if args[-1].endswith("/api/status"):
-                return json.dumps({"gateway_running": True, "overall": "ok", "version": "0.22.2",
-                                   "auth_required": True})
+                return json.dumps(self.gateway)
             if args[-1].endswith(("/api/sessions", "/transmission/rpc")):
                 return "401"
         return ""
@@ -770,6 +769,78 @@ class HealthTests(unittest.TestCase):
     def setUp(self):
         self.calls = []
         self.nextcloud = {"installed": True, "maintenance": False, "needsDbUpgrade": False}
+        self.gateway = {"gateway_running": True, "gateway_drainable": True,
+                        "overall": "ok", "version": "0.22.2", "auth_required": True}
+
+    def test_running_gateway_must_be_ready_to_serve(self):
+        for drainable in (False, None):
+            with self.subTest(drainable=drainable):
+                self.gateway["gateway_drainable"] = drainable
+                with self.assertRaisesRegex(RuntimeError, "not ready to serve"):
+                    update.health_check(self.run_command)
+
+    def test_busy_serving_gateway_remains_healthy(self):
+        self.gateway.update(gateway_busy=True, active_agents=2)
+        update.health_check(self.run_command)
+
+    def test_wait_healthy_requires_thirty_seconds_of_stable_gateway(self):
+        sleep = Mock()
+        run = Mock(return_value="MainPID=123\nNRestarts=0\n")
+        with patch.object(update, "health_check") as health:
+            update.wait_healthy(run, "0.22.2", sleep=sleep)
+        self.assertEqual(health.call_count, 7)
+        self.assertTrue(all(call.args == (run, "0.22.2") for call in health.call_args_list))
+        self.assertEqual(sleep.call_count, 6)
+        self.assertTrue(all(call.args == (5,) for call in sleep.call_args_list))
+
+    def test_wait_healthy_restarts_stability_window_on_pid_or_restart_change(self):
+        original = "MainPID=123\nNRestarts=0\n"
+        for changed in ("MainPID=124\nNRestarts=0\n", "MainPID=123\nNRestarts=1\n"):
+            with self.subTest(changed=changed):
+                run = Mock(side_effect=[original, original] + [changed] * 7)
+                sleep = Mock()
+                with patch.object(update, "health_check") as health:
+                    update.wait_healthy(run, sleep=sleep)
+                self.assertEqual(health.call_count, 9)
+                self.assertEqual(sleep.call_count, 8)
+
+    def test_wait_healthy_resets_stability_after_failed_health_sample(self):
+        run = Mock(return_value="MainPID=123\nNRestarts=0\n")
+        sleep = Mock()
+        samples = [None, None, RuntimeError("gateway starting")] + [None] * 7
+        with patch.object(update, "health_check", side_effect=samples) as health:
+            update.wait_healthy(run, sleep=sleep)
+        self.assertEqual(health.call_count, 10)
+        self.assertEqual(sleep.call_count, 9)
+
+    def test_wait_healthy_rejects_gateway_process_churn(self):
+        run = Mock(side_effect=[f"MainPID={pid}\nNRestarts=0\n" for pid in range(100, 107)])
+        sleep = Mock()
+        with patch.object(update, "health_check"):
+            with self.assertRaisesRegex(RuntimeError, "did not remain stable"):
+                update.wait_healthy(run, attempts=7, sleep=sleep)
+        self.assertEqual(sleep.call_count, 6)
+
+    def test_wait_healthy_preserves_final_health_failure(self):
+        sleep = Mock()
+        with patch.object(update, "health_check", side_effect=RuntimeError("gateway unavailable")):
+            with self.assertRaisesRegex(RuntimeError, "gateway unavailable"):
+                update.wait_healthy(Mock(), attempts=3, sleep=sleep)
+        self.assertEqual(sleep.call_count, 2)
+
+    def test_wait_healthy_rejects_missing_gateway_process(self):
+        run = Mock(return_value="MainPID=0\nNRestarts=0\n")
+        with patch.object(update, "health_check"):
+            with self.assertRaisesRegex(RuntimeError, "no running process"):
+                update.wait_healthy(run, attempts=1, sleep=Mock())
+
+    def test_wait_healthy_requires_a_valid_restart_counter(self):
+        for counter in ("", "unknown", "-1"):
+            with self.subTest(counter=counter):
+                run = Mock(return_value=f"MainPID=123\nNRestarts={counter}\n")
+                with patch.object(update, "health_check"):
+                    with self.assertRaisesRegex(RuntimeError, "Cannot read Hermes gateway restart count"):
+                        update.wait_healthy(run, attempts=1, sleep=Mock())
 
     def test_health_uses_local_and_tailnet_endpoints_and_excludes_on_demand_services(self):
         update.health_check(self.run_command, "0.22.2")

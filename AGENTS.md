@@ -48,6 +48,12 @@ The dashboard requires:
 - Session token in `/var/lib/hermes/env` as `HERMES_DASHBOARD_SESSION_TOKEN`
 - Tailscale for transport security (no HTTPS needed within the mesh)
 
+The gateway's local API also reads the shared `dashboard.public_url` setting.
+Both launch wrappers register basic authentication using the existing dashboard
+session token. `system.checks` verifies both wrappers against the upstream auth
+gate before a system build can deploy. Check both launch paths when changing
+shared dashboard or authentication settings.
+
 ### hermes.nix highlights
 
 - `extraDependencyGroups` supplies provider and messaging integrations
@@ -196,7 +202,7 @@ together. Both sets of links are managed by `tmpfiles.rules` in `hermes.nix`.
 ## Current Configuration
 
 ### Models (in hermes.nix)
-- Main: `gpt-5.6-luna` via `openai-codex` provider
+- Main: `gpt-6.1-terra` via `openai-codex` provider
 - Compression: `deepseek-v4-pro` via `opencode-go` provider
 - Main provider base URL: `https://chatgpt.com/backend-api/codex`
 

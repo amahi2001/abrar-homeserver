@@ -84,6 +84,11 @@ in
       ${config.services.hermes-agent.package.hermesVenv}/bin/python3 -P ${./scripts/check-hermes-crypto.py}
       touch "$out"
     '')
+    (pkgs.runCommand "hermes-startup-auth-check" { } ''
+      ${config.services.hermes-agent.package.hermesVenv}/bin/python3 -P ${./scripts/check-hermes-startup.py} \
+        --bash ${pkgs.bash}/bin/bash --gateway ${hermesGateway} --dashboard ${hermesDashboard}
+      touch "$out"
+    '')
   ];
 
   # Add hermes user to nixconfig group (hermes user is created by hermes-agent module)
@@ -92,7 +97,7 @@ in
     "nixconfig"
   ];
 
-  # Hermes Agent - AI assistant with GPT-6 Luna via OpenAI Codex
+  # Hermes Agent - AI assistant with GPT-6.1 Terra via OpenAI Codex
   services.hermes-agent = {
     enable = true;
 
@@ -159,7 +164,7 @@ in
     settings = {
       model = {
         base_url = "https://chatgpt.com/backend-api/codex";
-        default = "gpt-6-luna";
+        default = "gpt-6.1-terra";
         provider = "openai-codex";
       };
       toolsets = [ "all" ];
