@@ -194,6 +194,9 @@ def health_check(run, expected_hermes=None):
     status = hermes_status(run)
     if status.get("gateway_running") is not True or status.get("overall") not in (None, "ok"):
         raise RuntimeError("Hermes gateway is not healthy")
+    # Native drainability means live and serving, independent of active work.
+    if status.get("gateway_drainable") is not True:
+        raise RuntimeError("Hermes gateway is not ready to serve")
     if expected_hermes is not None and status.get("version") != expected_hermes:
         raise RuntimeError(f"Hermes reports {status.get('version')}; expected {expected_hermes}")
     endpoint_health = json.loads(curl(
@@ -245,14 +248,34 @@ def recover_services(run, *, maintenance_lock=Path("/run/lock/nixos-flake-update
 
 
 def wait_healthy(run, expected_hermes=None, *, attempts=18, sleep=time.sleep):
+    previous = None
+    stable_samples = 0
     for attempt in range(attempts):
         try:
             health_check(run, expected_hermes)
-            return
+            properties = dict(line.split("=", 1) for line in run([
+                "systemctl", "show", "--property=MainPID", "--property=NRestarts",
+                "hermes-agent.service",
+            ]).splitlines() if "=" in line)
+            pid, restarts = properties.get("MainPID", ""), properties.get("NRestarts", "")
+            if not pid.isdecimal() or int(pid) <= 0:
+                raise RuntimeError("Hermes gateway has no running process")
+            if not restarts.isdecimal():
+                raise RuntimeError("Cannot read Hermes gateway restart count")
+            identity = (int(pid), int(restarts))
+            stable_samples = stable_samples + 1 if identity == previous else 1
+            previous = identity
+            # Seven samples span 30 seconds, outlasting the observed startup crash loop.
+            if stable_samples >= 7:
+                return
         except (RuntimeError, ValueError):
+            previous = None
+            stable_samples = 0
             if attempt == attempts - 1:
                 raise
+        if attempt < attempts - 1:
             sleep(5)
+    raise RuntimeError("Hermes gateway did not remain stable for 30 seconds")
 
 
 def running_hermes_package(run):
