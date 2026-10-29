@@ -57,6 +57,12 @@ let
     fi
     unset GATEWAY_ALLOW_ALL_USERS
 
+    # The gateway's local API shares the dashboard's public-URL auth gate.
+    : "''${HERMES_DASHBOARD_SESSION_TOKEN:?Set HERMES_DASHBOARD_SESSION_TOKEN in /var/lib/hermes/env}"
+    export HERMES_DASHBOARD_BASIC_AUTH_USERNAME=hermes
+    export HERMES_DASHBOARD_BASIC_AUTH_PASSWORD="$HERMES_DASHBOARD_SESSION_TOKEN"
+    export HERMES_DASHBOARD_BASIC_AUTH_SECRET="$(${pkgs.coreutils}/bin/printf 'hermes-dashboard-session:%s' "$HERMES_DASHBOARD_SESSION_TOKEN" | ${pkgs.coreutils}/bin/sha256sum | ${pkgs.coreutils}/bin/cut -d ' ' -f 1)"
+
     exec ${config.services.hermes-agent.package}/bin/hermes gateway
   '';
 
