@@ -195,4 +195,10 @@ in
     options = "--delete-older-than 7d";
   };
   nix.optimise.automatic = true;
+
+  environment.etc."systemd/journald.conf.d/retention.conf".text = ''
+    [Journal]
+    SystemMaxUse=1G
+    MaxRetentionSec=30day
+  '';
 }
