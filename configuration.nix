@@ -10,6 +10,7 @@
 {
   imports = [
     ./hardware-configuration.nix
+    ./storage.nix
     ./desktop.nix
     ./web.nix
     ./containers.nix
