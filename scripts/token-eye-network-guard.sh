@@ -8,6 +8,16 @@ iptables -w -F TOKEN-EYE-PROXY
 iptables -w -A TOKEN-EYE-PROXY -i docker0 -j RETURN
 iptables -w -A TOKEN-EYE-PROXY -i br+ -j RETURN
 iptables -w -A TOKEN-EYE-PROXY -j DROP
-if ! iptables -w -C DOCKER-USER -p tcp -m conntrack --ctorigdst 172.17.0.1 --ctorigdstport 8787 -j TOKEN-EYE-PROXY 2>/dev/null; then
-  iptables -w -I DOCKER-USER 1 -p tcp -m conntrack --ctorigdst 172.17.0.1 --ctorigdstport 8787 -j TOKEN-EYE-PROXY
-fi
+for port in 8787 8788; do
+  if ! iptables -w -C DOCKER-USER -p tcp -m conntrack --ctorigdst 172.17.0.1 --ctorigdstport "$port" -j TOKEN-EYE-PROXY 2>/dev/null; then
+    iptables -w -I DOCKER-USER 1 -p tcp -m conntrack --ctorigdst 172.17.0.1 --ctorigdstport "$port" -j TOKEN-EYE-PROXY
+  fi
+done
+# Same-bridge traffic can reach the host userland proxy through INPUT instead of DNAT.
+for interface in docker0 br+; do
+  for port in 8787 8788; do
+    if ! iptables -w -C INPUT -i "$interface" -d 172.17.0.1 -p tcp --dport "$port" -j ACCEPT 2>/dev/null; then
+      iptables -w -I INPUT 1 -i "$interface" -d 172.17.0.1 -p tcp --dport "$port" -j ACCEPT
+    fi
+  done
+done

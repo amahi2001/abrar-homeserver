@@ -2,7 +2,7 @@ import { test, expect, afterEach } from "bun:test";
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, statSync, copyFileSync, symlinkSync, unlinkSync, chmodSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { projectName, repository, githubRemote, withAgentDispatchLock } from "./dev";
+import { projectName, repository, githubRemote, withAgentDispatchLock, applySharedTokenEyeRuntime } from "./dev";
 import "./codebase-memory.test";
 
 const roots: string[] = [];
@@ -84,7 +84,7 @@ fail('unexpected mock');
 `;
   for (const name of ["git", "gh", "docker", "devcontainer", "curl", "sh"]) writeFileSync(join(bin, name), mock, { mode: 0o755 });
   const env = {
-    ...process.env, PATH: `${bin}:${process.env.PATH}`, REAL_GIT: realGit,
+    ...process.env, HOME: dir, PATH: `${bin}:${process.env.PATH}`, REAL_GIT: realGit,
     DEV_ROOT: join(dir, "projects"), DEV_STATE_ROOT: state, CODEX_HOME: join(dir, "host-codex"),
     CLAUDE_CONFIG_DIR: join(dir, "host-claude"),
     DEV_ASSETS: assets,
@@ -108,6 +108,103 @@ fail('unexpected mock');
     clear() { writeFileSync(env.FAKE_LOG, ""); },
   };
 }
+
+function stageTokenEye(home: string) {
+  const runtime = join(home, ".local/state/token-eye-nixos/runtime");
+  const data = join(home, ".local/state/dev/projects/token-eye/home/.local/share/com.amahi.tokeneye.desktop");
+  mkdirSync(join(runtime, "bin"), { recursive: true, mode: 0o700 });
+  mkdirSync(data, { recursive: true, mode: 0o700 });
+  writeFileSync(join(runtime, "deployment.json"), JSON.stringify({ schema: 1, kind: "token-eye-server-runtime" }), { mode: 0o600 });
+  writeFileSync(join(runtime, "bin/token-eye"), "#!/bin/sh\nexit 0\n", { mode: 0o700 });
+  return { runtime, data };
+}
+
+test("shared TokenEye is absent by default and leaves generic dev configuration untouched", () => {
+  const f = fixture();
+  const compose = { services: { dev: { environment: { EXISTING: "kept" }, volumes: [] } } };
+  const native = { remoteEnv: { EXISTING: "kept" } };
+  const before = JSON.stringify([compose, native]);
+  expect(applySharedTokenEyeRuntime(compose, native, f.dir)).toBe(false);
+  expect(JSON.stringify([compose, native])).toBe(before);
+  expect(f.cli(["start", "app", "--no-agent"]).code).toBe(0);
+  const saved = readFileSync(join(f.state, "projects/app/devcontainer.json"), "utf8");
+  expect(saved).not.toContain("token-eye");
+});
+
+test("owned shared TokenEye mounts its existing data and read-only runtime without replacing image PATH", () => {
+  const f = fixture(), { runtime, data } = stageTokenEye(f.dir);
+  const compose: any = { services: { dev: { environment: { EXISTING: "kept" }, volumes: [] } } };
+  const native: any = { remoteEnv: { EXISTING: "kept" } };
+  expect(applySharedTokenEyeRuntime(compose, native, f.dir)).toBe(true);
+  expect(compose.services.dev.volumes).toEqual([
+    { type: "bind", source: runtime, target: "/opt/token-eye", read_only: true },
+    { type: "bind", source: data, target: "/agent/token-eye/data", read_only: false },
+  ]);
+  const managed = { TOKEN_EYE_DATA_DIR: "/agent/token-eye/data", TOKEN_EYE_ROUTING_CLIENT: "1",
+    TOKEN_EYE_ROUTING_SERVER: "1", TOKEN_EYE_ROUTING_URL: "http://172.17.0.1:8787", TOKEN_EYE_ROUTING_AUTO_BOOTSTRAP: "0" };
+  expect(compose.services.dev.environment).toEqual({ EXISTING: "kept", ...managed });
+  expect(native.containerEnv).toEqual(managed);
+  expect(native.remoteEnv).toEqual({ EXISTING: "kept", PATH: "/opt/token-eye/bin:${containerEnv:PATH}" });
+  const before = JSON.stringify([compose, native]);
+  expect(applySharedTokenEyeRuntime(compose, native, f.dir)).toBe(true);
+  expect(JSON.stringify([compose, native])).toBe(before);
+  expect(compose.services.dev.volumes.some((mount: any) => mount.source.includes("host-codex") || mount.source.includes("host-claude"))).toBe(false);
+});
+
+test("shared TokenEye preserves the central routing supervisor and its declared bootstrap settings", () => {
+  const f = fixture(); stageTokenEye(f.dir);
+  const environment = { TOKEN_EYE_ROUTING_EXTERNAL_SERVICE: "1", TOKEN_EYE_ROUTING_SERVER: "1",
+    TOKEN_EYE_ROUTING_AUTO_BOOTSTRAP: "1", TOKEN_EYE_ROUTING_URL: "http://172.17.0.1:8787" };
+  const compose: any = { services: { dev: { environment: { ...environment }, volumes: [] } } };
+  const native: any = {};
+  expect(applySharedTokenEyeRuntime(compose, native, f.dir)).toBe(true);
+  expect(compose.services.dev.environment).toEqual({ ...environment, TOKEN_EYE_DATA_DIR: "/agent/token-eye/data", TOKEN_EYE_ROUTING_CLIENT: "0" });
+  expect(native.containerEnv.TOKEN_EYE_ROUTING_CLIENT).toBe("0");
+  expect(native.containerEnv.TOKEN_EYE_ROUTING_AUTO_BOOTSTRAP).toBeUndefined();
+  expect(compose.services.dev.volumes).toHaveLength(2);
+});
+
+test("shared TokenEye refuses unsafe ownership markers and foreign configuration without mutation", () => {
+  for (const kind of ["schema", "public-marker", "linked-marker", "linked-binary", "linked-data", "mount", "data-env", "path-env", "routing-env", "client-env"]) {
+    const f = fixture(), { runtime, data } = stageTokenEye(f.dir);
+    const compose: any = { services: { dev: { environment: { EXISTING: "kept" }, volumes: [] } } };
+    const native: any = {};
+    const marker = join(runtime, "deployment.json");
+    if (kind === "schema") writeFileSync(marker, JSON.stringify({ schema: 2, kind: "token-eye-server-runtime" }));
+    if (kind === "public-marker") chmodSync(marker, 0o644);
+    if (kind === "linked-marker") { copyFileSync(marker, join(runtime, "other.json")); unlinkSync(marker); symlinkSync(join(runtime, "other.json"), marker); }
+    if (kind === "linked-binary") { unlinkSync(join(runtime, "bin/token-eye")); symlinkSync(process.execPath, join(runtime, "bin/token-eye")); }
+    if (kind === "linked-data") { rmSync(data, { recursive: true }); symlinkSync(runtime, data); }
+    if (kind === "mount") compose.services.dev.volumes.push({ type: "bind", source: "/foreign/runtime", target: "/opt/token-eye", read_only: true });
+    if (kind === "data-env") compose.services.dev.environment.TOKEN_EYE_DATA_DIR = "/foreign/data";
+    if (kind === "path-env") native.remoteEnv = { PATH: "/foreign/bin" };
+    if (kind === "routing-env") compose.services.dev.environment.TOKEN_EYE_ROUTING_URL = "https://custom.example.invalid";
+    if (kind === "client-env") native.containerEnv = { TOKEN_EYE_ROUTING_CLIENT: "0" };
+    const before = JSON.stringify([compose, native]);
+    expect(() => applySharedTokenEyeRuntime(compose, native, f.dir)).toThrow("owned TokenEye runtime");
+    expect(JSON.stringify([compose, native])).toBe(before);
+  }
+});
+
+test("a newly staged shared TokenEye deployment changes native config hashing once without rebuilding images", () => {
+  const f = fixture();
+  expect(f.cli(["start", "app", "--no-agent"]).code).toBe(0);
+  const metadata = join(f.state, "projects/app/project.json");
+  const before = JSON.parse(readFileSync(metadata, "utf8")).configHash;
+  const { runtime, data } = stageTokenEye(f.dir); f.clear();
+  expect(f.cli(["start", "app", "--no-agent"], { FAKE_RUNNING: "1" }).code).toBe(0);
+  const compose = JSON.parse(readFileSync(join(f.state, "projects/app/compose.json"), "utf8"));
+  const native = JSON.parse(readFileSync(join(f.state, "projects/app/devcontainer.json"), "utf8"));
+  expect(compose.services.dev.volumes.find((mount: any) => mount.target === "/opt/token-eye").source).toBe(runtime);
+  expect(compose.services.dev.volumes.find((mount: any) => mount.target === "/agent/token-eye/data").source).toBe(data);
+  expect(native.remoteEnv.PATH).toBe("/opt/token-eye/bin:${containerEnv:PATH}");
+  expect(JSON.parse(readFileSync(metadata, "utf8")).configHash).not.toBe(before);
+  expect(f.calls().find(c => c.name === "devcontainer" && c.args[0] === "up").args).toContain("--remove-existing-container");
+  expect(f.calls().some(c => c.name === "docker" && c.args[0] === "build")).toBe(false);
+  f.clear();
+  expect(f.cli(["start", "app", "--no-agent"], { FAKE_RUNNING: "1" }).code).toBe(0);
+  expect(f.calls().some(c => c.name === "devcontainer" && c.args[0] === "up")).toBe(false);
+});
 
 test("rejects path traversal, URLs, shell strings, and malformed project/repository names", () => {
   for (const bad of ["../escape", "a/b", "-flag", "My App", "x;touch y", "a\nb"]) expect(() => projectName(bad)).toThrow();

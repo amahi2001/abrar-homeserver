@@ -10,6 +10,7 @@
 {
   imports = [
     ./hardware-configuration.nix
+    ./storage.nix
     ./desktop.nix
     ./web.nix
     ./containers.nix
@@ -144,6 +145,9 @@
     btop
     lm_sensors
     bun
+    # Codex Security's MCP server and Python helpers run on the host.
+    nodejs_24
+    python3
     # Latest release from the dedicated Codex flake, not the older stable
     # nixpkgs package. Updated by codex-cli-update.service.
     codexCli.packages.x86_64-linux.default

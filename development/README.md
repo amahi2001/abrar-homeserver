@@ -296,8 +296,10 @@ Migration verification on 2026-10-21:
 ## NixOS integration and validation
 
 `development.nix` installs `dev` and narrows Docker's existing weekly pruning to
-dangling images. Personal host agent settings/skills are managed by agent-config.
-Stopped containers, tagged images, volumes, and build caches are preserved.
+dangling images and build caches unused for 30 days. Personal host agent
+settings/skills are managed by agent-config. Stopped containers, tagged images,
+volumes, and recently used build caches are preserved. Tagged images need periodic
+review: remove obsolete builds while retaining current and previous images.
 
 ```bash
 nix build /etc/nixos#dev --out-link ~/.local/state/dev-package
