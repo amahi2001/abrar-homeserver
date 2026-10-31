@@ -3,7 +3,7 @@
 `token-eye.nix`, imported by `configuration.nix`, declares the existing TokenEye
 deployment for `buildfleet`: three commands, Headroom's user service, the two-day
 health timer, its service, and user lingering. Scoped tmpfiles links keep the
-existing `~/.local/bin` and user-unit paths managed on subsequent NixOS rebuilds.
+existing `~/.local/bin`, `/opt/token-eye/bin/token-eye` and user-unit paths managed on subsequent NixOS rebuilds.
 The existing development maintenance retry drop-in remains compatible.
 
 The private checkout at `~/projects/token-eye`, existing project container/image,
@@ -11,17 +11,17 @@ and installed in-box CLI remain prerequisites. Nix wrappers call the tracked
 private scripts at runtime; the public configuration and store do not contain
 the application's source or credentials. This does not provision a fresh machine.
 
-Automatic routing now covers the host Codex account and the shared account mounted
-in project boxes. Ordinary new Codex sessions need no wrapper. The private compose
-overlay enables the externally supervised routing daemon and automatic first setup.
+Automatic routing covers host and shared Claude Code and Codex accounts.
+Ordinary new sessions need no route flags. The private compose overlay enables
+the externally supervised routing daemon and reviewed account setup.
 The older `token-eye-codex` shortcut follows saved settings and injects no routes
 or retrieval MCP. Existing sign-in, model, hooks and native approvals are retained.
 Custom routes are preserved and reported; explicit native routing overrides can
 take precedence over the user default.
 
 Settings → Headroom for Codex, or `token-eye routing off --apply`, restores unchanged
-owned settings and stops the proxy. That off choice survives service and host
-restarts; the externally supervised daemon stays idle. Restart open Codex processes
+owned Claude/Codex settings before stopping the proxies. That off choice survives service and host
+restarts; the externally supervised daemon stays idle. Restart open agent processes
 after disabling, since they retain their initial connection. Re-enable with
 `token-eye routing on --apply`.
 
@@ -32,7 +32,13 @@ in private runtime/provider files and the child environment, never public Nix
 source, status or previews. `token-eye-network-guard.service` runs after Docker,
 before the lingering user manager, and reapplies on firewall reload. Its dedicated
 DOCKER-USER chain permits Docker bridge origins and drops other forwarded origins
-for that destination/port; Docker DNAT bypasses ordinary host INPUT filtering.
+for ports 8787/8788; Docker DNAT bypasses ordinary host INPUT filtering. Four
+narrow INPUT rules permit only Docker-bridge ingress to those ports on
+172.17.0.1, allowing the serving box's own bridge to use Docker's userland proxy.
+Claude's forward proxy on 8788 requires proxy authentication and uses a private
+CA trusted only through the configured Claude environment. Only model messages
+cross Headroom; control traffic remains direct. Private keys remain in app state,
+and public CA bundles are copied into the relevant Claude account directories.
 No LAN/Tailscale listener is added. Keep authentication enabled as a second check.
 
 The proxy starts with the lingering user manager; it can resume only the existing
@@ -41,6 +47,52 @@ hours after each completed run. It retains numeric counters and fixed outcomes
 in the existing private dev-box state. No automatic paid test turn is added.
 Intentional routing off is healthy; unexpected disconnection or route drift is
 degraded. Proxy counters reset on restart and are not billed savings.
+
+## Shared runtime and collectors
+
+The tested headless CLI is staged privately at
+`~/.local/state/token-eye-nixos/runtime/bin/token-eye`, alongside the owned
+`deployment.json` marker `{"schema":1,"kind":"token-eye-server-runtime"}`.
+The launcher validates ownership, permissions and canonical paths before adding
+read-only `/opt/token-eye` and writable `/agent/token-eye/data` mounts to every
+devbox. The data source remains the original TokenEye project-home app directory;
+no existing state is moved. Native remote PATH prefixes the CLI while preserving
+the image's tools. Missing deployment markers leave generic boxes unchanged;
+conflicts preserve the existing box and require review.
+
+Client boxes use read-only routing status mode for their own mounted account and
+authenticated statistics from the bridge. Host accounts remain mounted only in
+the serving box, where the daemon validates the full scope. Future boxes inherit
+the deployment automatically. Stopped boxes retain their recorded state; refresh
+running boxes through the native startup/session locks.
+
+`token-eye claude-routing on` previews the two Claude proxy/CA changes. Apply is
+explicit; custom routes and bypasses are preserved for review. Claude-only off
+restores its owned settings. Master routing off restores Claude before stopping
+the service. Persistent CA identity survives restarts; updates reuse the existing
+image-owned Headroom and mitmdump installations.
+
+Shared observation and Claude quota setup use the common app-data root. Host
+collectors have separate receipts under `host-collectors`, and their callbacks
+use the same permanent `/opt/token-eye/bin/token-eye` host launcher. Existing RTK
+hooks remain. Codex's native `/hooks` review is required for new collectors;
+configuration and a direct callback fixture do not establish trusted delivery.
+The scheduled job requires both Headroom and Claude forwarding readiness.
+
+On 2026-10-31 the same CLI, both configured routes and authenticated forwarding
+were verified in all five boxes. Quiet synthetic callbacks reached the shared
+private data directory without retaining prompt/tool fields. Original Git
+branches and stopped/running state were restored. Credential and Codex settings
+fingerprints remained unchanged. Application checks passed 65 frontend and 214
+Rust tests, strict Clippy and isolated CLI/transport fixtures; canonical Nix
+checks passed 52 development and 169 maintenance tests.
+
+The final scoped generation is `q74f75gh37vpsadxcyahk47vn1777v0v`. Activation
+reached it but returned status 4 after retrying the existing Nextcloud
+maintenance-mode setup failure, also logged hours before this deployment.
+Nextcloud configuration and state were left unchanged. Private deployment,
+rollback and verification receipts live under
+`~/.local/state/token-eye-nixos/deploy-20261031/`.
 
 ## Scoped activation
 

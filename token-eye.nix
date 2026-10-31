@@ -3,6 +3,7 @@ let
   home = "/home/buildfleet";
   # Runtime strings keep the private application and credentials out of this flake.
   checkout = "${home}/projects/token-eye";
+  runtime = "${home}/.local/state/token-eye-nixos/runtime";
   networkGuard = pkgs.writeShellApplication {
     name = "token-eye-network-guard";
     runtimeInputs = [
@@ -48,7 +49,7 @@ let
     paths = [
       (pkgs.writeTextDir "lib/systemd/user/token-eye-headroom.service" ''
         [Unit]
-        Description=TokenEye-owned Headroom proxy on Buildfleet
+        Description=TokenEye-owned Claude and Codex Headroom proxies on Buildfleet
         ConditionUser=buildfleet
         StartLimitIntervalSec=0
 
@@ -75,7 +76,7 @@ let
         Type=oneshot
         WorkingDirectory=%h/projects/token-eye
         Environment="PATH=%h/.local/bin:/run/current-system/sw/bin:/usr/bin:/bin"
-        ExecStart=${commands}/bin/token-eye-dogfood-server --require-headroom
+        ExecStart=${commands}/bin/token-eye-dogfood-server --require-headroom --require-claude-routing
         UMask=0077
         TimeoutStartSec=30min
       '')
@@ -142,7 +143,7 @@ in
   systemd.packages = [ units ];
   users.users.buildfleet.linger = true;
   systemd.services.token-eye-network-guard = {
-    description = "Restrict the authenticated Headroom gateway to local project bridges";
+    description = "Restrict authenticated Headroom gateways to local project bridges";
     wantedBy = [ "multi-user.target" ];
     after = [ "docker.service" ];
     requires = [ "docker.service" ];
@@ -169,6 +170,11 @@ in
   system.build.tokenEyeDeployment = deployment;
   # Maintain the existing user-owned entry points without requiring Home Manager.
   systemd.tmpfiles.rules = [
+    "d /opt/token-eye 0755 buildfleet users -"
+    "d /opt/token-eye/bin 0755 buildfleet users -"
+    "L /opt/token-eye/bin/token-eye - buildfleet users - /run/current-system/sw/bin/token-eye"
+    "d ${home}/.local/state/token-eye-nixos 0700 buildfleet users -"
+    "d ${runtime} 0700 buildfleet users -"
     "d ${home}/.local/bin 0755 buildfleet users -"
     "d ${home}/.config/systemd/user/default.target.wants 0755 buildfleet users -"
     "d ${home}/.config/systemd/user/timers.target.wants 0755 buildfleet users -"
