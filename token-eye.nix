@@ -4,6 +4,19 @@ let
   # Runtime strings keep the private application and credentials out of this flake.
   checkout = "${home}/projects/token-eye";
   runtime = "${home}/.local/state/token-eye-nixos/runtime";
+  updater = pkgs.writeShellApplication {
+    name = "token-eye-update-server";
+    runtimeInputs = [
+      pkgs.python3
+      pkgs.git
+      pkgs.docker
+      pkgs.util-linux
+      pkgs.coreutils
+    ];
+    text = ''
+      exec python3 ${./scripts/token_eye_update.py} "$@"
+    '';
+  };
   networkGuard = pkgs.writeShellApplication {
     name = "token-eye-network-guard";
     runtimeInputs = [
@@ -93,6 +106,33 @@ let
         [Install]
         WantedBy=timers.target
       '')
+      (pkgs.writeTextDir "lib/systemd/user/token-eye-update.service" ''
+        [Unit]
+        Description=Build and deploy TokenEye main when compatible and healthy
+        ConditionUser=buildfleet
+
+        [Service]
+        Type=oneshot
+        WorkingDirectory=%h/projects/token-eye
+        Environment="PATH=%h/.local/bin:/run/current-system/sw/bin:/usr/bin:/bin"
+        ExecStart=${updater}/bin/token-eye-update-server
+        UMask=0077
+        TimeoutStartSec=45min
+        TimeoutStopSec=3min
+      '')
+      (pkgs.writeTextDir "lib/systemd/user/token-eye-update.timer" ''
+        [Unit]
+        Description=Keep the shared TokenEye CLI current with main
+        ConditionUser=buildfleet
+
+        [Timer]
+        OnCalendar=hourly
+        RandomizedDelaySec=5min
+        Persistent=true
+
+        [Install]
+        WantedBy=timers.target
+      '')
     ];
   };
   deployment = pkgs.symlinkJoin {
@@ -101,6 +141,7 @@ let
       commands
       units
       networkGuard
+      updater
     ];
   };
   links = [
@@ -117,6 +158,10 @@ let
       source = "bin/token-eye-dogfood-server";
     }
     {
+      target = ".local/bin/token-eye-update-server";
+      source = "bin/token-eye-update-server";
+    }
+    {
       target = ".config/systemd/user/token-eye-headroom.service";
       source = "lib/systemd/user/token-eye-headroom.service";
     }
@@ -129,6 +174,14 @@ let
       source = "lib/systemd/user/token-eye-dogfood.timer";
     }
     {
+      target = ".config/systemd/user/token-eye-update.service";
+      source = "lib/systemd/user/token-eye-update.service";
+    }
+    {
+      target = ".config/systemd/user/token-eye-update.timer";
+      source = "lib/systemd/user/token-eye-update.timer";
+    }
+    {
       target = ".config/systemd/user/default.target.wants/token-eye-headroom.service";
       source = "lib/systemd/user/token-eye-headroom.service";
     }
@@ -136,10 +189,17 @@ let
       target = ".config/systemd/user/timers.target.wants/token-eye-dogfood.timer";
       source = "lib/systemd/user/token-eye-dogfood.timer";
     }
+    {
+      target = ".config/systemd/user/timers.target.wants/token-eye-update.timer";
+      source = "lib/systemd/user/token-eye-update.timer";
+    }
   ];
 in
 {
-  environment.systemPackages = [ commands ];
+  environment.systemPackages = [
+    commands
+    updater
+  ];
   systemd.packages = [ units ];
   users.users.buildfleet.linger = true;
   systemd.services.token-eye-network-guard = {
@@ -166,6 +226,7 @@ in
   # Package base units coexist with development.nix's maintenance retry drop-in.
   systemd.user.units."token-eye-headroom.service".wantedBy = [ "default.target" ];
   systemd.user.units."token-eye-dogfood.timer".wantedBy = [ "timers.target" ];
+  systemd.user.units."token-eye-update.timer".wantedBy = [ "timers.target" ];
 
   system.build.tokenEyeDeployment = deployment;
   # Maintain the existing user-owned entry points without requiring Home Manager.
