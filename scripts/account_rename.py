@@ -2,7 +2,7 @@
 """One-time, reversible buildfleet -> amahi migration, controlled by root."""
 
 import argparse
-from contextlib import ExitStack
+from contextlib import ExitStack, closing
 import fcntl
 import hashlib
 import importlib.util
@@ -196,12 +196,13 @@ def storage_state():
 
 def history_state(home):
     for database in sorted((home / ".codex").glob("state_*.sqlite")):
-        with sqlite3.connect(database.as_uri() + "?mode=ro", uri=True) as connection:
+        with closing(sqlite3.connect(database.as_uri() + "?mode=ro", uri=True)) as connection:
             columns = {row[1] for row in connection.execute("PRAGMA table_info(threads)")}
             if {"cwd", "rollout_path"}.issubset(columns):
                 count = connection.execute("SELECT COUNT(*) FROM threads").fetchone()[0]
-                row = connection.execute("SELECT cwd, rollout_path FROM threads WHERE cwd LIKE ? LIMIT 1",
-                                         (str(OLD_HOME) + "/%",)).fetchone()
+                rows = connection.execute("SELECT cwd, rollout_path FROM threads WHERE cwd = ? OR cwd LIKE ?",
+                                          (str(OLD_HOME), str(OLD_HOME) + "/%"))
+                row = next((row for row in rows if Path(row[0]).is_dir() and Path(row[1]).is_file()), None)
                 return {"database": str(database.relative_to(home)), "count": count,
                         "sample": list(row) if row else None}
     raise RuntimeError("Existing Codex history database not found")

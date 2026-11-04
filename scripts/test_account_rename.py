@@ -1,11 +1,12 @@
 """Safety checks for the one-time migration controller, without host changes."""
 
-from contextlib import contextmanager, ExitStack
+from contextlib import contextmanager, ExitStack, closing
 import copy
 import importlib.util
 import hashlib
 import json
 import os
+import sqlite3
 from pathlib import Path
 from types import SimpleNamespace
 import tempfile
@@ -71,6 +72,23 @@ class ControllerTests(unittest.TestCase):
         self.assertIn('email=buildfleet@example.org', value)
         self.assertIn('host=buildfleet-server', value)
         self.assertIn('path=/home/amahi/a', value)
+
+    def test_history_probe_skips_previously_deleted_project_paths(self):
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            (home / ".codex").mkdir()
+            rollout = home / "readable.jsonl"
+            rollout.write_text('{}\n')
+            database = home / ".codex/state_5.sqlite"
+            with closing(sqlite3.connect(database)) as connection:
+                connection.execute('CREATE TABLE threads (cwd TEXT, rollout_path TEXT)')
+                connection.execute('INSERT INTO threads VALUES (?, ?)', (str(home / "deleted"), str(home / "missing")))
+                connection.execute('INSERT INTO threads VALUES (?, ?)', (str(home), str(rollout)))
+                connection.commit()
+            with patch.object(core, "OLD_HOME", home):
+                sample = core.history_state(home)
+            self.assertEqual(sample["count"], 2)
+            self.assertEqual(sample["sample"], [str(home), str(rollout)])
 
     def test_atomic_preserves_mode_and_bytes(self):
         with tempfile.TemporaryDirectory() as directory:
