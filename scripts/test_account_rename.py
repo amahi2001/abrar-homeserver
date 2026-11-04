@@ -57,6 +57,28 @@ class ControllerTests(unittest.TestCase):
                 with self.assertRaisesRegex(RuntimeError, "Destination account"):
                     core.preflight(old, new)
 
+    def test_foreign_uid_app_in_old_session_is_detected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for pid, uid, group in [(1, 993, '/user.slice/user-1000.slice/session-5.scope'),
+                                    (2, 0, '/user.slice/user-1000.slice/session-5.scope'),
+                                    (3, 1000, '/user.slice/user-1000.slice/user@1000.service'),
+                                    (4, 993, '/system.slice/hermes-webui-manual.service'),
+                                    (5, 0, '/user.slice/user-1000.slice/session-5.scope')]:
+                proc = root / str(pid)
+                proc.mkdir()
+                (proc / 'cgroup').write_text('0::' + group + '\n')
+                (proc / 'status').write_text(f'Uid:\t{uid}\t{uid}\t{uid}\t{uid}\n')
+                (proc / 'comm').write_text('sshd-session\n' if pid == 2 else 'python\n')
+            with patch.object(core.os, "getpid", return_value=424242):
+                self.assertEqual(core.foreign_session_processes(root), [{"pid": 1, "uid": 993}, {"pid": 5, "uid": 0}])
+
+    def test_preflight_refuses_hidden_session_dependency_before_changes(self):
+        with self.homes() as (old, new):
+            with patch.object(core, "foreign_session_processes", return_value=[{"pid": 7, "uid": 993}]):
+                with self.assertRaisesRegex(RuntimeError, "Foreign-UID"):
+                    core.preflight(old, new)
+
     def test_rebase_retains_legacy_codex_trust(self):
         original = ('[projects."/home/buildfleet/projects/example"]\ntrust_level = "trusted"\n'
                     '[hooks]\ncommand = "/home/buildfleet/hook"\n')

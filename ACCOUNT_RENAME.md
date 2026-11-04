@@ -11,6 +11,11 @@ The isolated `account-rename` flake check rehearses the UNIX/Samba rename,
 fresh SSH/sudo and both SMB login names, complete rollback, and recovery after
 an injected failure following the home move.
 
+Preflight also rejects applications running under another UID inside the old
+login's session cgroup: terminating that login kills those applications too.
+The manual Hermes WebUI runs in a transient system unit outside that session;
+this does not enable boot autostart. Its HTTPS health check remains mandatory.
+
 ## Cutover and reconnect
 
 The detached root controller runs outside the affected user's sessions. It

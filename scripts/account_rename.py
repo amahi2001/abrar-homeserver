@@ -135,6 +135,39 @@ def digest(path):
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
 
+def foreign_session_processes(proc_root=Path("/proc")):
+    """A sudo-launched app can retain the old user's session despite its UID."""
+    found = []
+    ancestors = set()
+    pid = os.getpid()
+    while pid:
+        ancestors.add(pid)
+        try:
+            parent = next(line for line in (proc_root / str(pid) / "status").read_text().splitlines()
+                          if line.startswith("PPid:"))
+            pid = int(parent.split()[1])
+        except (FileNotFoundError, PermissionError, ProcessLookupError, StopIteration):
+            break
+    for entry in proc_root.iterdir():
+        if not entry.name.isdigit():
+            continue
+        try:
+            cgroup = (entry / "cgroup").read_text()
+            if "/user-1000.slice/" not in cgroup:
+                continue
+            uid_line = next(line for line in (entry / "status").read_text().splitlines()
+                            if line.startswith("Uid:"))
+            uids = list(map(int, uid_line.split()[1:4]))
+            if int(entry.name) in ancestors or uids == [1000, 1000, 1000]:
+                continue
+            if uids == [0, 0, 0] and (entry / "comm").read_text().strip() == "sshd-session":
+                continue
+            found.append({"pid": int(entry.name), "uid": uids[1]})
+        except (FileNotFoundError, PermissionError, ProcessLookupError, StopIteration):
+            continue
+    return found
+
+
 def preflight(old_home=OLD_HOME, new_home=NEW_HOME):
     account = pwd.getpwnam(OLD)
     if (account.pw_uid, account.pw_gid, account.pw_dir) != (1000, 100, str(old_home)):
@@ -149,6 +182,8 @@ def preflight(old_home=OLD_HOME, new_home=NEW_HOME):
         raise RuntimeError("Destination home exists or original home is a symlink")
     if old_home.stat().st_dev != new_home.parent.stat().st_dev:
         raise RuntimeError("Home move would cross filesystems")
+    if foreign_session_processes():
+        raise RuntimeError("Foreign-UID applications depend on the old login session; isolate them before cutover")
     return account
 
 
@@ -406,6 +441,8 @@ def apply():
                     continue
                 lock = stack.enter_context(open(filename, "r+"))
                 fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        # A maintenance-lock wait may outlast the initial process inventory.
+        preflight()
         save(state, "quiescing")
         try:
             run(["systemd-run", "--unit=account-rename-rollback", "--on-active=30min",
