@@ -398,13 +398,13 @@ def apply():
     with ExitStack() as stack:
         for filename in ["/run/lock/nixos-flake-update.lock", "/run/lock/host-deployment.lock"]:
             lock = stack.enter_context(open(filename, "a"))
-            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            fcntl.flock(lock, fcntl.LOCK_EX)
         project_root = OLD_HOME / ".local/state/dev/projects"
         for project in sorted(project_root.iterdir()):
             for filename in [project / "startup.lock", project / "home/.agent-session.lock"]:
                 if not filename.parent.exists():
                     continue
-                lock = stack.enter_context(open(filename, "a"))
+                lock = stack.enter_context(open(filename, "r+"))
                 fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         save(state, "quiescing")
         try:
