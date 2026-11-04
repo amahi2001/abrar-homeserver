@@ -1,7 +1,7 @@
 # TokenEye on Buildfleet
 
 `token-eye.nix`, imported by `configuration.nix`, declares the existing TokenEye
-deployment for `buildfleet`: three commands, Headroom's user service, the two-day
+deployment for `amahi`: three commands, Headroom's user service, the two-day
 health timer, its service, and user lingering. Scoped tmpfiles links keep the
 existing `~/.local/bin`, `/opt/token-eye/bin/token-eye` and user-unit paths managed on subsequent NixOS rebuilds.
 The existing development maintenance retry drop-in remains compatible.
@@ -125,7 +125,7 @@ subsequent activation and do not include unrelated edits accidentally.
 Verify without starting a model:
 
 ```sh
-loginctl show-user buildfleet -p Linger
+loginctl show-user amahi -p Linger
 systemctl status token-eye-network-guard.service
 sudo iptables -S TOKEN-EYE-PROXY
 systemctl --user status token-eye-headroom.service

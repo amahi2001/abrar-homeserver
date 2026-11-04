@@ -170,7 +170,7 @@ Ports 3000, 5173, and 8000 map to random **host-loopback** ports. Run `dev list`
 to find them, then forward a selected port over SSH, for example:
 
 ```bash
-ssh -L 3000:127.0.0.1:32768 buildfleet@buildfleet-server.tailcb7cdb.ts.net
+ssh -L 3000:127.0.0.1:32768 amahi@buildfleet-server.tailcb7cdb.ts.net
 ```
 
 App servers must bind `0.0.0.0` inside the container. No new public ports are

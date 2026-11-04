@@ -18,7 +18,7 @@ spec.loader.exec_module(core)
 class FleetTests(unittest.TestCase):
     def setUp(self):
         # Nix's build sandbox has no host account database.
-        self.owner = fleet.pwd.struct_passwd(("buildfleet", "x", 1042, 2042, "", "/home/buildfleet", "/bin/sh"))
+        self.owner = fleet.pwd.struct_passwd(("amahi", "x", 1042, 2042, "", "/home/amahi", "/bin/sh"))
         lookup = patch.object(fleet.pwd, "getpwnam", return_value=self.owner)
         self.owner_lookup = lookup.start()
         self.addCleanup(lookup.stop)
@@ -348,7 +348,7 @@ class FleetTests(unittest.TestCase):
                             fcntl.flock(other, fcntl.LOCK_EX | fcntl.LOCK_NB)
                 run.assert_any_call("docker", "stop", "--time", "30", "running-id")
                 self.assertEqual(resume.call_args.args[0]["dev"], {"app": "running-id"})
-                self.owner_lookup.assert_called_once_with("buildfleet")
+                self.owner_lookup.assert_called_once_with("amahi")
                 agent_lock.assert_called_once_with("running-id", self.owner.pw_uid, self.owner.pw_gid)
             with (project / "startup.lock").open("a") as released:
                 fcntl.flock(released, fcntl.LOCK_EX | fcntl.LOCK_NB)

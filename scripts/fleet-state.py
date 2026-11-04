@@ -12,7 +12,7 @@ import select
 import subprocess
 import time
 
-PROJECTS = Path("/home/buildfleet/.local/state/dev/projects")
+PROJECTS = Path("/home/amahi/.local/state/dev/projects")
 SYSTEM_CONTROL = Path("/etc/systemd/system.control")
 SYSTEM_UNITS = (Path("/etc/systemd/system"), Path("/run/systemd/system"))
 NIX_STORE = Path("/nix/store")
@@ -163,7 +163,7 @@ def guard(directory):
     credential = Path(os.environ["CREDENTIALS_DIRECTORY"]) / "github-token"
     os.environ["GH_TOKEN"] = credential.read_text().strip()
     runner = runners()
-    owner = pwd.getpwnam("buildfleet")
+    owner = pwd.getpwnam("amahi")
     projects = PROJECTS
     manifest = {"dev": dev_containers(), "runners": [], "runner_units": {}, "resumed": False}
     stopped = False

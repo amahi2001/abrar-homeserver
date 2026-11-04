@@ -2,8 +2,8 @@
 
 `codex-remote-control.timer` starts Codex Remote Control after boot and checks it
 every 30 seconds. It restores access if the daemon exits or Remote Control is
-disabled. The service runs as `buildfleet` through the login shell, using the
-existing account, paired devices, and credentials in `/home/buildfleet/.codex`.
+disabled. The service runs as `amahi` through the login shell, using the
+existing account, paired devices, and credentials in `/home/amahi/.codex`.
 
 The service uses the supported `codex remote-control start --json` command from
 the installed CLI. Codex retains ownership of its daemon packages and settings;

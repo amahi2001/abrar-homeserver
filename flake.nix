@@ -47,6 +47,7 @@
       # `nixos-rebuild` deploys, rather than merely checking flake syntax.
       checks.${system} = {
         nixos = buildfleet-server.config.system.build.toplevel;
+        account-rename = buildfleet-server.pkgs.testers.runNixOSTest (import ./tests/account-rename.nix);
         maintenance =
           buildfleet-server.pkgs.runCommand "maintenance-tests"
             {

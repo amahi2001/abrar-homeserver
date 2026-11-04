@@ -74,9 +74,9 @@ in
 
   # AdGuard Home data directories
   systemd.tmpfiles.rules = [
-    "d /var/lib/adguardhome      0750 buildfleet docker -"
-    "d /var/lib/adguardhome/conf 0750 buildfleet docker -"
-    "d /var/lib/adguardhome/work 0750 buildfleet docker -"
+    "d /var/lib/adguardhome      0750 amahi docker -"
+    "d /var/lib/adguardhome/conf 0750 amahi docker -"
+    "d /var/lib/adguardhome/work 0750 amahi docker -"
   ];
 
   # Pull the mutable image weekly, restart only on a real image change, then

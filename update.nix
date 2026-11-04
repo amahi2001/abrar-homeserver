@@ -145,9 +145,9 @@ in
     description = "Refresh outdated remote Codex app servers when idle";
     serviceConfig = {
       Type = "oneshot";
-      User = "buildfleet";
+      User = "amahi";
       Group = "users";
-      ExecStart = "${codexRefreshPython}/bin/python -P ${./scripts/codex-app-server-refresh.py} --socket /home/buildfleet/.codex/app-server-control/app-server-control.sock";
+      ExecStart = "${codexRefreshPython}/bin/python -P ${./scripts/codex-app-server-refresh.py} --socket /home/amahi/.codex/app-server-control/app-server-control.sock";
       TimeoutStartSec = "2min";
       UMask = "0077";
     };
@@ -159,12 +159,12 @@ in
     wants = [ "network-online.target" ];
     restartIfChanged = false;
     stopIfChanged = false;
-    environment.HOME = "/home/buildfleet";
+    environment.HOME = "/home/amahi";
     serviceConfig = {
       Type = "oneshot";
-      User = "buildfleet";
+      User = "amahi";
       Group = "users";
-      WorkingDirectory = "/home/buildfleet";
+      WorkingDirectory = "/home/amahi";
       ExecStart = "/run/current-system/sw/bin/bash -lc 'exec ${codexRefreshPython}/bin/python -P ${./scripts}/codex-remote-control.py'";
       # Codex detaches its daemon; keep it alive after this command exits.
       KillMode = "process";

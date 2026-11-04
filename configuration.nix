@@ -56,9 +56,15 @@
   };
 
   # Users and groups
-  users.users.buildfleet = {
+  users.users.amahi = {
     isNormalUser = true;
-    description = "Buildfleet";
+    description = "Amahi";
+    uid = 1000;
+    group = "users";
+    home = "/home/amahi";
+    autoSubUidGidRange = false;
+    subUidRanges = [ { startUid = 100000; count = 65536; } ];
+    subGidRanges = [ { startGid = 100000; count = 65536; } ];
     extraGroups = [
       "networkmanager"
       "wheel"
@@ -203,6 +209,8 @@
   # tracked source file executable on each rebuild.
   systemd.tmpfiles.rules = [
     "d /etc/nixos 0775 root nixconfig -"
+    # Keep existing chat/worktree paths valid after the home move.
+    "L /home/buildfleet - root root - /home/amahi"
   ];
 
   # Nix

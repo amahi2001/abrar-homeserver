@@ -206,7 +206,7 @@ in
 
   systemd.tmpfiles.rules = [
     "d /srv/data                    0755 root         root  -"
-    "d /srv/data/inbox              0770 buildfleet   files -"
+    "d /srv/data/inbox              0770 amahi        files -"
     "d /srv/data/media              0770 transmission media -"
     "d /srv/data/media/incomplete   0700 transmission media -"
     "d /srv/data/media/library      0775 transmission media -"
@@ -523,6 +523,8 @@ in
   # A fast network-drive view for the two explicitly shared folders. SMB is
   # reachable only on the trusted home Wi-Fi and via Tailscale—never from the
   # public Internet.
+  # Preserve saved SMB credentials under the previous login name.
+  environment.etc."samba/username.map".text = "!amahi = buildfleet\n";
   services.samba = {
     enable = true;
     # NetBIOS and WSD make the authenticated shares discoverable to local
@@ -533,6 +535,7 @@ in
     settings = {
       global = {
         "server min protocol" = "SMB3_00";
+        "username map" = "/etc/samba/username.map";
         "map to guest" = "Never";
         "disable netbios" = "no";
       };
@@ -542,7 +545,7 @@ in
         browseable = "yes";
         "guest ok" = "no";
         "read only" = "yes";
-        "valid users" = [ "buildfleet" ];
+        "valid users" = [ "amahi" ];
       };
       Inbox = {
         path = "/srv/data/inbox";
@@ -550,8 +553,8 @@ in
         browseable = "yes";
         "guest ok" = "no";
         "read only" = "no";
-        "valid users" = [ "buildfleet" ];
-        "force user" = "buildfleet";
+        "valid users" = [ "amahi" ];
+        "force user" = "amahi";
         "force group" = "files";
         "create mask" = "0660";
         "directory mask" = "0770";
