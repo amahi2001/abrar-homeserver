@@ -10,6 +10,7 @@
 {
   imports = [
     ./hardware-configuration.nix
+    ./storage.nix
     ./desktop.nix
     ./web.nix
     ./containers.nix
@@ -55,9 +56,15 @@
   };
 
   # Users and groups
-  users.users.buildfleet = {
+  users.users.amahi = {
     isNormalUser = true;
-    description = "Buildfleet";
+    description = "Amahi";
+    uid = 1000;
+    group = "users";
+    home = "/home/amahi";
+    autoSubUidGidRange = false;
+    subUidRanges = [ { startUid = 100000; count = 65536; } ];
+    subGidRanges = [ { startGid = 100000; count = 65536; } ];
     extraGroups = [
       "networkmanager"
       "wheel"
@@ -144,6 +151,9 @@
     btop
     lm_sensors
     bun
+    # Codex Security's MCP server and Python helpers run on the host.
+    nodejs_24
+    python3
     # Latest release from the dedicated Codex flake, not the older stable
     # nixpkgs package. Updated by codex-cli-update.service.
     codexCli.packages.x86_64-linux.default
@@ -199,6 +209,8 @@
   # tracked source file executable on each rebuild.
   systemd.tmpfiles.rules = [
     "d /etc/nixos 0775 root nixconfig -"
+    # Keep existing chat/worktree paths valid after the home move.
+    "L /home/buildfleet - root root - /home/amahi"
   ];
 
   # Nix

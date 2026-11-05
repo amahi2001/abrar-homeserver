@@ -56,6 +56,62 @@ function atomic(path: string, data: string, mode = 0o600) {
   renameSync(temp, path);
 }
 
+export function applySharedTokenEyeRuntime(config: any, nativeConfig: any, home = homedir()): boolean {
+  const runtime = join(home, ".local/state/token-eye-nixos/runtime");
+  const manifest = join(runtime, "deployment.json");
+  let entry;
+  try { entry = lstatSync(manifest); }
+  catch (error: any) { if (error.code === "ENOENT") return false; throw error; }
+  const unsafe = () => Error("Cannot verify the owned TokenEye runtime deployment; preserving the running container.");
+  if (!entry.isFile() || entry.uid !== process.getuid!() || (entry.mode & 0o077) || entry.size > 4096) throw unsafe();
+  const parent = lstatSync(runtime);
+  if (!parent.isDirectory() || parent.uid !== process.getuid!() || (parent.mode & 0o077) || realpathSync(runtime) !== runtime) throw unsafe();
+  const fd = openSync(manifest, constants.O_RDONLY | constants.O_NOFOLLOW);
+  try {
+    const held = fstatSync(fd);
+    if (held.dev !== entry.dev || held.ino !== entry.ino) throw unsafe();
+    const value = JSON.parse(readFileSync(fd, "utf8"));
+    if (value.schema !== 1 || value.kind !== "token-eye-server-runtime") throw unsafe();
+  } catch { throw unsafe(); }
+  finally { closeSync(fd); }
+  const executable = join(runtime, "bin/token-eye");
+  const binary = lstatSync(executable);
+  if (!binary.isFile() || binary.uid !== process.getuid!() || !(binary.mode & 0o111) || (binary.mode & 0o022) || realpathSync(executable) !== executable) throw unsafe();
+  const data = join(home, ".local/state/dev/projects/token-eye/home/.local/share/com.amahi.tokeneye.desktop");
+  const state = lstatSync(data);
+  if (!state.isDirectory() || state.uid !== process.getuid!() || realpathSync(data) !== data) throw unsafe();
+  const mounts = [
+    { type: "bind", source: runtime, target: "/opt/token-eye", read_only: true },
+    { type: "bind", source: data, target: "/agent/token-eye/data", read_only: false },
+  ];
+  const service = config.services.dev;
+  const existing = service.volumes ?? [];
+  for (const mount of mounts) {
+    const occupied = existing.filter((value: any) => value.target === mount.target || value.target?.startsWith(mount.target + "/") || mount.target.startsWith(value.target + "/"));
+    if (occupied.length && (occupied.length !== 1 || occupied[0].type !== mount.type || occupied[0].target !== mount.target
+        || occupied[0].source !== mount.source || !!occupied[0].read_only !== mount.read_only)) throw unsafe();
+  }
+  const dataPath = "/agent/token-eye/data", path = "/opt/token-eye/bin:${containerEnv:PATH}";
+  const managed: Record<string, string> = { TOKEN_EYE_DATA_DIR: dataPath };
+  if (service.environment?.TOKEN_EYE_ROUTING_EXTERNAL_SERVICE === "1") {
+    managed.TOKEN_EYE_ROUTING_CLIENT = "0";
+  } else {
+    Object.assign(managed, { TOKEN_EYE_ROUTING_CLIENT: "1", TOKEN_EYE_ROUTING_SERVER: "1",
+      TOKEN_EYE_ROUTING_URL: "http://172.17.0.1:8787", TOKEN_EYE_ROUTING_AUTO_BOOTSTRAP: "0" });
+  }
+  for (const environment of [service.environment, nativeConfig.containerEnv]) {
+    for (const [key, value] of Object.entries(managed)) {
+      if (environment?.[key] !== undefined && environment[key] !== value) throw unsafe();
+    }
+  }
+  if (nativeConfig.remoteEnv?.PATH !== undefined && nativeConfig.remoteEnv.PATH !== path) throw unsafe();
+  service.volumes = [...existing, ...mounts.filter(mount => !existing.some((value: any) => value.target === mount.target))];
+  service.environment = { ...service.environment, ...managed };
+  nativeConfig.containerEnv = { ...nativeConfig.containerEnv, ...managed };
+  nativeConfig.remoteEnv = { ...nativeConfig.remoteEnv, PATH: path };
+  return true;
+}
+
 export function withAgentDispatchLock<T>(home: string, action: () => T): T {
   if (!lstatSync(home).isDirectory()) throw Error("Cannot verify the shared project home directory.");
   const path = join(home, ".agent-session.lock");
@@ -241,6 +297,7 @@ export function main(argv = process.argv.slice(2)) {
     overrideCommand: false, userEnvProbe: "none", shutdownAction: "none",
   };
   function configure(config: any) {
+    applySharedTokenEyeRuntime(config, nativeConfig);
     atomic(join(projectState, "compose.json"), JSON.stringify(config, null, 2) + "\n");
     atomic(configPath, JSON.stringify(nativeConfig, null, 2) + "\n");
   }
@@ -261,6 +318,7 @@ export function main(argv = process.argv.slice(2)) {
   }
   function startContainer(force = false) {
     const config = JSON.parse(compose(["config", "--format", "json"]).stdout);
+    applySharedTokenEyeRuntime(config, nativeConfig);
     const home = join(projectState, "home");
     const mounts = config.services.dev.volumes?.filter((mount: any) => mount.target === "/home/node");
     if (mounts?.length !== 1 || mounts[0].type !== "bind" || resolve(mounts[0].source) !== home) throw Error("Cannot verify the shared project home mount; preserving the running container.");

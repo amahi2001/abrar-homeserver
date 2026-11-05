@@ -170,7 +170,7 @@ Ports 3000, 5173, and 8000 map to random **host-loopback** ports. Run `dev list`
 to find them, then forward a selected port over SSH, for example:
 
 ```bash
-ssh -L 3000:127.0.0.1:32768 buildfleet@buildfleet-server.tailcb7cdb.ts.net
+ssh -L 3000:127.0.0.1:32768 amahi@buildfleet-server.tailcb7cdb.ts.net
 ```
 
 App servers must bind `0.0.0.0` inside the container. No new public ports are
@@ -296,8 +296,10 @@ Migration verification on 2026-10-21:
 ## NixOS integration and validation
 
 `development.nix` installs `dev` and narrows Docker's existing weekly pruning to
-dangling images. Personal host agent settings/skills are managed by agent-config.
-Stopped containers, tagged images, volumes, and build caches are preserved.
+dangling images and build caches unused for 30 days. Personal host agent
+settings/skills are managed by agent-config. Stopped containers, tagged images,
+volumes, and recently used build caches are preserved. Tagged images need periodic
+review: remove obsolete builds while retaining current and previous images.
 
 ```bash
 nix build /etc/nixos#dev --out-link ~/.local/state/dev-package

@@ -1,8 +1,9 @@
 { pkgs, lib, ... }:
 let
-  home = "/home/buildfleet";
+  home = "/home/amahi";
   # Runtime strings keep the private application and credentials out of this flake.
   checkout = "${home}/projects/token-eye";
+  runtime = "${home}/.local/state/token-eye-nixos/runtime";
   networkGuard = pkgs.writeShellApplication {
     name = "token-eye-network-guard";
     runtimeInputs = [
@@ -48,8 +49,8 @@ let
     paths = [
       (pkgs.writeTextDir "lib/systemd/user/token-eye-headroom.service" ''
         [Unit]
-        Description=TokenEye-owned Headroom proxy on Buildfleet
-        ConditionUser=buildfleet
+        Description=TokenEye-owned Claude and Codex Headroom proxies on Buildfleet
+        ConditionUser=amahi
         StartLimitIntervalSec=0
 
         [Service]
@@ -69,20 +70,20 @@ let
       (pkgs.writeTextDir "lib/systemd/user/token-eye-dogfood.service" ''
         [Unit]
         Description=Check TokenEye on Buildfleet and repair failures
-        ConditionUser=buildfleet
+        ConditionUser=amahi
 
         [Service]
         Type=oneshot
         WorkingDirectory=%h/projects/token-eye
         Environment="PATH=%h/.local/bin:/run/current-system/sw/bin:/usr/bin:/bin"
-        ExecStart=${commands}/bin/token-eye-dogfood-server --require-headroom
+        ExecStart=${commands}/bin/token-eye-dogfood-server --require-headroom --require-claude-routing
         UMask=0077
         TimeoutStartSec=30min
       '')
       (pkgs.writeTextDir "lib/systemd/user/token-eye-dogfood.timer" ''
         [Unit]
         Description=Check TokenEye every other day
-        ConditionUser=buildfleet
+        ConditionUser=amahi
 
         [Timer]
         OnBootSec=15min
@@ -140,9 +141,9 @@ in
 {
   environment.systemPackages = [ commands ];
   systemd.packages = [ units ];
-  users.users.buildfleet.linger = true;
+  users.users.amahi.linger = true;
   systemd.services.token-eye-network-guard = {
-    description = "Restrict the authenticated Headroom gateway to local project bridges";
+    description = "Restrict authenticated Headroom gateways to local project bridges";
     wantedBy = [ "multi-user.target" ];
     after = [ "docker.service" ];
     requires = [ "docker.service" ];
@@ -169,9 +170,14 @@ in
   system.build.tokenEyeDeployment = deployment;
   # Maintain the existing user-owned entry points without requiring Home Manager.
   systemd.tmpfiles.rules = [
-    "d ${home}/.local/bin 0755 buildfleet users -"
-    "d ${home}/.config/systemd/user/default.target.wants 0755 buildfleet users -"
-    "d ${home}/.config/systemd/user/timers.target.wants 0755 buildfleet users -"
+    "d /opt/token-eye 0755 amahi users -"
+    "d /opt/token-eye/bin 0755 amahi users -"
+    "L /opt/token-eye/bin/token-eye - amahi users - /run/current-system/sw/bin/token-eye"
+    "d ${home}/.local/state/token-eye-nixos 0700 amahi users -"
+    "d ${runtime} 0700 amahi users -"
+    "d ${home}/.local/bin 0755 amahi users -"
+    "d ${home}/.config/systemd/user/default.target.wants 0755 amahi users -"
+    "d ${home}/.config/systemd/user/timers.target.wants 0755 amahi users -"
   ]
-  ++ map (link: "L+ ${home}/${link.target} - buildfleet users - ${deployment}/${link.source}") links;
+  ++ map (link: "L+ ${home}/${link.target} - amahi users - ${deployment}/${link.source}") links;
 }

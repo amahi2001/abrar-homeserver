@@ -36,10 +36,10 @@ in
       pkgs.docker
       pkgs.util-linux
     ];
-    environment.HOME = "/home/buildfleet";
+    environment.HOME = "/home/amahi";
     serviceConfig = {
       Type = "oneshot";
-      User = "buildfleet";
+      User = "amahi";
       Group = "users";
       ExecStart = "${pkgs.python3}/bin/python -P ${./scripts/dev_runtime_maintenance.py} --dev ${dev}/bin/dev";
       StateDirectory = "dev-runtime-maintenance";
@@ -61,12 +61,13 @@ in
     };
   };
 
-  # Keep stopped projects, named volumes, tagged images, and BuildKit caches warm.
+  # Keep stopped projects, volumes, tagged images, and recently used build caches.
   # system.control permits targeted activation without replacing NixOS's read-only
   # /etc/systemd/system tree or switching unrelated pending host configuration.
   environment.etc."systemd/system.control/docker-prune.service.d/development.conf".text = ''
     [Service]
     ExecStart=
     ExecStart=${pkgs.docker}/bin/docker image prune -f
+    ExecStart=${pkgs.docker}/bin/docker builder prune -f --filter until=720h
   '';
 }
