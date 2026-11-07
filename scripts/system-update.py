@@ -26,6 +26,7 @@ SERVICES = (
     "redis-nextcloud", "samba-smbd", "samba-nmbd", "samba-wsdd",
     "hermes-agent", "hermes-dashboard",
 )
+CRITICAL_UNITS = tuple(name + ".service" for name in SERVICES) + ("nextcloud-cron.timer",)
 HOST = "cloud.amahi.dev"
 CONFIG = "nixosConfigurations.buildfleet-server.config"
 APPLICATION_UNITS = tuple(name + ".service" for name in (
@@ -176,8 +177,8 @@ def hermes_status(run):
 
 def health_check(run, expected_hermes=None):
     # On-demand Sonarr/Radarr and external Internet access are not required.
-    for name in SERVICES:
-        run(["systemctl", "is-active", "--quiet", name + ".service"])
+    for unit in CRITICAL_UNITS:
+        run(["systemctl", "is-active", "--quiet", unit])
     curl(run, "http://127.0.0.1:8080/")
     dns = run(["dig", "+time=5", "+tries=1", "@127.0.0.1", "localhost", "A"])
     if "status: NOERROR" not in dns or not re.search(r"\b127\.0\.0\.1\b", dns):
@@ -188,6 +189,14 @@ def health_check(run, expected_hermes=None):
             or nextcloud.get("maintenance") is not False
             or nextcloud.get("needsDbUpgrade") is not False):
         raise RuntimeError("Nextcloud is not ready: " + json.dumps(nextcloud))
+    for path, expected_status in (("/login", "200"), ("/remote.php/dav/", "401")):
+        code = run([
+            "curl", "--silent", "--show-error", "--max-time", "10", "--noproxy", "*",
+            "--resolve", f"{HOST}:443:127.0.0.1", "--output", "/dev/null",
+            "--write-out", "%{http_code}", f"https://{HOST}{path}",
+        ]).strip()
+        if code != expected_status:
+            raise RuntimeError(f"Nextcloud {path} is not ready: HTTP {code}; expected {expected_status}")
     curl(run, "http://127.0.0.1:8222/alive")
     if curl(run, "http://127.0.0.1:8096/health").strip() != "Healthy":
         raise RuntimeError("Jellyfin health check failed")
@@ -234,8 +243,7 @@ def recover_services(run, *, maintenance_lock=Path("/run/lock/nixos-flake-update
             except BlockingIOError:
                 print("Maintenance is running; skipping service recovery until the next timer")
                 return False
-        for name in SERVICES:
-            unit = name + ".service"
+        for unit in CRITICAL_UNITS:
             state = run(["systemctl", "show", "--property=ActiveState", "--value", unit]).strip()
             if state in ("inactive", "failed"):
                 try:

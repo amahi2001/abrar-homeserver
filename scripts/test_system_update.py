@@ -645,6 +645,7 @@ class RecoveryTests(unittest.TestCase):
         self.deployment_lock = root / "deployment.lock"
         self.calls = []
         self.states = {name + ".service": "active" for name in update.SERVICES}
+        self.states["nextcloud-cron.timer"] = "active"
         health = patch.object(update, "health_check")
         self.health = health.start()
         self.addCleanup(health.stop)
@@ -664,6 +665,7 @@ class RecoveryTests(unittest.TestCase):
     def test_starts_only_failed_or_inactive_critical_services(self):
         self.states["jellyfin.service"] = "failed"
         self.states["redis-nextcloud.service"] = "inactive"
+        self.states["nextcloud-cron.timer"] = "inactive"
         for name, state in zip(("hermes-agent", "hermes-dashboard", "nginx", "docker"),
                                ("active", "activating", "reloading", "deactivating")):
             self.states[name + ".service"] = state
@@ -671,11 +673,21 @@ class RecoveryTests(unittest.TestCase):
         self.assertTrue(self.recover())
         starts = [args for args in self.calls if args[:2] == ["systemctl", "start"]]
         self.assertEqual(starts, [["systemctl", "start", "jellyfin.service"],
-                                  ["systemctl", "start", "redis-nextcloud.service"]])
+                                  ["systemctl", "start", "redis-nextcloud.service"],
+                                  ["systemctl", "start", "nextcloud-cron.timer"]])
         self.assertFalse(any("restart" in args or "reset-failed" in args for args in self.calls))
         self.assertFalse(any(name in args[-1] for args in self.calls
                              for name in ("sonarr", "radarr", "github-actions", "dev-")))
         self.health.assert_called_once()
+
+    def test_recovers_cron_timer_only_when_failed_or_inactive(self):
+        for state in ("failed", "inactive", "active", "activating", "reloading", "deactivating", "unknown"):
+            with self.subTest(state=state):
+                self.calls.clear()
+                self.states["nextcloud-cron.timer"] = state
+                self.assertTrue(self.recover())
+                self.assertEqual(["systemctl", "start", "nextcloud-cron.timer"] in self.calls,
+                                 state in ("failed", "inactive"))
 
     def test_failed_start_does_not_prevent_other_services_recovering(self):
         self.states["jellyfin.service"] = self.states["redis-nextcloud.service"] = "failed"
@@ -702,6 +714,7 @@ class RecoveryTests(unittest.TestCase):
 
     def test_both_locks_remain_held_through_recovery_and_health_check(self):
         self.states["jellyfin.service"] = "failed"
+        self.states["nextcloud-cron.timer"] = "inactive"
 
         def assert_locked():
             for path in (self.maintenance_lock, self.deployment_lock):
@@ -714,6 +727,7 @@ class RecoveryTests(unittest.TestCase):
 
         self.health.side_effect = lambda run: assert_locked()
         self.assertTrue(self.recover(run))
+        self.assertIn(["systemctl", "start", "nextcloud-cron.timer"], self.calls)
 
     def test_unhealthy_active_services_are_reported_without_restarting(self):
         self.health.side_effect = RuntimeError("Hermes gateway is not healthy")
@@ -754,6 +768,10 @@ class HealthTests(unittest.TestCase):
         if args[0] == "curl":
             if args[-1].endswith("status.php"):
                 return json.dumps(self.nextcloud)
+            if args[-1] == "https://cloud.amahi.dev/login":
+                return "200"
+            if args[-1] == "https://cloud.amahi.dev/remote.php/dav/":
+                return "401"
             if args[-1] == "https://hermes.amahi.dev/health?deep=1":
                 return json.dumps({"status": "ok"})
             if args[-1].endswith("/api/auth/status"):
@@ -848,10 +866,16 @@ class HealthTests(unittest.TestCase):
                     for unit in args[3:]]
         self.assertNotIn("sonarr.service", services)
         self.assertNotIn("radarr.service", services)
+        self.assertIn("nextcloud-cron.timer", services)
         self.assertTrue(all("example.com" not in args for args in self.calls))
         nextcloud = next(args for args in self.calls if args[-1].endswith("status.php"))
         self.assertEqual(nextcloud[-1], "https://cloud.amahi.dev/status.php")
         self.assertEqual(nextcloud[nextcloud.index("--resolve") + 1], "cloud.amahi.dev:443:127.0.0.1")
+        for path in ("/login", "/remote.php/dav/"):
+            endpoint = next(args for args in self.calls if args[-1] == f"https://cloud.amahi.dev{path}")
+            self.assertEqual(endpoint[endpoint.index("--resolve") + 1], "cloud.amahi.dev:443:127.0.0.1")
+            self.assertEqual(endpoint[endpoint.index("--noproxy") + 1], "*")
+            self.assertNotIn("--fail", endpoint)
         self.assertIn("http://127.0.0.1:8222/alive", [args[-1] for args in self.calls])
         hermes = next(args for args in self.calls if args[-1] == "https://hermes.amahi.dev/health?deep=1")
         self.assertEqual(hermes[hermes.index("--resolve") + 1], "hermes.amahi.dev:443:100.91.234.17")
@@ -875,6 +899,39 @@ class HealthTests(unittest.TestCase):
             return self.run_command(args)
 
         with self.assertRaisesRegex(RuntimeError, "TLS certificate verification failed"):
+            update.health_check(run)
+
+    def test_nextcloud_login_and_webdav_must_serve_expected_http_responses(self):
+        for path, bad_statuses in (("/login", ("302", "401", "503")),
+                                   ("/remote.php/dav/", ("200", "302", "503"))):
+            for status in bad_statuses:
+                with self.subTest(path=path, status=status):
+                    def run(args):
+                        if args[-1] == f"https://cloud.amahi.dev{path}":
+                            return status
+                        return self.run_command(args)
+
+                    with self.assertRaisesRegex(RuntimeError, "Nextcloud .*HTTP " + status):
+                        update.health_check(run)
+
+    def test_failed_nextcloud_http_probe_fails_health(self):
+        for path in ("/login", "/remote.php/dav/"):
+            with self.subTest(path=path):
+                def run(args):
+                    if args[-1] == f"https://cloud.amahi.dev{path}":
+                        raise RuntimeError("TLS connection failed")
+                    return self.run_command(args)
+
+                with self.assertRaisesRegex(RuntimeError, "TLS connection failed"):
+                    update.health_check(run)
+
+    def test_unhealthy_nextcloud_cron_timer_fails_health(self):
+        def run(args):
+            if args == ["systemctl", "is-active", "--quiet", "nextcloud-cron.timer"]:
+                raise RuntimeError("Nextcloud cron timer is stopped")
+            return self.run_command(args)
+
+        with self.assertRaisesRegex(RuntimeError, "Nextcloud cron timer is stopped"):
             update.health_check(run)
 
     def test_hermes_webui_https_endpoint_must_be_ready(self):
@@ -948,6 +1005,27 @@ class HealthTests(unittest.TestCase):
                 self.nextcloud = {"installed": True, "maintenance": False, "needsDbUpgrade": False, key: True}
                 with self.assertRaisesRegex(RuntimeError, "Nextcloud is not ready"):
                     update.health_check(self.run_command)
+
+    def test_recovery_never_clears_nextcloud_maintenance_or_runs_pending_migrations(self):
+        for key in ("maintenance", "needsDbUpgrade"):
+            with self.subTest(key=key), tempfile.TemporaryDirectory() as directory:
+                self.calls.clear()
+                self.nextcloud = {"installed": True, "maintenance": False, "needsDbUpgrade": False, key: True}
+
+                def run(args):
+                    if args[:2] == ["systemctl", "show"]:
+                        self.calls.append(args)
+                        return "active"
+                    return self.run_command(args)
+
+                with self.assertRaisesRegex(RuntimeError, "Nextcloud is not ready"):
+                    update.recover_services(
+                        run, maintenance_lock=Path(directory) / "maintenance.lock",
+                        deployment_lock=Path(directory) / "deployment.lock",
+                    )
+                self.assertTrue(all(args[0] in ("systemctl", "curl", "dig") for args in self.calls))
+                self.assertFalse(any(args[:2] in (["systemctl", "start"], ["systemctl", "restart"])
+                                     for args in self.calls))
 
 
 if __name__ == "__main__":

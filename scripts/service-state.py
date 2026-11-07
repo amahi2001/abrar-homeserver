@@ -107,8 +107,11 @@ def pause(run, *, require_idle=True):
         require_hermes_idle(run)
     # Stop triggers first so none can restart a writer while its state is copied.
     for unit in UNITS:
-        if active(unit, run):
+        status = run(["systemctl", "show", "--property=ActiveState", "--value", unit]).strip()
+        if status in ("active", "activating", "reloading", "deactivating"):
             run(["systemctl", "stop", unit])
+        elif status not in ("inactive", "failed"):
+            raise RuntimeError(f"Cannot determine {unit} state before snapshot: {status!r}")
 
 
 def sync(source, destination, label, run, *, restore=False):
@@ -139,7 +142,6 @@ def resume(directory, run=command, *, paths=PATHS):
     for unit in UNITS:
         if unit not in manifest["active_units"] and active(unit, run):
             attempt(["systemctl", "stop", unit])
-    attempt([OCC, "maintenance:mode", "--on" if manifest["maintenance_before"] else "--off"])
     for unit in SERVICES + TIMERS:
         if unit in manifest["active_units"]:
             attempt(["systemctl", "start", unit])
@@ -152,23 +154,28 @@ def resume(directory, run=command, *, paths=PATHS):
 def backup(directory, run=command, *, paths=PATHS):
     if directory.exists():
         raise RuntimeError("Refusing to overwrite an existing application-state backup")
-    directory.mkdir(parents=True, mode=0o700)
     status = json.loads(run([OCC, "status", "--output=json"]))
+    if not isinstance(status, dict):
+        raise RuntimeError("Cannot determine Nextcloud readiness")
+    if status.get("maintenance") is True:
+        raise RuntimeError("Nextcloud is already in maintenance mode; defer updates until maintenance finishes")
+    if (status.get("installed") is not True or status.get("maintenance") is not False
+            or status.get("needsDbUpgrade") is not False):
+        raise RuntimeError("Nextcloud is not ready for backup: " + json.dumps(status))
+    for unit in ("nextcloud-setup.service", "nextcloud-update-db.service"):
+        migration = run(["systemctl", "show", "--property=ActiveState", "--value", unit]).strip()
+        if migration not in ("inactive", "failed"):
+            raise RuntimeError(f"Nextcloud migration unit {unit} is not idle: {migration!r}")
     manifest = {
         "version": 1, "complete": False, "resumed": False,
         "active_units": [unit for unit in UNITS if active(unit, run)],
-        "maintenance_before": status.get("maintenance", False),
+        "maintenance_before": status["maintenance"],
         "paths": {},
     }
-    if not isinstance(manifest["maintenance_before"], bool):
-        raise RuntimeError("Cannot determine Nextcloud maintenance state")
-    if manifest["maintenance_before"]:
-        raise RuntimeError("Nextcloud is already in maintenance mode; defer updates until maintenance finishes")
+    directory.mkdir(parents=True, mode=0o700)
     save(directory, manifest)
     try:
-        require_hermes_idle(run)
-        if not manifest["maintenance_before"]:
-            run([OCC, "maintenance:mode", "--on"])
+        # Stopped writers protect the snapshot without leaving a maintenance flag after interruption.
         pause(run)
         for label, path in paths.items():
             if path.exists():
@@ -182,8 +189,6 @@ def backup(directory, run=command, *, paths=PATHS):
              "--format=custom", "--dbname=nextcloud"], output=directory / "nextcloud.pgdump")
         manifest["complete"] = True
         save(directory, manifest)
-        # Writers remain stopped; clear our flag so Nextcloud setup can run during activation.
-        run([OCC, "maintenance:mode", "--off"])
         print(f"Application state is quiesced and backed up in {directory}", flush=True)
     except BaseException as error:
         try:
@@ -209,7 +214,7 @@ def restore(directory, run=command, *, paths=PATHS):
     run(["runuser", "--user", "postgres", "--", PG_RESTORE, "--clean", "--if-exists",
          "--exit-on-error", "--single-transaction", "--dbname=nextcloud"],
         input_file=directory / "nextcloud.pgdump")
-    # The snapshot includes our temporary flag; restore it before old-generation setup runs.
+    # Legacy snapshots include our temporary flag; restore it before old-generation setup runs.
     run([OCC, "maintenance:mode", "--on" if manifest["maintenance_before"] else "--off"])
     print(f"Restored application state from {directory}", flush=True)
 

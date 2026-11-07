@@ -106,14 +106,16 @@ in
 
   systemd.services."maintenance-alert@" = {
     description = "Record a failed maintenance job";
+    scriptArgs = "%i";
     serviceConfig = {
       Type = "oneshot";
       UMask = "0077";
     };
     script = ''
+      failed_unit="$1"
       mkdir -p /var/lib/nixos-updates/failures
-      date --iso-8601=seconds > /var/lib/nixos-updates/failures/"%i"
-      echo "Maintenance job %i failed. Inspect: journalctl -u %i" >&2
+      date --iso-8601=seconds > /var/lib/nixos-updates/failures/"$failed_unit"
+      echo "Maintenance job $failed_unit failed. Inspect: journalctl -u $failed_unit" >&2
     '';
   };
 

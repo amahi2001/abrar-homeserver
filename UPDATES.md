@@ -84,6 +84,19 @@ update transaction; they are not an off-machine disaster-recovery backup.
 Successful transactions older than 30 days are pruned, keeping at least the newest
 three; failed transactions remain available for inspection.
 
+Nextcloud snapshots stop the cron timer, cron process group, and PHP workers
+before copying state or dumping the database. Backups do not enable maintenance
+mode, so an interrupted backup cannot leave that flag behind. Updates defer if
+Nextcloud is already in maintenance, needs a database upgrade, reports unknown
+readiness, or has setup/database maintenance running. Intentional maintenance
+remains under administrator control; recovery never clears it automatically.
+
+The recovery timer checks every minute and starts stopped critical services and
+Nextcloud's cron timer when no deployment or update holds their locks. Health
+checks exercise Nextcloud's status, login page, and WebDAV authentication. They
+also require the cron timer to remain active. Failed rollbacks retain their
+snapshots for manual inspection rather than overwriting newly accepted work.
+
 ## Inspection and recovery
 
 ```sh
@@ -96,9 +109,10 @@ sudo cat /var/lib/nixos-updates/latest.json
 ```
 
 Failed jobs activate `maintenance-alert@JOB.service` and leave a dated record under
-`/var/lib/nixos-updates/failures`. Review the failed job's journal and retained
-transaction before attempting a manual restore. Do not restore databases while
-their applications are writing.
+`/var/lib/nixos-updates/failures/JOB`, named for the actual failed unit. These are
+local journal and filesystem records, not external notifications. Review the
+failed job's journal and retained transaction before attempting a manual restore.
+Do not restore databases while their applications are writing.
 
 Reboots are not initiated during service rollout. A kernel change leaves a
 `reboot-required` marker in the maintenance state directory; reboot during an idle

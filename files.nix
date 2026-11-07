@@ -389,6 +389,9 @@ in
     };
   };
 
+  # Quiescing cron must also stop child processes before a state snapshot.
+  systemd.services.nextcloud-cron.serviceConfig.KillMode = lib.mkForce "control-group";
+
   # Media server for LAN and Tailscale clients; Nginx also publishes it over
   # public HTTPS without opening Jellyfin's HTTP port to the Internet.
   # Compatible clients Direct Play, so this service normally leaves the GPU

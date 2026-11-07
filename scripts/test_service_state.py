@@ -34,7 +34,6 @@ class StateTests(unittest.TestCase):
         self.fail_dump = False
         self.busy = False
         self.maintenance = False
-        self.fail_maintenance_off = False
 
     def run_command(self, args, *, output=None, input_file=None):
         self.calls.append(args)
@@ -45,10 +44,8 @@ class StateTests(unittest.TestCase):
         if args[:2] == ["systemctl", "start"]:
             self.active.add(args[-1])
         if args[:2] == [state.OCC, "status"]:
-            return json.dumps({"maintenance": self.maintenance})
+            return json.dumps({"installed": True, "maintenance": self.maintenance, "needsDbUpgrade": False})
         if args[:2] == [state.OCC, "maintenance:mode"]:
-            if args[-1] == "--off" and self.fail_maintenance_off:
-                raise RuntimeError("injected maintenance mode failure")
             self.maintenance = args[-1] == "--on"
         if args[0] == "curl":
             return json.dumps({"gateway_running": True, "gateway_busy": self.busy,
@@ -105,10 +102,10 @@ class StateTests(unittest.TestCase):
         self.assertNotIn("sonarr.service", self.active)
         self.assertNotIn("radarr.service", self.active)
 
-    def test_backup_clears_maintenance_only_after_copy_and_dump_for_activation(self):
+    def test_backup_and_resume_pause_writers_without_maintenance_writes(self):
         def checked(args, **kwargs):
             if args[0] == "rsync" or state.PG_DUMP in args:
-                self.assertTrue(self.maintenance)
+                self.assertFalse(self.maintenance)
                 self.assertFalse(self.active)
             return self.run_command(args, **kwargs)
 
@@ -117,19 +114,102 @@ class StateTests(unittest.TestCase):
         self.assertFalse(self.active)
         copy_end = max(i for i, args in enumerate(self.calls) if args[0] == "rsync")
         database = next(i for i, args in enumerate(self.calls) if state.PG_DUMP in args)
-        toggle = self.calls.index([state.OCC, "maintenance:mode", "--off"])
         self.assertLess(copy_end, database)
-        self.assertLess(database, toggle)
-        self.assertEqual(toggle, len(self.calls) - 1)
+        # An administrator may enable maintenance while services are paused.
+        self.maintenance = True
+        self.resume()
+        self.assertTrue(self.maintenance)
+        self.assertEqual(self.active, self.original_active)
+        self.assertFalse(any(args[:2] == [state.OCC, "maintenance:mode"] for args in self.calls))
 
-    def test_failed_clear_after_backup_fails_and_attempts_full_recovery(self):
-        self.fail_maintenance_off = True
-        with self.assertRaisesRegex(RuntimeError, "services could not fully resume"):
-            self.backup()
-        self.assertTrue(any(state.PG_DUMP in args for args in self.calls))
-        self.assertEqual(self.calls.count([state.OCC, "maintenance:mode", "--off"]), 2)
+    def test_deactivating_writers_finish_before_snapshot_and_are_not_resumed(self):
+        writers = {"phpfpm-nextcloud.service", "nextcloud-cron.service"}
+        stopping = writers.copy()
+        self.original_active -= writers
+        self.active = self.original_active.copy()
+
+        def commands(args, **kwargs):
+            if args[:2] == ["systemctl", "show"] and args[-1] in stopping:
+                self.calls.append(args)
+                return "deactivating"
+            if args[:2] == ["systemctl", "stop"]:
+                stopping.discard(args[-1])
+            if args[0] == "rsync" or state.PG_DUMP in args:
+                self.assertFalse(stopping)
+            return self.run_command(args, **kwargs)
+
+        state.backup(self.directory, commands, paths=self.paths)
+        first_copy = next(i for i, args in enumerate(self.calls) if args[0] == "rsync")
+        for unit in writers:
+            self.assertLess(self.calls.index(["systemctl", "stop", unit]), first_copy)
+        self.resume()
+        self.assertEqual(self.active, self.original_active)
+        self.assertFalse(any(args[:2] == ["systemctl", "start"] and args[-1] in writers
+                             for args in self.calls))
+
+    def test_unknown_writer_state_blocks_snapshot(self):
+        def commands(args, **kwargs):
+            if args[:2] == ["systemctl", "show"] and args[-1] == "phpfpm-nextcloud.service":
+                return "unknown"
+            return self.run_command(args, **kwargs)
+        with self.assertRaisesRegex(RuntimeError, "Cannot determine phpfpm-nextcloud.service state"):
+            state.backup(self.directory, commands, paths=self.paths)
+        self.assertFalse(any(args[0] == "rsync" or state.PG_DUMP in args for args in self.calls))
+
+    def test_bad_nextcloud_readiness_does_not_mutate_services_or_files(self):
+        ready = {"installed": True, "maintenance": False, "needsDbUpgrade": False}
+        invalid = [None, [], {}, "malformed status"]
+        for field, expected in ready.items():
+            invalid.append({key: value for key, value in ready.items() if key != field})
+            invalid.extend(ready | {field: value} for value in (None, "false", 0, 1, not expected))
+        for status in invalid:
+            with self.subTest(status=status):
+                def commands(args, **kwargs):
+                    if args[:2] == [state.OCC, "status"]:
+                        return status if isinstance(status, str) else json.dumps(status)
+                    return self.run_command(args, **kwargs)
+                with self.assertRaises((RuntimeError, ValueError)):
+                    state.backup(self.directory, commands, paths=self.paths)
+                self.assertEqual(self.active, self.original_active)
+                self.assertFalse(self.directory.exists())
+        self.assertTrue(all(args[:2] == ["systemctl", "show"] for args in self.calls))
+
+    def test_running_or_unknown_migration_units_defer_without_mutation(self):
+        for unit in ("nextcloud-setup.service", "nextcloud-update-db.service"):
+            for status in ("active", "activating", "reloading", "deactivating", "unknown", "", "invalid"):
+                with self.subTest(unit=unit, status=status):
+                    def commands(args, **kwargs):
+                        if args[:2] == ["systemctl", "show"] and args[-1] == unit:
+                            self.calls.append(args)
+                            return status
+                        return self.run_command(args, **kwargs)
+                    with self.assertRaisesRegex(RuntimeError, unit):
+                        state.backup(self.directory, commands, paths=self.paths)
+                    self.assertEqual(self.active, self.original_active)
+                    self.assertFalse(self.directory.exists())
+        self.assertTrue(all(args[:2] in ([state.OCC, "status"], ["systemctl", "show"])
+                            for args in self.calls))
+
+    def test_failed_migration_units_allow_backup(self):
+        def commands(args, **kwargs):
+            if args[:2] == ["systemctl", "show"] and args[-1] in (
+                    "nextcloud-setup.service", "nextcloud-update-db.service"):
+                return "failed"
+            return self.run_command(args, **kwargs)
+        state.backup(self.directory, commands, paths=self.paths)
+        self.assertTrue(json.loads((self.directory / "manifest.json").read_text())["complete"])
+
+    def test_interrupted_backup_recovers_without_changing_administrator_maintenance(self):
+        def interrupted(args, **kwargs):
+            if state.PG_DUMP in args:
+                self.maintenance = True
+                raise KeyboardInterrupt("injected interrupt")
+            return self.run_command(args, **kwargs)
+        with self.assertRaisesRegex(KeyboardInterrupt, "injected interrupt"):
+            state.backup(self.directory, interrupted, paths=self.paths)
         self.assertEqual(self.active, self.original_active)
         self.assertTrue(self.maintenance)
+        self.assertFalse(any(args[:2] == [state.OCC, "maintenance:mode"] for args in self.calls))
 
     def test_failed_dump_resumes_original_services_and_leaves_incomplete_backup(self):
         self.fail_dump = True
@@ -141,12 +221,17 @@ class StateTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "incomplete"):
             state.restore(self.directory, self.run_command, paths=self.paths)
 
-    def test_failed_maintenance_toggle_still_restarts_all_original_services(self):
+    def test_failed_service_start_still_recovers_other_original_services(self):
         self.fail_dump = True
-        self.fail_maintenance_off = True
+        def failed_start(args, **kwargs):
+            if args == ["systemctl", "start", "vaultwarden.service"]:
+                self.calls.append(args)
+                raise RuntimeError("injected start failure")
+            return self.run_command(args, **kwargs)
         with self.assertRaisesRegex(RuntimeError, "services could not fully resume"):
-            self.backup()
-        self.assertEqual(self.active, self.original_active)
+            state.backup(self.directory, failed_start, paths=self.paths)
+        self.assertEqual(self.active, self.original_active - {"vaultwarden.service"})
+        self.assertFalse(any(args[:2] == [state.OCC, "maintenance:mode"] for args in self.calls))
 
     def test_existing_maintenance_mode_defers_backup_without_changing_services(self):
         self.maintenance = True
