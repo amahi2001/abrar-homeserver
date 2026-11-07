@@ -182,6 +182,8 @@ def backup(directory, run=command, *, paths=PATHS):
              "--format=custom", "--dbname=nextcloud"], output=directory / "nextcloud.pgdump")
         manifest["complete"] = True
         save(directory, manifest)
+        # Writers remain stopped; clear our flag so Nextcloud setup can run during activation.
+        run([OCC, "maintenance:mode", "--off"])
         print(f"Application state is quiesced and backed up in {directory}", flush=True)
     except BaseException as error:
         try:
