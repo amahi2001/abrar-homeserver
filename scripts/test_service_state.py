@@ -94,7 +94,7 @@ class StateTests(unittest.TestCase):
     def test_backup_quiesces_then_resume_restores_only_original_active_units(self):
         self.backup()
         self.assertFalse(self.active)
-        self.assertTrue(self.maintenance)
+        self.assertFalse(self.maintenance)
         self.assertTrue(json.loads((self.directory / "manifest.json").read_text())["complete"])
         first_copy = next(i for i, args in enumerate(self.calls) if args[0] == "rsync")
         stops = [i for i, args in enumerate(self.calls) if args[:2] == ["systemctl", "stop"]]
@@ -104,6 +104,32 @@ class StateTests(unittest.TestCase):
         self.assertFalse(self.maintenance)
         self.assertNotIn("sonarr.service", self.active)
         self.assertNotIn("radarr.service", self.active)
+
+    def test_backup_clears_maintenance_only_after_copy_and_dump_for_activation(self):
+        def checked(args, **kwargs):
+            if args[0] == "rsync" or state.PG_DUMP in args:
+                self.assertTrue(self.maintenance)
+                self.assertFalse(self.active)
+            return self.run_command(args, **kwargs)
+
+        state.backup(self.directory, checked, paths=self.paths)
+        self.assertFalse(self.maintenance)
+        self.assertFalse(self.active)
+        copy_end = max(i for i, args in enumerate(self.calls) if args[0] == "rsync")
+        database = next(i for i, args in enumerate(self.calls) if state.PG_DUMP in args)
+        toggle = self.calls.index([state.OCC, "maintenance:mode", "--off"])
+        self.assertLess(copy_end, database)
+        self.assertLess(database, toggle)
+        self.assertEqual(toggle, len(self.calls) - 1)
+
+    def test_failed_clear_after_backup_fails_and_attempts_full_recovery(self):
+        self.fail_maintenance_off = True
+        with self.assertRaisesRegex(RuntimeError, "services could not fully resume"):
+            self.backup()
+        self.assertTrue(any(state.PG_DUMP in args for args in self.calls))
+        self.assertEqual(self.calls.count([state.OCC, "maintenance:mode", "--off"]), 2)
+        self.assertEqual(self.active, self.original_active)
+        self.assertTrue(self.maintenance)
 
     def test_failed_dump_resumes_original_services_and_leaves_incomplete_backup(self):
         self.fail_dump = True
@@ -135,7 +161,8 @@ class StateTests(unittest.TestCase):
 
     def test_restore_clears_temporary_maintenance_after_database_before_activation(self):
         self.backup()
-        self.assertTrue(self.maintenance)
+        # Model the temporary flag restored from the config snapshot.
+        self.maintenance = True
         before = len(self.calls)
         state.restore(self.directory, self.run_command, paths=self.paths)
         self.assertFalse(self.maintenance)
