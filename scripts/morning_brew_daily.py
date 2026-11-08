@@ -109,11 +109,13 @@ def expire(video_id, record, job, dry_run):
     if not job or job.get("status") != "ready" or not job.get("item_id") or not job.get("path"):
         return False, f"expired {video_id} but queue item is not ready; will retry"
     path = managed_path(job, video_id)
-    if not path.is_file():
-        return False, f"expired {video_id} but expected video file is missing; retained state for review"
     item_id = job["item_id"]
     result = jellyfin("GET", "/Items", {"Ids": item_id, "Fields": "Path"})
     items = (result or {}).get("Items", [])
+    if not path.exists() and isinstance(result, dict) and result.get("Items") == []:
+        return True, f"already absent from disk and Jellyfin: {record.get('title', video_id)}"
+    if not path.is_file():
+        return False, f"expired {video_id} but expected video file is missing; retained state for review"
     if len(items) != 1 or items[0].get("Id") != item_id or Path(items[0].get("Path", "")).resolve() != path:
         raise RuntimeError(f"Jellyfin path does not match queued file for {video_id}; refusing deletion.")
     if dry_run:
@@ -177,6 +179,8 @@ def main():
         # Existing downloads outside this cron's scope are never added to expiry state.
 
     for video_id, record in list(state.items()):
+        if record.get("expired"):
+            continue
         try:
             published = dt.datetime.fromisoformat(record["published"])
         except (KeyError, TypeError, ValueError):
@@ -185,7 +189,8 @@ def main():
             continue
         removed, message = expire(video_id, record, scoped_by_id.get(video_id), args.dry_run)
         if removed:
-            state.pop(video_id, None)
+            # Keep a tombstone: queue history still contains deleted ready jobs.
+            record["expired"] = True
         messages.append(message)
 
     if not args.dry_run:

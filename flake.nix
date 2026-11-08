@@ -47,6 +47,14 @@
       # `nixos-rebuild` deploys, rather than merely checking flake syntax.
       checks.${system} = {
         nixos = buildfleet-server.config.system.build.toplevel;
+        media-queue =
+          buildfleet-server.pkgs.runCommand "media-queue-tests"
+            { nativeBuildInputs = [ buildfleet-server.pkgs.python3 ]; }
+            ''
+              export PYTHONDONTWRITEBYTECODE=1
+              python -m unittest discover -s ${./skills/media-queue}/tests -p 'test_*.py'
+              touch "$out"
+            '';
         maintenance =
           buildfleet-server.pkgs.runCommand "maintenance-tests"
             {

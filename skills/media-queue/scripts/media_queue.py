@@ -2,6 +2,7 @@
 """Safely search Prowlarr and queue selected results in VPN-isolated Transmission."""
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -21,6 +22,8 @@ TEMP_TORRENT = "/tmp/media-queue.torrent"
 WATCH_STATE = Path("/var/lib/media-queue/watch-state.json")
 SEARCH_CACHE = Path("/var/lib/media-queue/search-cache.json")
 ORGANIZER_EVENT_DIR = Path("/var/lib/media-queue/events")
+AVAILABILITY_STATE = Path("/var/lib/media-queue/availability")
+MOVIE_LIBRARY = Path("/srv/data/media/library/movies")
 TRANSMISSION = [
     "docker", "exec", "transmission-vpn", "sh", "-ceu",
     'export TR_AUTH="$USER:$PASS"; exec transmission-remote 127.0.0.1:9091 --authenv "$@"',
@@ -117,11 +120,13 @@ def readable_size(value):
     return "unknown"
 
 
-def print_results(results):
+def print_results(results, indices=None):
     if not results:
         print("No torrent results found.")
         return
     for number, result in enumerate(results, start=1):
+        if indices is not None and number not in indices:
+            continue
         print(
             f"{number}. {result.get('title', 'Untitled')}\n"
             f"   source={result.get('indexer', 'unknown')} "
@@ -129,6 +134,72 @@ def print_results(results):
             f"seeders={result.get('seeders', '?')} "
             f"leechers={result.get('leechers', '?')}"
         )
+
+
+def movie_matches(name, title, year):
+    normalize = lambda value: re.sub(r"[\W_]+", " ", value.casefold()).strip()
+    return any(normalize(name[:match.start()]) == normalize(title)
+               for match in re.finditer(rf"(?<!\d){year}(?!\d)", name))
+
+
+def movie_owned(title, year):
+    network_guardrails()
+    if any(movie_matches(item.get("name", ""), title, year)
+           for item in transmission_torrents()):
+        return True
+    # A library folder alone is not proof: failed imports can leave empty folders.
+    return any(folder.is_dir() and movie_matches(folder.name, title, year)
+               and any(path.is_file() and path.suffix.lower() in
+                       {".mkv", ".mp4", ".m4v", ".avi", ".mov", ".webm", ".ts", ".m2ts"}
+                       for path in folder.rglob("*"))
+               for folder in MOVIE_LIBRARY.iterdir())
+
+
+def check_availability(title, year, limit):
+    if movie_owned(title, year):
+        return
+    query = f"{title} {year}"
+    state_file = AVAILABILITY_STATE / (hashlib.sha256(query.encode()).hexdigest() + ".json")
+    try:
+        seen = json.loads(state_file.read_text(encoding="utf-8"))
+        if not isinstance(seen, list):
+            raise ValueError("expected a list")
+    except FileNotFoundError:
+        seen = []
+    except (OSError, ValueError) as error:
+        raise QueueError("Cannot read availability history; refusing to repeat alerts.") from error
+    results = search_results(query, limit)
+    qualifying = []
+    for number, result in enumerate(results, start=1):
+        name = result.get("title", "")
+        resolution = re.search(r"(?i)(?<!\d)(2160|1440|1080)p\b", name)
+        if (not movie_matches(name, title, year) or not resolution
+                or re.search(r"(?i)\b(?:cam|camrip|hdcam|telesync)\b", name)):
+            continue
+        size = result.get("size")
+        if not isinstance(size, (int, float)) or size <= 0:
+            continue
+        if resolution[1] == "2160" and size >= 25 * 1024 ** 3:
+            continue
+        identity = [result.get("indexer", "unknown"), name]
+        if identity not in seen:
+            qualifying.append((number, int(resolution[1]), result, identity))
+    if not qualifying:
+        return
+    # Recheck after the indexer request in case the movie was queued meanwhile.
+    if movie_owned(title, year):
+        return
+    cache_search_results(query, results)
+    preferred = min(qualifying, key=lambda item: (
+        -item[1], "yts" not in (item[2].get("indexer", "") + item[2]["title"]).lower(),
+        -(item[2].get("seeders") or 0), item[2]["size"],
+    ))
+    print(f"New qualifying releases: {title} ({year})")
+    print(f"Recommended result: {preferred[0]}")
+    print_results(results, {item[0] for item in qualifying})
+    print(f'Nothing queued. Reply with a result number for "{query}"; expired results require a fresh search.')
+    sys.stdout.flush()
+    save_private_json(state_file, seen + [item[3] for item in qualifying])
 
 
 def save_private_json(path, data):
@@ -450,6 +521,10 @@ def parse_args():
     search = subparsers.add_parser("search", help="search configured Prowlarr indexers")
     search.add_argument("query")
     search.add_argument("--limit", type=int, default=10)
+    availability = subparsers.add_parser("availability", help="notify only for new releases of a missing movie; silent if queued or owned")
+    availability.add_argument("title")
+    availability.add_argument("--year", required=True, type=int, choices=range(1900, 2101), metavar="YYYY")
+    availability.add_argument("--limit", type=int, default=10)
     queue = subparsers.add_parser("queue", help="queue selected current search results")
     queue.add_argument("--query", required=True)
     queue.add_argument("--index", type=int, nargs="+", required=True)
@@ -475,6 +550,8 @@ def main():
         results = search_results(args.query, args.limit)
         cache_search_results(args.query, results)
         print_results(results)
+    elif args.command == "availability":
+        check_availability(args.title, args.year, args.limit)
     elif args.command == "queue":
         if not args.confirm:
             raise QueueError("Queueing requires --confirm after the user selects displayed result numbers.")

@@ -203,6 +203,24 @@ the user explicitly asks to change that policy.
 
 ## Workflow
 
+### Movie availability reminders
+
+Use `sudo media-queue availability "<exact title>" --year YYYY --limit 10`
+for scheduled movie availability checks. This checks Transmission (including
+in-progress downloads) and actual movie files in the organized library before
+searching. An existing title/year, no qualifying release, or an already-reported
+release produces empty stdout. Swarm counts do not count as new releases.
+The command applies the film quality policy and preserves original result numbers.
+Explicit upgrade searches should continue to use `media-queue search`.
+
+Create these reminders as Hermes `--no-agent --script` jobs with a local shell
+script under `~/.hermes/scripts/` that calls the absolute command above, following
+`scripts/media-availability-buddy.sh`. Empty stdout suppresses delivery; do not
+send a daily "nothing new" message. Do not attach skills or use LLM continuity
+for deduplication. Keep a reminder paused once its movie has been downloaded.
+Availability checks never queue anything. A later user selection still requires
+a current search cache and the existing numbered-selection confirmation flow.
+
 1. Apply the default selection policy, then search before selecting. Pass the user's query literally to Prowlarr, so
    normal release terms such as `S03E01`, `E01`, `WEBRip`, `WEB-DL`, `1080p`,
    `x265`, or `English Dub` work as part of the query:

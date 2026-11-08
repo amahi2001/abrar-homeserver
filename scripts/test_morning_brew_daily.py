@@ -1,5 +1,9 @@
 """Regression checks for Morning Brew expiry; never call Jellyfin or delete media."""
 import importlib.util
+import contextlib
+import datetime as dt
+import io
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -61,6 +65,47 @@ class ExpiryTests(unittest.TestCase):
                     automation.expire(self.video_id, {}, self.job, False)
                 self.assertEqual(api.call_count, 1)
                 self.assertTrue(self.path.is_file())
+
+    def test_missing_file_and_absent_index_are_retired_without_delete(self):
+        self.path.unlink()
+        with patch.object(automation, "jellyfin", return_value={"Items": []}) as api:
+            removed, message = automation.expire(self.video_id, {}, self.job, False)
+        self.assertTrue(removed)
+        self.assertIn("already absent", message)
+        api.assert_called_once_with("GET", "/Items", {"Ids": "abc123", "Fields": "Path"})
+
+    def test_missing_file_with_remaining_or_unknown_index_keeps_review(self):
+        self.path.unlink()
+        for result in (None, {"Items": [self.item]}):
+            with self.subTest(result=result), patch.object(automation, "jellyfin", return_value=result) as api:
+                removed, message = automation.expire(self.video_id, {}, self.job, False)
+                self.assertFalse(removed)
+                self.assertIn("review", message)
+                self.assertEqual(api.call_count, 1)
+
+    def test_expired_tombstone_prevents_recovery_and_repeat_alerts(self):
+        published = (dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=4)).isoformat()
+        entry = {"id": self.video_id, "title": "Old episode", "published": published}
+        state = {self.video_id: {"published": published, "title": "Old episode"}}
+        job = {"id": self.video_id, **self.job}
+        with patch.object(sys, "argv", ["morning_brew_daily"]), \
+             patch.object(automation.os, "geteuid", return_value=0), \
+             patch.object(automation, "feed_entries", return_value=[entry]), \
+             patch.object(automation, "load_state", return_value=state), \
+             patch.object(automation, "save_state"), \
+             patch.object(automation, "queue_command", side_effect=lambda *args:
+                          {"entries": [{"id": self.video_id, "channel": "Morning Brew Daily"}]}
+                          if "preview" in args else [job]), \
+             patch.object(automation, "expire", return_value=(True, "already absent")) as expire:
+            with contextlib.redirect_stdout(io.StringIO()):
+                automation.main()
+            self.assertTrue(state[self.video_id]["expired"])
+            expire.reset_mock()
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                automation.main()
+            expire.assert_not_called()
+            self.assertEqual(output.getvalue(), "")
 
 
 if __name__ == "__main__":
