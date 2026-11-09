@@ -7,6 +7,8 @@
     cloakbrowser.url = "github:CloakHQ/CloakBrowser";
     # Tracks OpenAI Codex CLI releases independently of stable nixpkgs.
     codex-cli.url = "github:sadjow/codex-cli-nix";
+    # Host tools update with system maintenance, independently of Codex's inputs.
+    runtime-nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
     # Source for the Caveman skills used by managed Hermes.
     caveman = {
       url = "github:JuliusBrussee/caveman/v4.0.1";
@@ -21,6 +23,7 @@
       hermes-agent,
       cloakbrowser,
       codex-cli,
+      runtime-nixpkgs,
       caveman,
     }:
     let
@@ -30,6 +33,7 @@
         specialArgs = {
           inherit cloakbrowser caveman;
           codexCli = codex-cli;
+          runtimePackages = runtime-nixpkgs.legacyPackages.${system};
           hermesAgent = hermes-agent;
           deployedFlake = self.outPath;
         };

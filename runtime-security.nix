@@ -5,6 +5,7 @@
   hermesAgent,
   cloakbrowser,
   codexCli,
+  runtimePackages,
   ...
 }:
 let
@@ -12,6 +13,7 @@ let
   # External applications can retain their own nixpkgs library variants.
   packageSets = [
     pkgs
+    runtimePackages
     hermesAgent.inputs.nixpkgs.legacyPackages.${system}
     cloakbrowser.inputs.nixpkgs.legacyPackages.${system}
     codexCli.inputs.nixpkgs.legacyPackages.${system}

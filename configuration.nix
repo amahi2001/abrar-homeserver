@@ -4,6 +4,7 @@
   lib,
   cloakbrowser,
   codexCli,
+  runtimePackages,
   ...
 }:
 
@@ -103,10 +104,10 @@
           if lib.versionOlder package.version version then package.overrideAttrs override else package;
       in
       {
-        # Stable lags the CLI's fixes; prefer the newer already-locked package.
+        # Keep host tools independent of the daily Codex input refresh.
         bitwarden-cli =
           let
-            candidate = codexCli.inputs.nixpkgs.legacyPackages.${prev.stdenv.hostPlatform.system}.bitwarden-cli;
+            candidate = runtimePackages.bitwarden-cli;
           in
           if lib.versionOlder prev.bitwarden-cli.version candidate.version then
             candidate

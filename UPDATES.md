@@ -133,8 +133,10 @@ maintenance window after checking service health.
   vendor binaries require a license; no license is available here. Dependency
   updates preserve the existing stealth-browser behavior and cannot certify that
   old browser as current.
-- Bitwarden CLI prefers the newer package from the already-locked Codex nixpkgs
+- Bitwarden CLI prefers the newer package from the independent `runtime-nixpkgs`
   input when stable is behind (currently 2026.9.1 versus stable's 2026.4.2).
+  Full system maintenance refreshes that input; daily Codex updates leave it
+  pinned so they do not change Hermes's Bitwarden tools or require an idle gateway.
   Warden's supported `BW_BIN` selects that Nix command; Warden 0.2.60 separately
   bundles CLI 2026.10.0. Both graphs retain dependencies flagged by npm audit
   (`tmp`, `node-forge`, and `multer`); selecting `BW_BIN` does not remove that
