@@ -45,10 +45,20 @@ def backup(kind, *, state=STATE, now=None, run=subprocess.run):
         if destination.exists() or destination.is_symlink():
             raise RuntimeError("Snapshot destination already exists")
         relative = destination.relative_to(root)
-        run([
+        image = run([
             "docker", "compose", "--project-directory", str(state / "current"),
-            "-f", str(state / "current/compose.yaml"), "exec", "-T", "app",
-            "timeout", "--signal=TERM", "--kill-after=30s", "900s",
+            "-f", str(state / "current/compose.yaml"), "images", "--quiet", "app",
+        ], check=True, capture_output=True, text=True, timeout=30).stdout.strip()
+        if not re.fullmatch(r"(?:sha256:)?[a-f0-9]{12,64}", image):
+            raise RuntimeError("Could not identify exactly one local application image")
+        run([
+            "docker", "run", "--rm", "--pull=never", "--network=none",
+            "--memory=2g", "--pids-limit=64", "--user", f"{owner.st_uid}:{owner.st_gid}",
+            "--read-only", "--cap-drop=ALL", "--security-opt=no-new-privileges",
+            "--mount", f"type=bind,src={state / 'data'},dst=/data,readonly",
+            "--mount", f"type=bind,src={root},dst=/backups",
+            "--entrypoint=timeout", image,
+            "--signal=TERM", "--kill-after=30s", "900s",
             "bun", "dist/cli.js", "backup", "/backups/" + str(relative),
         ], check=True, timeout=960)
         if not (destination / "manifest.json").is_file():
