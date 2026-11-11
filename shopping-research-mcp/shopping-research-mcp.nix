@@ -40,7 +40,7 @@ in
     serviceConfig = {
       Type = "oneshot";
       ExecStart = "${backup}/bin/shopping-research-mcp-backup daily";
-      TimeoutStartSec = "10min";
+      TimeoutStartSec = "20min";
       UMask = "0077";
     };
   };

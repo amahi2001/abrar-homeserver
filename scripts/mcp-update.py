@@ -16,6 +16,12 @@ import time
 HERMES_HOME = Path("/var/lib/hermes/.hermes")
 SERVICES = ("hermes-dashboard.service", "hermes-agent.service")
 GOOGLE_ROOTS = ("google-api-python-client", "google-auth-oauthlib")
+
+
+class Deferred(RuntimeError):
+    pass
+
+
 PYTHON_SMOKE = r'''
 import os, re, ssl, sys
 assert sys.version_info[:2] == (3, 12)
@@ -117,6 +123,13 @@ def status():
 
 def require_idle():
     current = status()
+    agents = current.get("active_agents")
+    if (current.get("gateway_running") is True
+            and current.get("gateway_drainable") is True
+            and type(current.get("gateway_busy")) is bool
+            and type(agents) is int and agents >= 0
+            and (current["gateway_busy"] or agents > 0)):
+        raise Deferred("Hermes has active work")
     # Hermes' NAS lifecycle contract counts in-flight work; active_sessions is five-minute history.
     if not (current.get("gateway_running") is True
             and current.get("gateway_busy") is False
@@ -185,6 +198,9 @@ def refresh(state_dir=Path("/var/lib/hermes-mcp-updates")):
         resume_attempted = bool(services)
         resume(services)
     except BaseException as error:
+        if isinstance(error, Deferred) and not stopped:
+            shutil.rmtree(backup)
+            raise
         signal.signal(signal.SIGTERM, signal.SIG_IGN)
         signal.signal(signal.SIGINT, signal.SIG_IGN)
         if resume_attempted:
@@ -218,12 +234,17 @@ def main():
     signal.signal(signal.SIGINT, interrupted)
     with Path("/run/lock/nixos-flake-update.lock").open("w") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        refresh()
+        try:
+            refresh()
+        except Deferred:
+            print("MCP maintenance deferred: Hermes has active work.", flush=True)
+            return 75
+    return 0
 
 
 if __name__ == "__main__":
     try:
-        main()
+        raise SystemExit(main())
     except (RuntimeError, OSError, ValueError, subprocess.SubprocessError) as error:
         print(f"MCP maintenance failed ({type(error).__name__}); inspect the retained backup and service state.",
               file=sys.stderr)

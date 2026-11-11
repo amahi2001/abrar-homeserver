@@ -1,6 +1,8 @@
 """Verify external MCP maintenance without installing packages or restarting Hermes."""
 
 import importlib.util
+import contextlib
+import io
 import json
 from pathlib import Path
 import shutil
@@ -104,6 +106,28 @@ class FakeCommands:
 
 
 class McpUpdateTests(unittest.TestCase):
+    def test_known_busy_gateway_defers_without_touching_packages(self):
+        for busy_after in (1, 2):
+            with self.subTest(busy_after=busy_after):
+                commands, error = self.exercise(busy_after=busy_after)
+                self.assertIsInstance(error, updater.Deferred)
+                self.assertEqual(list(commands.state.iterdir()), [])
+                self.assertFalse(any(call[0] in ("runuser", "cp") or call[:2] == ("systemctl", "stop")
+                                     for call in commands.calls))
+
+    def test_main_returns_retry_exit_code_only_for_known_busy_work(self):
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(updater, "Path", return_value=Path(directory) / "lock"), \
+                patch.object(updater.signal, "signal"), \
+                patch.object(updater, "refresh", side_effect=updater.Deferred("busy")), \
+                contextlib.redirect_stdout(io.StringIO()) as output:
+            self.assertEqual(updater.main(), 75)
+            self.assertIn("deferred", output.getvalue())
+        with patch.object(updater, "status", return_value={"gateway_busy": True}):
+            with self.assertRaises(RuntimeError) as raised:
+                updater.require_idle()
+            self.assertNotIsInstance(raised.exception, updater.Deferred)
+
     def test_python_smoke_uses_semantic_ssl_version_and_checks_base_interpreter(self):
         for version, same_base, accepted in (("OpenSSL 3.6.5 29 Sep 2026", True, True),
                                               ("OpenSSL 3.6.4 1 Sep 2026", True, False),

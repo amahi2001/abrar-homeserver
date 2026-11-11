@@ -48,8 +48,9 @@ def backup(kind, *, state=STATE, now=None, run=subprocess.run):
         run([
             "docker", "compose", "--project-directory", str(state / "current"),
             "-f", str(state / "current/compose.yaml"), "exec", "-T", "app",
-            "node", "dist/cli.js", "backup", "/backups/" + str(relative),
-        ], check=True, timeout=300)
+            "timeout", "--signal=TERM", "--kill-after=30s", "900s",
+            "bun", "dist/cli.js", "backup", "/backups/" + str(relative),
+        ], check=True, timeout=960)
         if not (destination / "manifest.json").is_file():
             raise RuntimeError("Backup CLI did not finish a manifest")
         prune(destination.parent, 7 if kind == "daily" else 3)

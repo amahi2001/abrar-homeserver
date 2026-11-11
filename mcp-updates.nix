@@ -42,6 +42,11 @@ in
       UMask = "0077";
       TimeoutStartSec = "30min";
       TimeoutStopSec = "5min";
+      # Busy gateways defer safely; package/validation errors remain failures.
+      Restart = "on-failure";
+      RestartMode = "direct";
+      RestartSec = "15min";
+      RestartPreventExitStatus = [ 1 ];
       Nice = 10;
     };
   };
