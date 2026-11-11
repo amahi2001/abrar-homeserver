@@ -21,6 +21,7 @@ def prune(directory, keep):
         path for path in directory.iterdir()
         if path.is_dir() and not path.is_symlink() and STAMP.fullmatch(path.name)
         and (path / "manifest.json").is_file()
+        and (directory.name != "weekly" or (path / "week").is_file())
     )
     for snapshot in snapshots[:-keep]:
         shutil.rmtree(snapshot)
@@ -67,12 +68,21 @@ def backup(kind, *, state=STATE, now=None, run=subprocess.run):
         if kind == "daily":
             weekly = root / "weekly"
             weekly.mkdir(exist_ok=True, mode=0o750)
+            # The backup lock guarantees these staging copies have no active writer.
+            for entry in weekly.iterdir():
+                if (re.fullmatch(r"\.\d{8}T\d{6}Z\.incomplete", entry.name)
+                        and entry.is_dir() and not entry.is_symlink()):
+                    shutil.rmtree(entry)
             week = now.strftime("%G-W%V")
             if not any((entry / "week").is_file() and (entry / "week").read_text() == week
-                       for entry in weekly.iterdir() if entry.is_dir() and not entry.is_symlink()):
+                       for entry in weekly.iterdir() if entry.is_dir() and not entry.is_symlink()
+                       and STAMP.fullmatch(entry.name) and (entry / "manifest.json").is_file()):
                 target = weekly / name
-                shutil.copytree(destination, target)
-                (target / "week").write_text(week)
+                # Publish the whole weekly snapshot atomically, including its markers.
+                staging = weekly / f".{name}.incomplete"
+                shutil.copytree(destination, staging)
+                (staging / "week").write_text(week)
+                staging.rename(target)
                 prune(weekly, 4)
         print(f"Consistent {kind} snapshot retained: {destination}")
         return destination

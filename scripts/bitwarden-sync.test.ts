@@ -114,6 +114,14 @@ test("manual imports are adopted rather than duplicated", async () => {
   expect(result.stdout).toContain("1 adopted");
 });
 
+test("duplicate source names never adopt the same destination twice", async () => {
+  const result = await sync({ src: { items: [source(), source({ id: "source-2", login: { username: "user", password: "second" } })] }, dst: { items: [source({ id: "manual-1" })] } });
+  expect(result.code, result.stderr).toBe(0);
+  const writes = mutations(result.calls);
+  expect(writes.map(c => c.args.slice(0, 3))).toEqual([["edit", "item", "manual-1"], ["create", "item", "--session"]]);
+  expect(writes.map(c => c.payload.fields.find((f: any) => f.name === "bw_id").value)).toEqual(["source-1", "source-2"]);
+});
+
 test("only missing tracked items are deleted; untracked target items remain", async () => {
   const result = await sync({ dst: { items: [tracked(), source({ id: "untracked" })] } });
   expect(result.code, result.stderr).toBe(0);

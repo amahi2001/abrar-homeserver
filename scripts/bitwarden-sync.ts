@@ -401,6 +401,8 @@ async function main() {
         await editItemWithRetry(DST_DIR, existingDstItem.id, dstSession, b64Data);
         adoptedCount++;
       }
+      // Reserve the adopted destination before matching the next source item.
+      existingDstItem.fields = preparedItem.fields;
     }
   }
 
