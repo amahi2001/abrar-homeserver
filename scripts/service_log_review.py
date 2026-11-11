@@ -12,8 +12,9 @@ import subprocess
 
 ROOT = Path("/var/lib/hermes/.hermes/cron/service-log-review")
 SUDO = "/run/wrappers/bin/sudo"
+SYSTEM = "/run/current-system/sw/bin/"
 WARNING = re.compile(r"\b(warn(?:ing)?|wrn|err(?:or)?|fatal|exception|traceback|failed|failure)\b", re.I)
-USER_BUS = [SUDO, "-n", "-u", "buildfleet", "env", "XDG_RUNTIME_DIR=/run/user/1000",
+USER_BUS = [SUDO, "-n", "-u", "buildfleet", SYSTEM + "env", "XDG_RUNTIME_DIR=/run/user/1000",
             "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus"]
 
 
@@ -103,30 +104,30 @@ def main():
     with (ROOT / "events.jsonl.tmp").open("w") as events:
         collector = Collector(events)
         inventory = collector.command(
-            SUDO, "-n", "systemd-run", "--wait", "--pipe", "--collect", "--uid=buildfleet", "--",
-            "/run/current-system/sw/bin/nix", "eval", "--json", "--no-write-lock-file",
+            SUDO, "-n", SYSTEM + "systemd-run", "--wait", "--pipe", "--collect", "--uid=buildfleet", "--",
+            SYSTEM + "nix", "eval", "--json", "--no-write-lock-file",
             "/etc/nixos#nixosConfigurations.buildfleet-server.config.systemd.services", "--apply",
             "services: builtins.filter (name: (builtins.getAttr name services).enable) (builtins.attrNames services)",
         )
         names = json.loads(inventory) if inventory else []
         names = [name + ".service" for name in names if not name.endswith("@")]
         fields = "Id,LoadState,ActiveState,SubState,Result,ExecMainStatus,ExecMainExitTimestamp"
-        system = properties(collector.command("systemctl", "show", "--no-pager", "--property=" + fields, *names)) if names else []
-        user_names = collector.command(*USER_BUS, "systemctl", "--user", "list-unit-files",
+        system = properties(collector.command(SYSTEM + "systemctl", "show", "--no-pager", "--property=" + fields, *names)) if names else []
+        user_names = collector.command(*USER_BUS, SYSTEM + "systemctl", "--user", "list-unit-files",
                                        "--type=service", "--no-legend", "--no-pager")
         user_names = [line.split()[0] for line in user_names.splitlines()
                       if line.split() and "@" not in line.split()[0]]
-        user = properties(collector.command(*USER_BUS, "systemctl", "--user", "show", "--no-pager",
+        user = properties(collector.command(*USER_BUS, SYSTEM + "systemctl", "--user", "show", "--no-pager",
                                            "--property=" + fields, *user_names)) if user_names else []
-        collector.scan_journal([SUDO, "-n", "journalctl", "--since", start.isoformat(),
+        collector.scan_journal([SUDO, "-n", SYSTEM + "journalctl", "--since", start.isoformat(),
                                 "--until", end.isoformat(), "--no-pager", "-o", "json"])
-        containers = collector.command(SUDO, "-n", "docker", "ps", "-a", "--format", "{{.Names}}")
+        containers = collector.command(SUDO, "-n", SYSTEM + "docker", "ps", "-a", "--format", "{{.Names}}")
         for name in containers.splitlines():
             # Docker emits application stderr on stderr even with exit 0.
             source = "container:" + name
             collector.counts[source]  # Keep silent containers in the coverage inventory.
             with (ROOT / "container-stderr.tmp").open("w+", errors="replace") as error:
-                with subprocess.Popen([SUDO, "-n", "docker", "logs", "--timestamps", "--since",
+                with subprocess.Popen([SUDO, "-n", SYSTEM + "docker", "logs", "--timestamps", "--since",
                                        start.isoformat(), "--until", end.isoformat(), name],
                                       stdout=subprocess.PIPE, stderr=error, text=True, errors="replace") as process:
                     for line in process.stdout:
