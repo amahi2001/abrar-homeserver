@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import re
 import subprocess
+import tempfile
 
 
 ROOT = Path("/var/lib/hermes/.hermes/cron/service-log-review")
@@ -101,7 +102,8 @@ def main():
     ROOT.mkdir(parents=True, exist_ok=True)
     end = datetime.now(timezone.utc)
     start = end - timedelta(hours=24)
-    with (ROOT / "events.jsonl.tmp").open("w") as events:
+    directory = Path(tempfile.mkdtemp(prefix=end.strftime("%Y%m%dT%H%M%SZ-"), dir=ROOT))
+    with (directory / "events.jsonl.tmp").open("w") as events:
         collector = Collector(events)
         inventory = collector.command(
             SUDO, "-n", SYSTEM + "systemd-run", "--wait", "--pipe", "--collect", "--uid=buildfleet", "--",
@@ -126,7 +128,7 @@ def main():
             # Docker emits application stderr on stderr even with exit 0.
             source = "container:" + name
             collector.counts[source]  # Keep silent containers in the coverage inventory.
-            with (ROOT / "container-stderr.tmp").open("w+", errors="replace") as error:
+            with (directory / "container-stderr.tmp").open("w+", errors="replace") as error:
                 with subprocess.Popen([SUDO, "-n", SYSTEM + "docker", "logs", "--timestamps", "--since",
                                        start.isoformat(), "--until", end.isoformat(), name],
                                       stdout=subprocess.PIPE, stderr=error, text=True, errors="replace") as process:
@@ -139,7 +141,7 @@ def main():
                         collector.gaps.append({"source": source, "error": redact(line)[:500]})
                     else:
                         collector.record(source, line.rstrip())
-        (ROOT / "container-stderr.tmp").unlink(missing_ok=True)
+        (directory / "container-stderr.tmp").unlink(missing_ok=True)
         units = []
         for scope, rows in (("system", system), ("user:1000", user)):
             for row in rows:
@@ -149,13 +151,13 @@ def main():
                    "configured_units": units, "log_counts": dict(collector.counts),
                    "coverage_gaps": collector.gaps,
                    "remaining_work": "Discover and inspect configured application log files; investigate flagged events. Counts do not establish application health.",
-                   "events_file": str(ROOT / "events.jsonl")}
-    (ROOT / "events.jsonl.tmp").replace(ROOT / "events.jsonl")
-    (ROOT / "summary.json.tmp").write_text(json.dumps(summary, indent=2) + "\n")
-    (ROOT / "summary.json.tmp").replace(ROOT / "summary.json")
+                   "events_file": str(directory / "events.jsonl")}
+    (directory / "events.jsonl.tmp").replace(directory / "events.jsonl")
+    (directory / "summary.json.tmp").write_text(json.dumps(summary, indent=2) + "\n")
+    (directory / "summary.json.tmp").replace(directory / "summary.json")
     configured = {row["source"] for row in units}
     print(json.dumps({
-        "summary_file": str(ROOT / "summary.json"), "events_file": summary["events_file"],
+        "summary_file": str(directory / "summary.json"), "events_file": summary["events_file"],
         "window": summary["window"],
         "unit_columns": ["source", "state", "result", "last_exit", "entries", "flagged"],
         "units": [[row["source"], row.get("ActiveState"), row.get("Result"), row.get("ExecMainStatus"),
@@ -166,6 +168,7 @@ def main():
                        if source.startswith("container:")},
         "coverage_gaps": collector.gaps, "remaining_work": summary["remaining_work"],
     }))
+    return summary
 
 
 if __name__ == "__main__":

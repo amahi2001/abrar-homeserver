@@ -2,15 +2,50 @@
 
 import io
 import json
+import os
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 import sys
+import tempfile
+import threading
 import unittest
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).parent))
 import service_log_review as review
 
 
 class ReviewTests(unittest.TestCase):
+    def test_overlapping_runs_keep_matched_independent_evidence(self):
+        barrier = threading.Barrier(2)
+        previous_mask = os.umask(0o077)
+        self.addCleanup(os.umask, previous_mask)
+
+        def command(_collector, *args):
+            if review.SYSTEM + 'nix' in args:
+                return '["sample"]'
+            if 'show' in args:
+                return 'Id=sample.service\nActiveState=active\nResult=success\nExecMainStatus=0\n'
+            return ''
+
+        def journal(collector, _args):
+            barrier.wait(timeout=10)
+            collector.record('system:sample.service', 'error: fixture')
+
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(review, 'ROOT', Path(directory)), \
+                patch.object(review.Collector, 'command', command), \
+                patch.object(review.Collector, 'scan_journal', journal), \
+                patch('builtins.print'):
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                results = list(pool.map(lambda _: review.main(), range(2)))
+            self.assertNotEqual(results[0]['events_file'], results[1]['events_file'])
+            for result in results:
+                events = Path(result['events_file'])
+                self.assertEqual(len(events.read_text().splitlines()), 1)
+                stored = json.loads((events.parent / 'summary.json').read_text())
+                self.assertEqual(stored['log_counts']['system:sample.service']['flagged'], 1)
+
     def test_application_warnings_and_structured_errors_at_info_priority(self):
         for message in ('[WRN] query slow', '[Error] RPC failed',
                         '{"level":2,"message":"preview missing"}'):
