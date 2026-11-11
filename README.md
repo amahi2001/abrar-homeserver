@@ -15,6 +15,7 @@ root is the live flake: `/etc/nixos#buildfleet-server`.
 | Jellyfin | Movies and TV playback | Public HTTPS `jellyfin.amahi.dev`; LAN and Tailscale `:8096` |
 | AdGuard Home | Network DNS filtering and admin UI | DNS `:53`, LAN UI `:8080` |
 | Gluetun + Transmission | VPN-isolated downloads with a fail-closed network namespace | RPC on server loopback `:9091` |
+| YouTube Queue | Telegram video search, confirmed playlists, and Jellyfin publishing | Direct internet egress; no inbound port |
 | Prowlarr | Search/indexer aggregation for Hermes | Tailscale `:9696` |
 | Sonarr / Radarr | On-demand TV/movie organization | Tailscale `:8989` / `:7878` while running |
 | Samba + WSD | Read-only media and writable inbox shares | Home Wi-Fi and Tailscale `:445` |
@@ -44,6 +45,16 @@ Sonarr and Radarr are stopped while idle. Hermes starts them only for explicit
 library-management work, imports with verified hard links so Transmission can
 continue seeding, and stops them afterward.
 
+Send YouTube links to the existing Hermes Telegram chat to queue them directly,
+or describe a video and select a numbered search result. Playlists require a
+preview and confirmation. Downloads default to 1080p and appear in Jellyfin's
+**YouTube** library after indexing, with local titles, descriptions and artwork.
+`sudo youtube-queue status` shows progress; `health` verifies yt-dlp and Jellyfin
+access. A five-minute Hermes no-agent watcher reports changed outcomes.
+Queue state lives in `/var/lib/youtube-queue`; the root-only Jellyfin API key is
+`/var/lib/secrets/youtube-jellyfin-api-key`. Completed videos live under
+`/srv/data/media/library/youtube`, with partial files outside the published tree.
+
 ## Agent development environments
 
 Use `dev start <project>` to launch Codex inside a persistent Linux container,
@@ -63,12 +74,14 @@ portable Codex/Claude settings are synced from the separate private
 ├── desktop.nix                  # Headless default, XFCE, NVIDIA, Bluetooth
 ├── containers.nix               # Docker and guarded AdGuard updates
 ├── files.nix                    # Nextcloud, Samba, Gluetun, Transmission
+├── youtube.nix                  # Direct YouTube queue and background worker
 ├── servarr.nix                  # Prowlarr, FlareSolverr, Sonarr, Radarr
 ├── hermes.nix                   # Hermes agent, dashboard, tools, and skills
 ├── tailscale.nix                # Tailnet and exit-node configuration
 ├── update.nix                   # Guarded flake updates, upgrade, GC
 ├── web.nix                      # DuckDNS, ACME, Nginx, Vaultwarden
 ├── skills/media-queue/          # Hermes media search/queue/library workflow
+├── skills/youtube-queue/        # YouTube CLI, Hermes skill, and regression tests
 ├── scripts/                     # Operational helpers
 └── secrets/example/             # Safe templates only
 ```

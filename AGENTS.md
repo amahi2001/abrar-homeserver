@@ -203,11 +203,11 @@ together. Both sets of links are managed by `tmpfiles.rules` in `hermes.nix`.
 
 ### Models (in hermes.nix)
 - Main: `gpt-6.1-terra` via `openai-codex` provider
-- Compression: `deepseek-v4-pro` via `opencode-go` provider
+- Compression and session titles: follow the main chat model/provider
 - Main provider base URL: `https://chatgpt.com/backend-api/codex`
 
 ### Packages (in configuration.nix)
-- `bun` 1.4.3 — pinned upstream stable runtime for scripts and MCP servers;
+- `bun` 1.4.4 — pinned upstream stable runtime for scripts and MCP servers;
   includes `bunx` (`bunx --bun <package>` forces the Bun runtime)
 - Deno and the `dx` wrapper have been removed. The vault sync uses Bun and
   standard Node APIs; its fake-CLI regression tests run in `nix flake check`.

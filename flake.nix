@@ -98,6 +98,14 @@
               bun test --timeout 30000 ${./development}/dev.test.ts
               touch "$out"
             '';
+        youtube-queue =
+          buildfleet-server.pkgs.runCommand "youtube-queue-tests"
+            { nativeBuildInputs = [ buildfleet-server.pkgs.python3 ]; }
+            ''
+              export PYTHONDONTWRITEBYTECODE=1
+              python -m unittest discover -s ${./skills/youtube-queue}/tests -v
+              touch "$out"
+            '';
         bitwarden-sync =
           buildfleet-server.pkgs.runCommand "bitwarden-sync-tests"
             {
