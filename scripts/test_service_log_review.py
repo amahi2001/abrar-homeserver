@@ -16,6 +16,27 @@ import service_log_review as review
 
 
 class ReviewTests(unittest.TestCase):
+    def test_inventory_includes_package_provided_service_units(self):
+        def command(_collector, *args):
+            if review.SYSTEM + 'nix' in args:
+                return '["custom"]'
+            if 'list-unit-files' in args and '--user' not in args:
+                return 'cockpit.service static -\n'
+            if 'show' in args:
+                return '\n\n'.join('Id=' + name + '\nActiveState=inactive'
+                                    for name in args if name.endswith('.service'))
+            return ''
+
+        previous_mask = os.umask(0o077)
+        self.addCleanup(os.umask, previous_mask)
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(review, 'ROOT', Path(directory)), \
+                patch.object(review.Collector, 'command', command), \
+                patch.object(review.Collector, 'scan_journal'), patch('builtins.print'):
+            result = review.main()
+        self.assertEqual({row['source'] for row in result['configured_units']},
+                         {'system:custom.service', 'system:cockpit.service'})
+
     def test_overlapping_runs_keep_matched_independent_evidence(self):
         barrier = threading.Barrier(2)
         previous_mask = os.umask(0o077)

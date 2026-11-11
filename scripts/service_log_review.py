@@ -113,6 +113,11 @@ def main():
         )
         names = json.loads(inventory) if inventory else []
         names = [name + ".service" for name in names if not name.endswith("@")]
+        # Modules can install vendor units through systemd.packages (e.g. Cockpit).
+        packaged = collector.command(SYSTEM + "systemctl", "list-unit-files", "--type=service",
+                                     "--no-legend", "--no-pager")
+        names = sorted(set(names) | {line.split()[0] for line in packaged.splitlines()
+                                    if line.split() and not line.split()[0].endswith('@.service')})
         fields = "Id,LoadState,ActiveState,SubState,Result,ExecMainStatus,ExecMainExitTimestamp"
         system = properties(collector.command(SYSTEM + "systemctl", "show", "--no-pager", "--property=" + fields, *names)) if names else []
         user_names = collector.command(*USER_BUS, SYSTEM + "systemctl", "--user", "list-unit-files",
