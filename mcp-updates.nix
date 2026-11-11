@@ -42,11 +42,8 @@ in
       UMask = "0077";
       TimeoutStartSec = "30min";
       TimeoutStopSec = "5min";
-      # Busy gateways defer safely; package/validation errors remain failures.
-      Restart = "on-failure";
-      RestartMode = "direct";
-      RestartSec = "15min";
-      RestartPreventExitStatus = [ 1 ];
+      # A busy gateway is a successful deferral, not a failed deployment.
+      SuccessExitStatus = [ 75 ];
       Nice = 10;
     };
   };
@@ -56,6 +53,23 @@ in
       OnCalendar = "Tue *-*-* 05:00:00 America/New_York";
       Persistent = true;
       RandomizedDelaySec = "15min";
+    };
+  };
+  systemd.services.hermes-mcp-retry = {
+    description = "Retry MCP maintenance deferred by active Hermes work";
+    serviceConfig.Type = "oneshot";
+    script = ''
+      if [ "$(${pkgs.systemd}/bin/systemctl show --property=ActiveState --value hermes-mcp-update.service)" = inactive ] &&
+         [ "$(${pkgs.systemd}/bin/systemctl show --property=ExecMainStatus --value hermes-mcp-update.service)" = 75 ]; then
+        ${pkgs.systemd}/bin/systemctl start --no-block hermes-mcp-update.service
+      fi
+    '';
+  };
+  systemd.timers.hermes-mcp-retry = {
+    wantedBy = [ "timers.target" ];
+    timerConfig = {
+      OnBootSec = "15min";
+      OnUnitInactiveSec = "15min";
     };
   };
 }
