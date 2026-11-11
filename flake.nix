@@ -71,6 +71,7 @@
             ''
               export PYTHONDONTWRITEBYTECODE=1
               python -m unittest discover -s ${./scripts} -p 'test_*.py' -v
+              python -m unittest discover -s ${./shopping-research-mcp} -p 'test_*.py' -v
               touch "$out"
             '';
         github-actions =
