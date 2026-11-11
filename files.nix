@@ -375,6 +375,8 @@ in
     https = true;
     datadir = "/srv/data/nextcloud";
     maxUploadSize = "20G";
+    # Allow large uploads to finish assembling before Nginx times out.
+    fastcgiTimeout = 3600;
     database.createLocally = true;
     configureRedis = true;
     config = {

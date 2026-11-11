@@ -5,6 +5,10 @@ description: Search configured Prowlarr indexers, apply the owner's release pref
 
 # Media Queue
 
+For YouTube links, YouTube video searches, or YouTube playlist downloads, use
+the `youtube-queue` skill and CLI. Its dedicated Jellyfin library does not use
+Transmission, Sonarr or Radarr. This skill continues to handle media releases.
+
 Use `sudo media-queue` for every search, queue, and status operation. It is
 the only supported automation path: it checks VPN isolation before queueing and
 saves completed items to the manual media library.

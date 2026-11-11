@@ -241,17 +241,17 @@ in
       compression = {
         enabled = true;
         threshold = 0.85;
-        summary_model = "deepseek-v4-pro";
       };
       auxiliary = {
+        # Follow the active chat provider so side tasks use its credentials.
         compression = {
-          provider = "opencode-go";
-          model = "deepseek-v4-pro";
+          provider = "main";
+          model = "";
           timeout = 120;
         };
         title_generation = {
-          provider = "opencode-go";
-          model = "deepseek-v4-pro";
+          provider = "main";
+          model = "";
           timeout = 60;
         };
       };
