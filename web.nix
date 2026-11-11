@@ -234,9 +234,9 @@ in
     };
   };
 
-  # Bitwarden to Vaultwarden synchronization service and timer
+  # Vaultwarden to Bitwarden synchronization service and timer
   systemd.services.bitwarden-sync = {
-    description = "Bitwarden to Vaultwarden synchronization service";
+    description = "Vaultwarden to Bitwarden synchronization service";
     path = with pkgs; [
       bitwarden-cli
       bun
@@ -250,7 +250,7 @@ in
   };
 
   systemd.timers.bitwarden-sync = {
-    description = "Daily timer for Bitwarden to Vaultwarden synchronization";
+    description = "Daily timer for Vaultwarden to Bitwarden synchronization";
     wantedBy = [ "timers.target" ];
     timerConfig = {
       OnCalendar = "*-*-* 01:00:00 America/New_York";
