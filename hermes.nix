@@ -431,7 +431,6 @@ in
     "C+ /var/lib/hermes/.hermes/scripts/media-queue-watch.sh 0755 hermes hermes - /etc/nixos/skills/media-queue/scripts/media-queue-watch.sh"
     "C+ /var/lib/hermes/.hermes/scripts/media-availability-buddy.sh 0755 hermes hermes - /etc/nixos/skills/media-queue/scripts/media-availability-buddy.sh"
     "C+ /var/lib/hermes/.hermes/scripts/morning_brew_daily.py 0750 hermes hermes - /etc/nixos/scripts/morning_brew_daily.py"
-    "C+ /var/lib/hermes/.hermes/scripts/service_log_review.py 0750 hermes hermes - ${./scripts/service_log_review.py}"
     "z /var/lib/hermes/.hermes/.env 0640 hermes hermes -" # Secrets readable only by Hermes
     "z /var/lib/hermes/.hermes/config.yaml 0644 hermes hermes -" # Config readable by group
     "d /var/lib/hermes/.config/warden-mcp-bw-profiles 0755 hermes hermes -"
@@ -475,5 +474,6 @@ in
     "z /var/lib/hermes/.hermes/skills/devops/nixos-hermes-setup/SKILL.md 0644 hermes hermes -"
     "z /var/lib/hermes/.hermes/skills/devops/nixos-hermes-setup/references/* 0644 hermes hermes -"
     "z /var/lib/hermes/.hermes/skills/devops/nixos-hermes-setup/templates/* 0755 hermes hermes -"
+    "C+ /var/lib/hermes/.hermes/scripts/service_log_review.py 0750 hermes hermes - ${./scripts/service_log_review.py}"
   ];
 }
