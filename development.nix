@@ -36,10 +36,10 @@ in
       pkgs.docker
       pkgs.util-linux
     ];
-    environment.HOME = "/home/buildfleet";
+    environment.HOME = "/home/amahi";
     serviceConfig = {
       Type = "oneshot";
-      User = "buildfleet";
+      User = "amahi";
       Group = "users";
       ExecStart = "${pkgs.python3}/bin/python -P ${./scripts/dev_runtime_maintenance.py} --dev ${dev}/bin/dev";
       StateDirectory = "dev-runtime-maintenance";

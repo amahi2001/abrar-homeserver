@@ -51,6 +51,7 @@
       # `nixos-rebuild` deploys, rather than merely checking flake syntax.
       checks.${system} = {
         nixos = buildfleet-server.config.system.build.toplevel;
+        account-rename = buildfleet-server.pkgs.testers.runNixOSTest (import ./tests/account-rename.nix);
         media-queue =
           buildfleet-server.pkgs.runCommand "media-queue-tests"
             { nativeBuildInputs = [ buildfleet-server.pkgs.python3 ]; }

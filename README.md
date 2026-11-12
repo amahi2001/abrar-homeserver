@@ -3,6 +3,11 @@
 Declarative NixOS configuration for the BuildFleet home server. The repository
 root is the live flake: `/etc/nixos#buildfleet-server`.
 
+The host login is `amahi` (UID 1000), with home `/home/amahi` and the original
+groups and credentials. `/home/buildfleet` remains a compatibility symlink for
+saved project and chat paths. See [ACCOUNT_RENAME.md](ACCOUNT_RENAME.md) for the
+controlled cutover, verification, and rollback procedure.
+
 ## Services
 
 | Service | Purpose | Exposure |
@@ -29,7 +34,7 @@ domains. Update Nextcloud and password-manager clients to use the new HTTPS
 URLs directly. The old Jellyfin hostname remains a compatibility alias; new
 clients should use `https://jellyfin.amahi.dev`.
 
-SSH uses `ssh buildfleet@ssh.amahi.dev` as the primary address. Its Cloudflare
+SSH uses `ssh amahi@ssh.amahi.dev` as the primary address. Its Cloudflare
 DNS-only A record is updated independently by `services.ddclient` every five
 minutes using public IPv4 discovery through ipify. The API token lives outside
 Git and the Nix store at `/var/lib/secrets/cloudflare-ddns-token` (root-owned,
@@ -38,10 +43,10 @@ The NixOS module inserts it into a private runtime configuration. Keep the recor
 DNS-only: the standard Cloudflare proxy does not forward SSH.
 
 If Cloudflare DNS is unavailable, manually connect with
-`ssh buildfleet@buildfleet.duckdns.org`. The existing DuckDNS updater continues
+`ssh amahi@buildfleet.duckdns.org`. The existing DuckDNS updater continues
 running independently every five minutes. Both addresses use the router's TCP
 22 forwarding to `192.168.1.89`; neither can bypass a home internet or server
-outage. Tailscale also provides `ssh buildfleet@100.91.234.17` from a tailnet
+outage. Tailscale also provides `ssh amahi@100.91.234.17` from a tailnet
 client. Check updater health with `systemctl status ddclient.timer duckdns.timer`
 and `journalctl -u ddclient -u duckdns`. To revert the Cloudflare migration, change
 `ssh.amahi.dev` back to a DNS-only CNAME to `buildfleet.duckdns.org` and disable
