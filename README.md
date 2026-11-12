@@ -29,6 +29,24 @@ domains. Update Nextcloud and password-manager clients to use the new HTTPS
 URLs directly. The old Jellyfin hostname remains a compatibility alias; new
 clients should use `https://jellyfin.amahi.dev`.
 
+SSH uses `ssh buildfleet@ssh.amahi.dev` as the primary address. Its Cloudflare
+DNS-only A record is updated independently by `services.ddclient` every five
+minutes using public IPv4 discovery through ipify. The API token lives outside
+Git and the Nix store at `/var/lib/secrets/cloudflare-ddns-token` (root-owned,
+mode `0600`), with **Zone:DNS:Edit** and **Zone:Zone:Read** scoped to `amahi.dev`.
+The NixOS module inserts it into a private runtime configuration. Keep the record
+DNS-only: the standard Cloudflare proxy does not forward SSH.
+
+If Cloudflare DNS is unavailable, manually connect with
+`ssh buildfleet@buildfleet.duckdns.org`. The existing DuckDNS updater continues
+running independently every five minutes. Both addresses use the router's TCP
+22 forwarding to `192.168.1.89`; neither can bypass a home internet or server
+outage. Tailscale also provides `ssh buildfleet@100.91.234.17` from a tailnet
+client. Check updater health with `systemctl status ddclient.timer duckdns.timer`
+and `journalctl -u ddclient -u duckdns`. To revert the Cloudflare migration, change
+`ssh.amahi.dev` back to a DNS-only CNAME to `buildfleet.duckdns.org` and disable
+`services.ddclient`; keep DuckDNS enabled.
+
 Jellyfin's runtime network settings in `/var/lib/jellyfin/config/network.xml`
 trust `127.0.0.1` as the Nginx proxy and publish the server URL from each
 request. This lets remote clients receive the public HTTPS URL while LAN and

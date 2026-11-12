@@ -1,4 +1,4 @@
-# Public-facing web stack: ACME, Nginx, DuckDNS
+# Public-facing web stack: ACME, Nginx, Cloudflare DDNS, DuckDNS
 {
   config,
   pkgs,
@@ -37,6 +37,20 @@ let
 in
 {
   environment.systemPackages = [ hermesWebuiStart ];
+
+  # Update SSH directly in Cloudflare; DuckDNS remains an independent fallback.
+  services.ddclient = {
+    enable = true;
+    protocol = "cloudflare";
+    username = "token";
+    zone = "amahi.dev";
+    domains = [ "ssh.amahi.dev" ];
+    passwordFile = "/var/lib/secrets/cloudflare-ddns-token";
+    interval = "5min";
+    usev4 = "webv4, webv4=ipify-ipv4";
+    usev6 = "";
+    extraConfig = "ttl=300";
+  };
 
   # DuckDNS dynamic DNS
   services.duckdns = {
