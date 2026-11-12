@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import subprocess
 import tempfile
 import unittest
 
@@ -124,6 +125,25 @@ class DevelopmentRenameTests(unittest.TestCase):
 
     def capture(self):
         return migration.capture(self.old, self.backup, run=self.fake_run)
+
+    def test_git_status_does_not_rewrite_the_users_index(self):
+        source = self.root / "repository"
+        subprocess.run(["git", "init", "--quiet", str(source)], check=True)
+        tracked = source / "tracked.txt"
+        tracked.write_text("unchanged content\n")
+        subprocess.run(["git", "-C", str(source), "add", "tracked.txt"], check=True)
+        index = source / ".git/index"
+        before = index.read_bytes(), index.stat().st_ino
+        info = tracked.stat()
+        os.utime(tracked, ns=(info.st_atime_ns, info.st_mtime_ns + 5_000_000_000))
+
+        def git(args):
+            return subprocess.check_output(
+                args, text=True, env={**os.environ, "GIT_OPTIONAL_LOCKS": "1"},
+            ).strip()
+
+        self.assertEqual(migration._git(git, source, "status", "--porcelain"), "A  tracked.txt")
+        self.assertEqual((index.read_bytes(), index.stat().st_ino), before)
 
     def move_and_migrate(self, manifest):
         for container in self.containers.values():

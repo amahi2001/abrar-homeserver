@@ -64,7 +64,8 @@ def mount_mappings(container):
 
 
 def _git(run, source, *args):
-    return run(["git", "-c", f"safe.directory={source}", "-C", str(source), *args])
+    # Root verification must not replace the user's index with a root-owned file.
+    return run(["git", "--no-optional-locks", "-c", f"safe.directory={source}", "-C", str(source), *args])
 
 
 def _snapshot(home, path, backup, snapshots):

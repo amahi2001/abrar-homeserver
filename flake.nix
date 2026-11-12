@@ -65,6 +65,7 @@
             {
               nativeBuildInputs = [
                 (buildfleet-server.pkgs.python3.withPackages (ps: [ ps.websocket-client ]))
+                buildfleet-server.pkgs.git
                 buildfleet-server.pkgs.rsync
                 buildfleet-server.pkgs.util-linux
               ];
