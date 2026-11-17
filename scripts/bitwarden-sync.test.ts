@@ -19,7 +19,7 @@ const dir = process.env.FAKE_BW_DIR;
 const fixture = JSON.parse(readFileSync(join(dir, "fixture.json"), "utf8"));
 const args = process.argv.slice(2);
 const side = basename(process.env.BITWARDENCLI_APPDATA_DIR);
-const call = { side, args, clientId: process.env.BW_CLIENTID };
+const call = { side, args, profile:process.env.BITWARDENCLI_APPDATA_DIR, clientId: process.env.BW_CLIENTID };
 if (args[0] === "create" || args[0] === "edit") {
   call.payload = JSON.parse(Buffer.from(readFileSync(0, "utf8").trim(), "base64").toString("utf8"));
 }
@@ -75,7 +75,7 @@ const tracked = (extra = {}) => ({ ...source(), id: "target-1", fields: [{ name:
 const mutations = (calls: any[]) => calls.filter(c => ["create", "edit", "delete"].includes(c.args[0]));
 
 test("unchanged items cause no writes; server setup and credentials retain their direction", async () => {
-  const result = await sync({ loggedOut: true, src: { items: [source()] }, dst: { items: [tracked()] } });
+  const result = await sync({ loggedOut: true, src: { items: [source()], folders: [{ id: "", name: "No Folder" }] }, dst: { items: [tracked()], folders: [{ id: null, name: "No Folder" }] } });
   expect(result.code, result.stderr).toBe(0);
   expect(mutations(result.calls)).toEqual([]);
   expect(result.stdout).toContain("0 created, 0 updated, 0 adopted, 0 deleted");
@@ -156,6 +156,8 @@ test("preview counts pending changes without vault writes or secret item names",
   const result=await sync({src:{items:[source({name:"fixture-sensitive"})]}},{preview:true});
   expect(result.code).toBe(0);expect(result.stdout).toContain("1 created");
   expect(result.stdout).not.toContain("fixture-sensitive");expect(mutations(result.calls)).toEqual([]);
+  expect(result.calls[0].profile).toContain("/bitwarden-preview-");
+
 });
 
 test("transient edit failure retries the same payload successfully", async () => {
@@ -194,4 +196,12 @@ test("missing bw executable exits cleanly with a useful error", async () => {
   expect(result.code).toBe(1);
   expect(result.stderr).toContain("ENOENT");
   expect(result.calls).toEqual([]);
+});
+
+test("unrelated duplicate cloud folders are harmless, referenced duplicates are ambiguous", async () => {
+  const dst={folders:[{id:"a",name:"Same"},{id:"b",name:"SAME"}]};
+  const ok=await sync({dst,src:{items:[source()]}});
+  expect(ok.code,ok.stderr).toBe(0);
+  const held=await sync({dst,src:{items:[source({folderId:"s"})],folders:[{id:"s",name:"Same"}]}});
+  expect(held.code).toBe(1);expect(mutations(held.calls)).toEqual([]);
 });

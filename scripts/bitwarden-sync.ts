@@ -1,7 +1,8 @@
 #!/usr/bin/env bun
 // Synchronize the owner's personal Vaultwarden items to Bitwarden.
 import { spawn } from "node:child_process";
-import { mkdir } from "node:fs/promises";
+import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 
@@ -58,13 +59,15 @@ const kinds: Record<number, string> = { 1: "login", 2: "secureNote", 3: "card", 
 function inventory(raw: string, folders = false): Entry[] {
   const entries: unknown = JSON.parse(raw);
   requireState(Array.isArray(entries), "Invalid vault inventory");
+  // bw list folders includes a synthetic "No Folder" entry with an empty ID.
+  const real = folders ? entries.filter(e => !(e?.name === "No Folder" && (e.id === "" || e.id === null))) : entries;
   const ids = new Set<string>();
-  for (const e of entries) {
+  for (const e of real) {
     requireState(e && typeof e.id === "string" && e.id && !ids.has(e.id) && typeof e.name === "string" &&
-      (folders || Number.isInteger(e.type) && (e.fields == null || Array.isArray(e.fields))), "Invalid or duplicate inventory entry");
+      (folders || !e.decryptionFailure && Number.isInteger(e.type) && (e.fields == null || Array.isArray(e.fields))), "Invalid or duplicate inventory entry");
     ids.add(e.id);
   }
-  return entries;
+  return real;
 }
 function supported(e: Entry): boolean {
   // Cross-account copies of attachments, passkeys and SSH keys need a verified round trip.
@@ -84,16 +87,16 @@ function comparable(payload: Entry) {
 function key(e: Entry) { return JSON.stringify([e.type, e.name, e.type === 1 ? e.login?.username || "" : ""]); }
 function plan(src: Entry[], dst: Entry[], srcFolders: Entry[], dstFolders: Entry[]) {
   const folders = new Map<string, string>();
-  const targetNames = new Map<string, string>();
+  const targetNames = new Map<string, string | null>();
   for (const folder of dstFolders) {
     const name = folder.name.toLowerCase();
-    requireState(!targetNames.has(name), "Ambiguous destination folder");
-    targetNames.set(name, folder.id);
+    targetNames.set(name, targetNames.has(name) ? null : folder.id);
   }
   const folderCreates = new Map<string, string>();
   for (const folder of srcFolders) {
     const name = folder.name.toLowerCase();
     const target = targetNames.get(name);
+    requireState(target !== null, "Ambiguous destination folder");
     if (target) folders.set(folder.id, target);
     else folderCreates.set(folder.id, folder.name);
   }
@@ -148,17 +151,28 @@ function plan(src: Entry[], dst: Entry[], srcFolders: Entry[], dstFolders: Entry
 async function main() {
   const args = process.argv.slice(2);
   requireState(args.length === 0 || args.length === 1 && args[0] === "--preview", "Usage: bitwarden-sync [--preview]");
-  const { BW_CLIENTID, BW_CLIENTSECRET, BW_PASSWORD, VW_CLIENTID, VW_CLIENTSECRET, VW_EMAIL, VW_PASSWORD, VW_SERVER_URL } = process.env;
+  const { BW_CLIENTID, BW_CLIENTSECRET, BW_PASSWORD, VW_CLIENTID, VW_CLIENTSECRET, VW_EMAIL, VW_PASSWORD } = process.env;
   requireState(BW_CLIENTID && BW_CLIENTSECRET && BW_PASSWORD && VW_PASSWORD && ((VW_CLIENTID && VW_CLIENTSECRET) || VW_EMAIL), "Missing required environment variables");
-  const source = await openVault(join(state, "src"), VW_SERVER_URL || "https://vault.amahi.dev", "VW_PASSWORD", VW_CLIENTID, VW_CLIENTSECRET, VW_EMAIL);
-  const dest = await openVault(join(state, "dst"), "https://bitwarden.com", "BW_PASSWORD", BW_CLIENTID, BW_CLIENTSECRET);
+  const preview = args.length === 1;
+  const profile = preview ? await mkdtemp(join(tmpdir(), "bitwarden-preview-")) : state;
+  try {
+    await synchronize(profile, preview);
+  } finally {
+    if (preview) await rm(profile, { recursive: true, force: true });
+  }
+}
+
+async function synchronize(profile: string, preview: boolean) {
+  const { BW_CLIENTID, BW_CLIENTSECRET, VW_CLIENTID, VW_CLIENTSECRET, VW_EMAIL, VW_SERVER_URL } = process.env;
+  const source = await openVault(join(profile, "src"), VW_SERVER_URL || "https://vault.amahi.dev", "VW_PASSWORD", VW_CLIENTID, VW_CLIENTSECRET, VW_EMAIL);
+  const dest = await openVault(join(profile, "dst"), "https://bitwarden.com", "BW_PASSWORD", BW_CLIENTID, BW_CLIENTSECRET);
   const changes = plan(inventory(await source(["list", "items"])), inventory(await dest(["list", "items"])),
     inventory(await source(["list", "folders"]), true), inventory(await dest(["list", "folders"]), true));
   const created = changes.writes.filter(w => !w.target).length;
   const adopted = changes.writes.filter(w => w.adopted).length;
   console.log(`Plan: ${created} created, ${changes.writes.length-created-adopted} updated, ${adopted} adopted, ${changes.deletes.length} deleted, ${changes.folderCreates.size} source folders to map, ${changes.skipped} skipped.`);
   requireState(!changes.blocked, "Deletion guard held the entire sync; reconcile source and destination before retrying");
-  if (args.length) return;
+  if (preview) return;
   const createdFolders = new Map<string, string>();
   for (const [id, name] of changes.folderCreates) {
     const k = name.toLowerCase();
