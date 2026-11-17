@@ -86,8 +86,12 @@ class WeeklyBackupTests(unittest.TestCase):
                 previous.append(path)
 
             def fake_cli(args, **kwargs):
+                if args[1] == "ps":
+                    return SimpleNamespace(stdout="")
                 if "images" in args:
                     return SimpleNamespace(stdout="a" * 64)
+                # A failed weekly copy can fill the disk. Free it before new writes.
+                self.assertFalse((weekly / ".20261111T000000Z.incomplete").exists())
                 destination = output_dir(args)
                 destination.mkdir()
                 for name in ("shopping.sqlite", "auth.sqlite"):

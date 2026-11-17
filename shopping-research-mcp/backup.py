@@ -41,7 +41,7 @@ def locked(path):
 def clean_abandoned(root, run):
     abandoned = []
     legacy_count = 0
-    for kind in ("daily", "pre-upgrade"):
+    for kind in ("daily", "pre-upgrade", "weekly"):
         directory = root / kind
         if directory.is_symlink():
             raise RuntimeError(f"Refusing linked {kind} backup directory")
@@ -109,11 +109,6 @@ def backup(kind, *, state=STATE, now=None, run=subprocess.run):
         if kind == "daily":
             weekly = root / "weekly"
             weekly.mkdir(exist_ok=True, mode=0o750)
-            # The backup lock guarantees these staging copies have no active writer.
-            for entry in weekly.iterdir():
-                if (STAGING.fullmatch(entry.name)
-                        and entry.is_dir() and not entry.is_symlink()):
-                    shutil.rmtree(entry)
             week = now.strftime("%G-W%V")
             if not any((entry / "week").is_file() and (entry / "week").read_text() == week
                        for entry in weekly.iterdir() if entry.is_dir() and not entry.is_symlink()
