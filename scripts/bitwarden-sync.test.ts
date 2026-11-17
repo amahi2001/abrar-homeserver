@@ -5,7 +5,7 @@ import { join } from "node:path";
 
 // Every child gets only synthetic credentials, a temporary profile directory,
 // and a PATH containing this fake bw. These tests cannot invoke the real CLI.
-async function sync(fixture: Record<string, any>, options: { missingCredentials?: boolean; missingBw?: boolean } = {}) {
+async function sync(fixture: Record<string, any>, options: { missingCredentials?: boolean; missingBw?: boolean; preview?: boolean } = {}) {
   const dir = await mkdtemp(join(tmpdir(), "bitwarden-sync-test-"));
   try {
     const bin = join(dir, "bin");
@@ -30,7 +30,8 @@ if (args[0] === "edit" && fixture.editError) {
   writeFileSync(counter, String(attempt));
   if (attempt <= (fixture.editFailures ?? 1)) { console.error(fixture.editError); process.exit(1); }
 }
-if (args[0] === "unlock") console.log('export BW_SESSION="fake-' + side + '-session"');
+if (args[0] === "unlock") console.log("fake-" + side + "-session");
+else if (args[0] === "status") console.log(JSON.stringify({status:"unlocked",serverUrl:side==="src"?"https://vault.invalid":null,userId:fixture.wrongAccount?"other":side}));
 else if (args[0] === "list") {
   if (fixture.invalidJson) console.log("invalid json");
   else console.log(JSON.stringify(fixture[side]?.[args[1]] ?? []));
@@ -45,10 +46,10 @@ else if (args[0] === "logout" && fixture.loggedOut) { console.error("already log
       TMPDIR: dir,
       BITWARDEN_SYNC_STATE_DIR: join(dir, "profiles"),
       FAKE_BW_DIR: dir,
-      BW_CLIENTID: "fake-cloud-client",
+      BW_CLIENTID: "user.dst",
       BW_CLIENTSECRET: "fake-cloud-secret",
       BW_PASSWORD: "fake-cloud-password",
-      VW_CLIENTID: "fake-vault-client",
+      VW_CLIENTID: "user.src",
       VW_CLIENTSECRET: "fake-vault-secret",
       VW_PASSWORD: "fake-vault-password",
       VW_SERVER_URL: "https://vault.invalid",
@@ -56,7 +57,7 @@ else if (args[0] === "logout" && fixture.loggedOut) { console.error("already log
     if (options.missingCredentials) delete env.BW_PASSWORD;
     const runtime = process.env.SYNC_TEST_RUNTIME || process.execPath;
     const script = process.env.SYNC_TEST_SCRIPT || join(import.meta.dir, "bitwarden-sync.ts");
-    const child = Bun.spawn([runtime, ...(process.env.SYNC_TEST_RUNTIME_ARGS?.split(" ") || ["run"]), script], {
+    const child = Bun.spawn([runtime, ...(process.env.SYNC_TEST_RUNTIME_ARGS?.split(" ") || ["run"]), script, ...(options.preview ? ["--preview"] : [])], {
       env, stdout: "pipe", stderr: "pipe",
     });
     const [stdout, stderr, code] = await Promise.all([
@@ -82,7 +83,7 @@ test("unchanged items cause no writes; server setup and credentials retain their
     ["src", "https://vault.invalid"], ["dst", "https://bitwarden.com"],
   ]);
   expect(result.calls.filter(c => c.args[0] === "login").map(c => [c.side, c.clientId])).toEqual([
-    ["src", "fake-vault-client"], ["dst", "fake-cloud-client"],
+    ["src", "user.src"], ["dst", "user.dst"],
   ]);
 });
 
@@ -114,18 +115,47 @@ test("manual imports are adopted rather than duplicated", async () => {
   expect(result.stdout).toContain("1 adopted");
 });
 
-test("duplicate source names never adopt the same destination twice", async () => {
-  const result = await sync({ src: { items: [source(), source({ id: "source-2", login: { username: "user", password: "second" } })] }, dst: { items: [source({ id: "manual-1" })] } });
-  expect(result.code, result.stderr).toBe(0);
-  const writes = mutations(result.calls);
-  expect(writes.map(c => c.args.slice(0, 3))).toEqual([["edit", "item", "manual-1"], ["create", "item", "--session"]]);
-  expect(writes.map(c => c.payload.fields.find((f: any) => f.name === "bw_id").value)).toEqual(["source-1", "source-2"]);
+test("collisions in either direction refuse all writes, even when a folder is pending", async () => {
+  for (const [src, dst] of [
+    [[source(), source({ id: "source-2" })], [source({ id: "manual" })]],
+    [[source()], [source({ id: "manual-1" }), source({ id: "manual-2" })]],
+    [[source()], [tracked(), tracked({ id: "second" })]],
+  ]) {
+    const result = await sync({ src: { items: src, folders: [{ id: "folder", name: "new" }] }, dst: { items: dst } });
+    expect(result.code).toBe(1);
+    expect(mutations(result.calls)).toEqual([]);
+  }
 });
 
-test("only missing tracked items are deleted; untracked target items remain", async () => {
-  const result = await sync({ dst: { items: [tracked(), source({ id: "untracked" })] } });
-  expect(result.code, result.stderr).toBe(0);
-  expect(mutations(result.calls).map(c => [c.side, ...c.args.slice(0, 3)])).toEqual([["dst", "delete", "item", "target-1"]]);
+test("a single missing tracked item is deleted from a nonempty inventory", async () => {
+  const result = await sync({ src: { items: [source()] }, dst: { items: [tracked(),
+    tracked({ id: "gone", fields: [{ name: "bw_id", value: "gone-src" }] }), source({ id: "untracked" })] } });
+  expect(result.code).toBe(0);
+  expect(mutations(result.calls).map(c => c.args)).toEqual([["delete", "item", "gone"]]);
+});
+
+test("empty, partial and wrong-account inventories never produce edits or deletions", async () => {
+  for (const variant of [{src: {items: []}}, {src:{items:[source({name:"changed"})]}}, {wrongAccount:true}]) {
+    const result=await sync({dst:{items:[tracked(), ...["two","three"].map(id=>tracked({id,fields:[{name:"bw_id",value:id}]}))]}, ...variant});
+    expect(result.code).toBe(1);
+    expect(mutations(result.calls)).toEqual([]);
+  }
+});
+
+test("passkeys, SSH keys and attachments are skipped on either side", async () => {
+  for (const complex of [{login:{username:"user",fido2Credentials:[{credentialId:"private"}]}}, {type:5,sshKey:{privateKey:"fixture"}}, {attachments:[{id:"file"}]}]) {
+    for (const [src, dst] of [[source(complex),tracked()], [source(),tracked(complex)]]) {
+      const result=await sync({src:{items:[src]},dst:{items:[dst]}});
+      expect(result.code).toBe(0);expect(result.stdout).toContain("1 skipped");
+      expect(mutations(result.calls)).toEqual([]);
+    }
+  }
+});
+
+test("preview counts pending changes without vault writes or secret item names",async () => {
+  const result=await sync({src:{items:[source({name:"fixture-sensitive"})]}},{preview:true});
+  expect(result.code).toBe(0);expect(result.stdout).toContain("1 created");
+  expect(result.stdout).not.toContain("fixture-sensitive");expect(mutations(result.calls)).toEqual([]);
 });
 
 test("transient edit failure retries the same payload successfully", async () => {
@@ -141,7 +171,8 @@ test("permanent edit failure exits nonzero without leaking session arguments or 
   const result = await sync({ src: { items: [source()] }, dst: { items: [tracked({ notes: "old" }), tracked({ id: "obsolete", fields: [{ name: "bw_id", value: "deleted" }] })] }, editError: "permission denied" });
   expect(result.code).toBe(1);
   expect(mutations(result.calls).map(c => c.args[0])).toEqual(["edit"]);
-  expect(result.stderr).toContain("[REDACTED]");
+  expect(result.stderr).toContain("bw edit failed");
+  expect(result.stderr).not.toContain("permission denied");
   expect(result.stderr).not.toContain("fake-dst-session");
 });
 
