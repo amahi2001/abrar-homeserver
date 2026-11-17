@@ -94,6 +94,21 @@ class SnapshotTests(unittest.TestCase):
             self.assertTrue((root / "daily").is_dir())
             self.assertFalse(abandoned.exists())
 
+    def test_read_only_optional_tier_does_not_block_required_tier(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "pre-upgrade").mkdir()
+            make = snapshots.managed_directory
+            def read_only(directory, **kwargs):
+                if directory.name == "pre-upgrade":
+                    raise OSError(errno.EROFS, "fixture read-only tier")
+                make(directory, **kwargs)
+            with patch.object(snapshots, "managed_directory", side_effect=read_only):
+                snapshots.prepare_directories(root, "daily", root.stat().st_gid)
+                with self.assertRaises(OSError):
+                    snapshots.prepare_directories(root, "pre-upgrade", root.stat().st_gid)
+            self.assertTrue((root / "daily").is_dir())
+
     def test_linked_sibling_is_preserved_but_never_used_as_destination(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

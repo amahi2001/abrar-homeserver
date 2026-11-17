@@ -74,32 +74,39 @@ def retire_orphan(run):
             raise
 
 
+def inspect_tier(directory, gid):
+    if directory.is_symlink() or (directory.exists() and not directory.is_dir()):
+        raise RuntimeError(f"Refusing invalid {directory.name} backup directory")
+    if not directory.exists():
+        return 0
+    managed_directory(directory, gid=gid, mode=0o750)
+    work = directory / ".worker-staging"
+    if directory.name != "weekly" and work.is_dir() and not work.is_symlink():
+        managed_directory(work, gid=os.getegid(), mode=0o700)
+        for entry in work.iterdir():
+            if STAGING.fullmatch(entry.name) and not entry.is_symlink() and entry.is_dir():
+                shutil.rmtree(entry)
+    legacy_count = 0
+    for entry in directory.iterdir():
+        if entry.is_symlink() or not entry.is_dir():
+            continue
+        if directory.name == "weekly" and STAGING.fullmatch(entry.name):
+            shutil.rmtree(entry)
+        elif STAMP.fullmatch(entry.name) and not marked(entry):
+            legacy_count += 1
+    return legacy_count
+
+
 def prepare_directories(root, requested, gid):
     legacy_count = 0
     required = {requested, "weekly"} if requested == "daily" else {requested}
     for kind in ("daily", "pre-upgrade", "weekly"):
-        directory = root / kind
-        if directory.is_symlink() or (directory.exists() and not directory.is_dir()):
+        try:
+            legacy_count += inspect_tier(root / kind, gid)
+        except (OSError, RuntimeError) as error:
             if kind in required:
-                raise RuntimeError(f"Refusing invalid {kind} backup directory")
-            print(f"Skipping invalid {kind} backup directory.", file=sys.stderr)
-            continue
-        if not directory.exists():
-            continue
-        managed_directory(directory, gid=gid, mode=0o750)
-        work = directory / ".worker-staging"
-        if kind != "weekly" and work.exists() and not work.is_symlink() and work.is_dir():
-            managed_directory(work, gid=os.getegid(), mode=0o700)
-            for entry in work.iterdir():
-                if STAGING.fullmatch(entry.name) and not entry.is_symlink() and entry.is_dir():
-                    shutil.rmtree(entry)
-        for entry in directory.iterdir():
-            if entry.is_symlink() or not entry.is_dir():
-                continue
-            if kind == "weekly" and STAGING.fullmatch(entry.name):
-                shutil.rmtree(entry)
-            elif STAMP.fullmatch(entry.name) and not marked(entry):
-                legacy_count += 1
+                raise
+            print(f"Skipping {kind} backup maintenance: {error}", file=sys.stderr)
     # Reclaim failed writes across all existing tiers before allocating a missing one.
     for kind in required:
         if not (root / kind).exists():
@@ -181,6 +188,7 @@ def backup(kind, *, state=STATE, now=None, run=subprocess.run):
 
 
 if __name__ == "__main__":
+    os.umask(0o077)
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("kind", choices=("daily", "pre-upgrade"))
     args = parser.parse_args()
