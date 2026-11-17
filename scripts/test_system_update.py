@@ -892,6 +892,14 @@ class HealthTests(unittest.TestCase):
         self.assertEqual(transmission[transmission.index("--noproxy") + 1], "*")
         self.assertNotIn("--fail", transmission)
 
+    def test_configured_legacy_host_checked_even_if_the_key_is_missing(self):
+        with tempfile.TemporaryDirectory() as directory:
+            marker = Path(directory) / "legacy"
+            marker.write_text("old.example.net\n")
+            update.health_check(self.run_command, legacy_host_file=marker)
+            legacy = next(args for args in self.calls if args[-1] == "https://old.example.net/transmission/rpc")
+            self.assertIn("old.example.net:443:100.91.234.17", legacy)
+
     def test_failed_hermes_https_endpoint_fails_health_despite_healthy_local_gateway(self):
         def run(args):
             if args[-1] == "https://hermes.amahi.dev/health?deep=1":

@@ -16,12 +16,14 @@ if [[ -f "$map" ]]; then
   read -r previous_host directory < "$map" || true
   if [[ "$previous_host" == "$name" && "$directory" =~ ^(pair-[A-Za-z0-9]+)\;$ ]]; then previous="${BASH_REMATCH[1]}"; fi
 fi
-if [[ -n "$previous" ]] && cmp -s "$state/$previous/cert.pem" "$staged/cert.pem" && cmp -s "$state/$previous/key.pem" "$staged/key.pem"; then
+if [[ -n "$previous" ]] && cmp -s "$state/$previous/cert.pem" "$staged/cert.pem" && cmp -s "$state/$previous/key.pem" "$staged/key.pem" && [[ -r "$state/$previous/95-tailnet.cert" && -r "$state/$previous/95-tailnet.key" ]]; then
   version=$previous
 else
   generation=$(mktemp -d "$state/pair-XXXXXXXX")
   chmod 0640 "$staged/"*.pem
   mv "$staged/"*.pem "$generation/"
+  ln -s cert.pem "$generation/95-tailnet.cert"
+  ln -s key.pem "$generation/95-tailnet.key"
   chmod 0750 "$generation"
   version=${generation##*/}
 fi
@@ -29,18 +31,13 @@ printf '%s %s;\n' "$name" "$version" > "$staged/active-map"
 chmod 0640 "$staged/active-map"
 mv -Tf "$staged/active-map" "$map"
 
-# Cockpit selects the last .cert by filename. Install the matching immutable
-# key link first. An interrupted publication leaves the previous choice valid.
-cockpit=/etc/cockpit/ws-certs.d
-mkdir -p "$cockpit"
-shopt -s nullglob
-certs=("$cockpit"/95-buildfleet-*.cert)
-last=""
-if (( ${#certs[@]} )); then last=${certs[-1]}; fi
-if [[ -z "$last" || "$(readlink "$last" || true)" != "$state/$version/cert.pem" || "$(readlink "${last%.cert}.key" || true)" != "$state/$version/key.pem" ]]; then
-  stem="$cockpit/95-buildfleet-$(date -u +%s%N)"
-  ln -s "$state/$version/key.pem" "$stem.key"
-  ln -s "$state/$version/cert.pem" "$stem.cert"
-  systemctl try-restart cockpit.service
-fi
+# Both consumers pin a complete version. A failed Cockpit start can be retried
+# even if publication succeeded on the previous run.
 if systemctl is-active --quiet nginx.service; then systemctl reload --no-block nginx.service; fi
+ln -s "$version" "$staged/cockpit-current"
+mv -Tf "$staged/cockpit-current" "$state/cockpit-current"
+if [[ "$(cat "$state/cockpit-active-generation" 2>/dev/null || true)" != "$version" ]]; then
+  systemctl try-restart cockpit.service
+  printf '%s\n' "$version" > "$staged/cockpit-active"
+  mv -Tf "$staged/cockpit-active" "$state/cockpit-active-generation"
+fi

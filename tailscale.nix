@@ -44,6 +44,18 @@
     path = [ config.services.tailscale.package pkgs.openssl pkgs.coreutils pkgs.diffutils pkgs.systemd ];
     script = builtins.readFile ./scripts/renew-tailnet-cert.sh;
   };
+  # Pin the resolved pair for each Cockpit start. A generation rollback
+  # removes this drop-in and restores Cockpit's original certificate choice.
+  systemd.services.cockpit = {
+    overrideStrategy = "asDropin";
+    serviceConfig = {
+      BindReadOnlyPaths = [ "-/var/lib/tailscale-nginx-cert/cockpit-current:/etc/cockpit/ws-certs.d" ];
+      ReadWritePaths = [ "-/etc/cockpit/ws-certs.d" ];
+      # The packaged '+' hook skips mount isolation. '!' retains it while
+      # allowing the helper to copy the key into Cockpit's private runtime dir.
+      ExecStartPre = [ "" "!${pkgs.cockpit}/libexec/cockpit-certificate-ensure --for-cockpit-tls" ];
+    };
+  };
   systemd.timers.tailscale-nginx-cert = {
     wantedBy = [ "timers.target" ];
     timerConfig = {

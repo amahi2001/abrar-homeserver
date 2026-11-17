@@ -22,6 +22,7 @@ let
       PYTHONDONTWRITEBYTECODE=1 \
       /var/lib/hermes/hermes-webui/ctl.sh start --skip-agent-install
   '';
+  legacyTransmissionHost = "buildfleet-server.tailcb7cdb.ts.net";
   tailnetListen = [
     {
       addr = "100.91.234.17";
@@ -36,6 +37,7 @@ let
   ];
 in
 {
+  environment.etc."buildfleet/transmission-legacy-host".text = legacyTransmissionHost + "\n";
   environment.systemPackages = [ hermesWebuiStart ];
 
   # Update SSH directly in Cloudflare; DuckDNS remains an independent fallback.
@@ -176,7 +178,7 @@ in
       }
     '';
     virtualHosts."nix-server.tailcb7cdb.ts.net" = {
-      serverAliases = [ "buildfleet-server.tailcb7cdb.ts.net" ];
+      serverAliases = [ legacyTransmissionHost ];
       listen = tailnetListen;
       onlySSL = true;
       sslCertificate = "/var/lib/tailscale-nginx-cert/$transmission_directory/cert.pem";
