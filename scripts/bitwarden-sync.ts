@@ -45,7 +45,10 @@ async function openVault(profile: string, url: string, passwordVariable: string,
   await bw(profile, ["logout"]).catch(() => {}); // Locked and logged-out profiles can both occur.
   await bw(profile, ["config", "server", url]);
   if (id && secret) await bw(profile, ["login", "--apikey"], { BW_CLIENTID: id, BW_CLIENTSECRET: secret });
-  else await bw(profile, ["login", email!, "--passwordenv", passwordVariable]);
+  else {
+    try { await bw(profile, ["login", email!, "--passwordenv", passwordVariable]); }
+    catch { throw new SyncError("Email login failed. If device verification is enabled, configure the source API credentials for unattended sync and preview."); }
+  }
   const session = await bw(profile, ["unlock", "--passwordenv", passwordVariable, "--raw"]);
   requireState(session && !/\s/.test(session), "Could not unlock vault");
   const command = (args: string[], payload?: unknown) => bw(profile, args, { BW_SESSION: session }, payload);
@@ -60,8 +63,7 @@ async function openVault(profile: string, url: string, passwordVariable: string,
 
 type Entry = Record<string, any>;
 const kinds: Record<number, string> = { 1: "login", 2: "secureNote", 3: "card", 4: "identity" };
-function inventory(raw: string, folders = false): Entry[] {
-  const entries: unknown = JSON.parse(raw);
+function inventory(entries: unknown, folders = false): Entry[] {
   requireState(Array.isArray(entries), "Invalid vault inventory");
   // bw list folders includes a synthetic "No Folder" entry with an empty ID.
   const real = folders ? entries.filter(e => !(e?.name === "No Folder" && (e.id === "" || e.id === null))) : entries;
@@ -76,7 +78,7 @@ function inventory(raw: string, folders = false): Entry[] {
 function supported(e: Entry): boolean {
   // Cross-account copies of attachments, passkeys and SSH keys need a verified round trip.
   return !!kinds[e.type] && !!e[kinds[e.type]] && !e.organizationId && !e.collectionIds?.length &&
-    !e.attachments?.length && !e.login?.fido2Credentials?.length && !e.deletedDate;
+    !e.attachments?.length && !e.login?.fido2Credentials?.length && !e.deletedDate && !e.archivedDate && !e.archived;
 }
 function owned(e: Entry, folderId: string | null, fields: Entry[]) {
   return { name: e.name, type: e.type, notes: e.notes ?? null, favorite: e.favorite ?? false,
@@ -150,8 +152,9 @@ function plan(src: Entry[], dst: Entry[], srcFolders: Entry[], dstFolders: Entry
   for (const [id, target] of tracked) if (!present.has(id)) {
     if (supported(target)) deletes.push({id, target}); else skipped++;
   }
-  const blocked = deletes.length > 0 && (!src.some(e => !e.organizationId && !e.deletedDate) ||
-    deletes.length > Math.min(10, Math.max(1, Math.floor(tracked.size * 0.05))));
+  const eligible = [...tracked.values()].filter(supported).length;
+  const blocked = deletes.length > 0 && (!src.some(supported) ||
+    deletes.length > Math.min(10, Math.max(1, Math.floor(eligible * 0.05))));
   return { folders, folderCreates, writes, deletes, skipped, blocked };
 }
 
@@ -173,8 +176,14 @@ async function synchronize(profile: string, preview: boolean) {
   const { BW_CLIENTID, BW_CLIENTSECRET, VW_CLIENTID, VW_CLIENTSECRET, VW_EMAIL, VW_SERVER_URL } = process.env;
   const source = await openVault(join(profile, "src"), VW_SERVER_URL || "https://vault.amahi.dev", "VW_PASSWORD", VW_CLIENTID, VW_CLIENTSECRET, VW_EMAIL);
   const dest = await openVault(join(profile, "dst"), "https://bitwarden.com", "BW_PASSWORD", BW_CLIENTID, BW_CLIENTSECRET);
-  const changes = plan(inventory(await source(["list", "items"])), inventory(await dest(["list", "items"])),
-    inventory(await source(["list", "folders"]), true), inventory(await dest(["list", "folders"]), true));
+  async function items(read: typeof source) {
+    const active = inventory(JSON.parse(await read(["list", "items"])));
+    const archived = inventory(JSON.parse(await read(["list", "items", "--archived"])));
+    return inventory([...active, ...archived.map(item => ({...item, archived: true}))]);
+  }
+  const changes = plan(await items(source), await items(dest),
+    inventory(JSON.parse(await source(["list", "folders"])), true),
+    inventory(JSON.parse(await dest(["list", "folders"])), true));
   const created = changes.writes.filter(w => !w.target).length;
   const adopted = changes.writes.filter(w => w.adopted).length;
   console.log(`Plan: ${created} created, ${changes.writes.length-created-adopted} updated, ${adopted} adopted, ${changes.deletes.length} deleted, ${changes.folderCreates.size} source folders to map, ${changes.skipped} skipped.`);

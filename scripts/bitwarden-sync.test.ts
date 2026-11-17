@@ -37,7 +37,7 @@ else if (args[0] === "get") {
   else { console.error(fixture.lookupError || "Not found."); process.exit(1); }
 } else if (args[0] === "list") {
   if (fixture.invalidJson) console.log("invalid json");
-  else console.log(JSON.stringify(fixture[side]?.[args[1]] ?? []));
+  else console.log(JSON.stringify(fixture[side]?.[args.includes("--archived") ? "archived" : args[1]] ?? []));
 } else if (args[0] === "create") console.log(JSON.stringify({ ...call.payload, id: "created-" + args[1] }));
 else if (args[0] === "logout" && fixture.loggedOut) { console.error("already logged out"); process.exit(1); }
 `);
@@ -139,9 +139,15 @@ test("a single missing tracked item is deleted from a nonempty inventory", async
 });
 
 test("empty, partial and wrong-account inventories never produce edits or deletions", async () => {
-  for (const variant of [{src: {items: []}}, {src:{items:[source({name:"changed"})]}}, {wrongAccount:true}]) {
-    const result=await sync({dst:{items:[tracked(), ...["two","three"].map(id=>tracked({id,fields:[{name:"bw_id",value:id}]}))]}, ...variant});
-    expect(result.code).toBe(1);
+  const missing=(id:string)=>tracked({id, fields:[{name:"bw_id",value:id}]});
+  const second="deafbeef-0000-4000-8000-000000000002";
+  for (const [fixture,message] of [
+    [{src:{items:[]},dst:{items:[missing(absentId)]}}, "Deletion guard"],
+    [{src:{items:[source()]},dst:{items:[missing(absentId),missing(second)]}}, "Deletion guard"],
+    [{wrongAccount:true,src:{items:[source()]}}, "Vault identity"],
+  ] as const) {
+    const result=await sync(fixture);
+    expect(result.code).toBe(1); expect(result.stderr).toContain(message);
     expect(mutations(result.calls)).toEqual([]);
   }
 });
@@ -233,4 +239,20 @@ test("bare configured hostname uses the CLI HTTPS default", async () => {
   const result=await sync({serverUrl:"vault.invalid/"});
   expect(result.code,result.stderr).toBe(0);
   expect(result.calls.find(c=>c.args[0]==="config").args[2]).toBe("https://vault.invalid");
+});
+
+test("archived identities on either side prevent duplicates and deletions alongside legitimate changes", async () => {
+  const another=source({id:"fresh",name:"New"});
+  for (const [src,dst] of [[{archived:[source()]},{items:[tracked()]}],[{items:[source()]},{archived:[tracked()]}]]) {
+    const result=await sync({src:{...src,items:[...(src.items||[]),another]},dst});
+    expect(result.code,result.stderr).toBe(0);
+    expect(mutations(result.calls).map(c=>c.payload?.name)).toEqual(["New"]);
+  }
+});
+test("organization tracking cannot enlarge the personal deletion allowance", async () => {
+  const ids=[absentId,"deafbeef-0000-4000-8000-000000000002"];
+  const org=Array.from({length:40},(_,i)=>tracked({id:"org-"+i,organizationId:"org",fields:[{name:"bw_id",value:"other-"+i}]}));
+  const result=await sync({src:{items:[source()]},dst:{items:[...org,...ids.map(id=>tracked({id,fields:[{name:"bw_id",value:id}]}))]}});
+  expect(result.stderr).toContain("Deletion guard");
+  expect(mutations(result.calls)).toEqual([]);
 });
