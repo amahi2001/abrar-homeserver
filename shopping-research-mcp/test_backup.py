@@ -94,6 +94,14 @@ class SnapshotTests(unittest.TestCase):
             self.assertTrue((root / "daily").is_dir())
             self.assertFalse(abandoned.exists())
 
+    def test_matching_directory_permissions_require_no_metadata_write(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            root.chmod(0o750)
+            with patch.object(snapshots.os, "fchown", side_effect=OSError(errno.EROFS, "fixture")), \
+                 patch.object(snapshots.os, "fchmod", side_effect=OSError(errno.EROFS, "fixture")):
+                snapshots.managed_directory(root, gid=root.stat().st_gid, mode=0o750)
+
     def test_read_only_optional_tier_does_not_block_required_tier(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

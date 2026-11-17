@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import time
@@ -48,8 +49,11 @@ def managed_directory(directory, *, gid, mode):
     directory.mkdir(mode=mode, exist_ok=True)
     fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
     try:
-        os.fchown(fd, os.geteuid(), gid)
-        os.fchmod(fd, mode)
+        current = os.fstat(fd)
+        if (current.st_uid, current.st_gid) != (os.geteuid(), gid):
+            os.fchown(fd, os.geteuid(), gid)
+        if stat.S_IMODE(current.st_mode) != mode:
+            os.fchmod(fd, mode)
     finally:
         os.close(fd)
 
