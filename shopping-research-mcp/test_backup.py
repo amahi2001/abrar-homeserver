@@ -37,13 +37,17 @@ class SnapshotTests(unittest.TestCase):
                 final = old.with_name("20261111T000000Z")
                 staging = old.with_name(".20261111T000000Z.incomplete")
                 fail = True
-                worker_exists = True
+                worker_state = ""
+                removed = []
 
                 def worker(args, **kwargs):
                     if "images" in args:
                         return SimpleNamespace(stdout="a" * 64)
                     if args[1] == "ps":
-                        return SimpleNamespace(stdout="abc" if worker_exists else "")
+                        return SimpleNamespace(stdout=("a" * 64 + " " + worker_state) if worker_state else "")
+                    if args[1] == "rm":
+                        removed.append(args)
+                        return
                     out = output_dir(args)
                     self.assertEqual(out.parent, staging)
                     self.assertFalse(final.exists())
@@ -58,16 +62,57 @@ class SnapshotTests(unittest.TestCase):
                     snapshots.backup(kind, state=state, now=now, run=worker)
                 self.assertFalse(final.exists())
                 self.assertTrue(staging.is_dir())
+                worker_state = "running 1"
                 with self.assertRaisesRegex(RuntimeError, "worker still exists"):
                     snapshots.backup(kind, state=state, now=now, run=worker)
                 self.assertTrue((staging / "snapshot/shopping.sqlite").is_file())
-                worker_exists = fail = False
+                worker_state = "created 1"
+                fail = False
                 snapshots.backup(kind, state=state, now=now, run=worker)
+                self.assertEqual(removed, [["docker", "rm", "a" * 64]])
                 self.assertEqual((final / "auth.sqlite").read_text(), "auth")
                 self.assertFalse(staging.exists())
                 self.assertTrue(old.exists())
                 self.assertTrue(legacy.is_dir())
                 self.assertTrue(link.is_symlink())
+
+    def test_linked_sibling_is_preserved_but_never_used_as_destination(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            linked = root / "pre-upgrade"
+            outside = root / "outside"
+            outside.mkdir()
+            marker = outside / ".20260101T000000Z.incomplete"
+            marker.mkdir()
+            linked.symlink_to(outside, target_is_directory=True)
+            snapshots.clean_abandoned(root, "daily")
+            with self.assertRaisesRegex(RuntimeError, "linked"):
+                snapshots.clean_abandoned(root, "pre-upgrade")
+            self.assertTrue(marker.is_dir())
+            self.assertTrue(linked.is_symlink())
+
+    def test_zero_exit_with_missing_database_is_never_published(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            state = Path(tmp)
+            (state / "data").mkdir()
+            today = datetime(2026, 11, 11, tzinfo=timezone.utc)
+            retained = state / "backups/daily/20261110T000000Z"
+            retained.mkdir(parents=True)
+            (retained / "manifest.json").write_text("{}")
+            def partial(args, **kwargs):
+                if "images" in args:
+                    return SimpleNamespace(stdout="a" * 64)
+                if args[1] == "ps":
+                    return SimpleNamespace(stdout="")
+                out = output_dir(args)
+                out.mkdir()
+                (out / "manifest.json").write_text("{}")
+                (out / "shopping.sqlite").touch()
+            with self.assertRaisesRegex(RuntimeError, "both databases"):
+                snapshots.backup("daily", state=state, now=today, run=partial)
+            self.assertFalse(retained.with_name("20261111T000000Z").exists())
+            self.assertTrue((retained / "manifest.json").is_file())
+
 
 
 class WeeklyBackupTests(unittest.TestCase):

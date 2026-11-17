@@ -11,7 +11,7 @@ in
   systemd.tmpfiles.rules = [
     "d ${state} 0750 root users -"
     "d ${state}/data 0750 amahi users -"
-    "d ${state}/backups 0750 amahi users -"
+    "d ${state}/backups 0700 root root -"
     "d ${state}/releases 0750 root users -"
     "d /var/lib/secrets/shopping-research-mcp 0750 root users -"
   ];

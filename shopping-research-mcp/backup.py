@@ -16,6 +16,7 @@ import time
 
 STATE = Path("/var/lib/shopping-research-mcp")
 WORKER = "shopping-research-mcp-backup-worker"
+OWNER_LABEL = "dev.amahi.shopping-backup"
 STAGING = re.compile(r"\.\d{8}T\d{6}Z\.incomplete")
 STAMP = re.compile(r"\d{8}T\d{6}Z")
 
@@ -38,32 +39,50 @@ def locked(path):
         yield
 
 
-def clean_abandoned(root, run):
-    abandoned = []
+def private_parent(directory):
+    # Migrate earlier app-owned backup parents in place. The parent of this
+    # directory is already controlled by the backup administrator.
+    directory.mkdir(mode=0o700, exist_ok=True)
+    fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        os.fchown(fd, os.geteuid(), -1)
+        os.fchmod(fd, 0o700)
+    finally:
+        os.close(fd)
+
+
+def retire_orphan(run):
+    # The daemon can retain a worker after the invoking client has exited.
+    row = run(["docker", "ps", "-a", "--no-trunc", "--filter", f"name=^/{WORKER}$", "--format",
+               '{{.ID}} {{.State}} {{.Label "' + OWNER_LABEL + '"}}'],
+              check=True, capture_output=True, text=True, timeout=30).stdout.strip()
+    if not row:
+        return
+    match = re.fullmatch(r"([a-f0-9]{64}) (created|exited|dead) 1", row)
+    if not match:
+        raise RuntimeError("An active or unowned backup worker still exists; retry after it exits")
+    # Address the observed ID; a simultaneous start makes non-forced removal fail.
+    run(["docker", "rm", match[1]], check=True, timeout=30)
+
+
+def clean_abandoned(root, requested):
     legacy_count = 0
     for kind in ("daily", "pre-upgrade", "weekly"):
         directory = root / kind
         if directory.is_symlink():
-            raise RuntimeError(f"Refusing linked {kind} backup directory")
-        if not directory.exists():
+            if kind == requested or (requested == "daily" and kind == "weekly"):
+                raise RuntimeError(f"Refusing linked {kind} backup directory")
             continue
+        private_parent(directory)
         for entry in directory.iterdir():
             if entry.is_symlink() or not entry.is_dir():
                 continue
             if STAGING.fullmatch(entry.name):
-                abandoned.append(entry)
+                shutil.rmtree(entry)
             elif STAMP.fullmatch(entry.name) and not (entry / "manifest.json").is_file():
                 legacy_count += 1
     if legacy_count:
         print(f"Retained {legacy_count} unmarked backup directories for inspection.", file=sys.stderr)
-    if abandoned:
-        # Docker can outlive an interrupted client that released the host lock.
-        worker = run(["docker", "ps", "-aq", "--filter", f"name=^/{WORKER}$"],
-                     check=True, capture_output=True, text=True, timeout=30)
-        if worker.stdout.strip():
-            raise RuntimeError("Backup worker still exists; retry after it exits")
-        for entry in abandoned:
-            shutil.rmtree(entry)
 
 
 def backup(kind, *, state=STATE, now=None, run=subprocess.run):
@@ -72,24 +91,24 @@ def backup(kind, *, state=STATE, now=None, run=subprocess.run):
     name = now.strftime("%Y%m%dT%H%M%SZ")
     root = state / "backups"
     with locked(state / "backup.lock"):
-        clean_abandoned(root, run)
         destination = root / kind / name
-        destination.parent.mkdir(parents=True, exist_ok=True, mode=0o750)
         owner = (state / "data").stat()
-        os.chown(destination.parent, owner.st_uid, owner.st_gid)
-        if destination.exists() or destination.is_symlink():
-            raise RuntimeError("Snapshot destination already exists")
         image = run([
             "docker", "compose", "--project-directory", str(state / "current"),
             "-f", str(state / "current/compose.yaml"), "images", "--quiet", "app",
         ], check=True, capture_output=True, text=True, timeout=30).stdout.strip()
         if not re.fullmatch(r"(?:sha256:)?[a-f0-9]{12,64}", image):
             raise RuntimeError("Could not identify exactly one local application image")
+        retire_orphan(run)
+        private_parent(root)
+        clean_abandoned(root, kind)
+        if destination.exists() or destination.is_symlink():
+            raise RuntimeError("Snapshot destination already exists")
         staging = destination.parent / f".{name}.incomplete"
         staging.mkdir(mode=0o700)
-        os.chown(staging, owner.st_uid, owner.st_gid)
+        os.chown(staging, owner.st_uid, owner.st_gid, follow_symlinks=False)
         run([
-            "docker", "run", "--name", WORKER, "--rm", "--pull=never", "--network=none",
+            "docker", "run", "--name", WORKER, "--label", OWNER_LABEL + "=1", "--rm", "--pull=never", "--network=none",
             "--memory=2g", "--pids-limit=64", "--user", f"{owner.st_uid}:{owner.st_gid}",
             "--read-only", "--cap-drop=ALL", "--security-opt=no-new-privileges",
             "--mount", f"type=bind,src={state / 'data'},dst=/data,readonly",
@@ -108,7 +127,6 @@ def backup(kind, *, state=STATE, now=None, run=subprocess.run):
         prune(destination.parent, 7 if kind == "daily" else 3)
         if kind == "daily":
             weekly = root / "weekly"
-            weekly.mkdir(exist_ok=True, mode=0o750)
             week = now.strftime("%G-W%V")
             if not any((entry / "week").is_file() and (entry / "week").read_text() == week
                        for entry in weekly.iterdir() if entry.is_dir() and not entry.is_symlink()
