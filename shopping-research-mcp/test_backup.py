@@ -36,7 +36,7 @@ class SnapshotTests(unittest.TestCase):
                 link.symlink_to(legacy, target_is_directory=True)
                 now = datetime(2026, 11, 11, tzinfo=timezone.utc)
                 final = old.with_name("20261111T000000Z")
-                staging = state / "backups/.worker-staging/.20261111T000000Z.incomplete"
+                staging = final.parent / ".worker-staging/.20261111T000000Z.incomplete"
                 fail = True
                 worker_state = ""
                 removed = []
@@ -78,6 +78,21 @@ class SnapshotTests(unittest.TestCase):
                 self.assertTrue(old.exists())
                 self.assertTrue(legacy.is_dir())
                 self.assertTrue(link.is_symlink())
+
+    def test_reclaim_other_tiers_before_allocating_missing_directories(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            abandoned = root / "pre-upgrade/.worker-staging/.20261111T000000Z.incomplete"
+            abandoned.mkdir(parents=True)
+            make = snapshots.managed_directory
+            def require_space(directory, **kwargs):
+                if not directory.exists() and abandoned.exists():
+                    raise OSError(errno.ENOSPC, "fixture disk full")
+                make(directory, **kwargs)
+            with patch.object(snapshots, "managed_directory", side_effect=require_space):
+                snapshots.prepare_directories(root, "daily", root.stat().st_gid)
+            self.assertTrue((root / "daily").is_dir())
+            self.assertFalse(abandoned.exists())
 
     def test_linked_sibling_is_preserved_but_never_used_as_destination(self):
         with tempfile.TemporaryDirectory() as tmp:

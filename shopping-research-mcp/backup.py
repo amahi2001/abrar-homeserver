@@ -21,12 +21,15 @@ STAGING = re.compile(r"\.\d{8}T\d{6}Z\.incomplete")
 STAMP = re.compile(r"\d{8}T\d{6}Z")
 
 
+def marked(path):
+    return (path / "manifest.json").is_file() and (path.parent.name != "weekly" or (path / "week").is_file())
+
+
 def prune(directory, keep):
     snapshots = sorted(
         path for path in directory.iterdir()
         if path.is_dir() and not path.is_symlink() and STAMP.fullmatch(path.name)
-        and (path / "manifest.json").is_file()
-        and (directory.name != "weekly" or (path / "week").is_file())
+        and marked(path)
     )
     for snapshot in snapshots[:-keep]:
         shutil.rmtree(snapshot)
@@ -73,24 +76,34 @@ def retire_orphan(run):
 
 def prepare_directories(root, requested, gid):
     legacy_count = 0
+    required = {requested, "weekly"} if requested == "daily" else {requested}
     for kind in ("daily", "pre-upgrade", "weekly"):
         directory = root / kind
-        required = kind == requested or (requested == "daily" and kind == "weekly")
         if directory.is_symlink() or (directory.exists() and not directory.is_dir()):
-            if required:
+            if kind in required:
                 raise RuntimeError(f"Refusing invalid {kind} backup directory")
             print(f"Skipping invalid {kind} backup directory.", file=sys.stderr)
             continue
-        if not directory.exists() and not required:
+        if not directory.exists():
             continue
         managed_directory(directory, gid=gid, mode=0o750)
+        work = directory / ".worker-staging"
+        if kind != "weekly" and work.exists() and not work.is_symlink() and work.is_dir():
+            managed_directory(work, gid=os.getegid(), mode=0o700)
+            for entry in work.iterdir():
+                if STAGING.fullmatch(entry.name) and not entry.is_symlink() and entry.is_dir():
+                    shutil.rmtree(entry)
         for entry in directory.iterdir():
             if entry.is_symlink() or not entry.is_dir():
                 continue
             if kind == "weekly" and STAGING.fullmatch(entry.name):
                 shutil.rmtree(entry)
-            elif STAMP.fullmatch(entry.name) and not (entry / "manifest.json").is_file():
+            elif STAMP.fullmatch(entry.name) and not marked(entry):
                 legacy_count += 1
+    # Reclaim failed writes across all existing tiers before allocating a missing one.
+    for kind in required:
+        if not (root / kind).exists():
+            managed_directory(root / kind, gid=gid, mode=0o750)
     if legacy_count:
         print(f"Retained {legacy_count} unmarked backup directories for inspection.", file=sys.stderr)
 
@@ -114,11 +127,8 @@ def backup(kind, *, state=STATE, now=None, run=subprocess.run):
         # traversal so the previous worker still runs during upgrades/rollback.
         managed_directory(root, gid=owner.st_gid, mode=0o750)
         prepare_directories(root, kind, owner.st_gid)
-        work = root / ".worker-staging"
+        work = destination.parent / ".worker-staging"
         managed_directory(work, gid=os.getegid(), mode=0o700)
-        for entry in work.iterdir():
-            if STAGING.fullmatch(entry.name) and not entry.is_symlink() and entry.is_dir():
-                shutil.rmtree(entry)
         if destination.exists() or destination.is_symlink():
             raise RuntimeError("Snapshot destination already exists")
         staging = work / f".{name}.incomplete"
@@ -166,7 +176,7 @@ def backup(kind, *, state=STATE, now=None, run=subprocess.run):
                 staging.rename(target)
                 prune(weekly, 4)
         print(f"Consistent {kind} snapshot retained: {destination} ({size} bytes, "
-              f"{time.monotonic() - started:.1f}s, {shutil.disk_usage(root).free} bytes free)")
+              f"{time.monotonic() - started:.1f}s, {shutil.disk_usage(destination.parent).free} bytes free)")
         return destination
 
 
