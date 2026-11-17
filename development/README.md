@@ -177,6 +177,7 @@ Build the pinned launcher from the candidate checkout on the host. Its build
 uses the current tool locks and gives changed image inputs their own tag.
 
 ```bash
+set -euo pipefail
 candidate=$(nix build --no-link --print-out-paths .#dev)
 image=$("$candidate/bin/dev" build | tail -n 1)
 tested=$(docker image inspect -f '{{.Id}}' "$image")
@@ -197,8 +198,8 @@ those clients first, including TokenEye’s proxy if it uses the selected box.
 New managed shells take the shared lock. Docker exec snapshots only detect
 already-admitted legacy work. Keep other boxes on the installed launcher.
 
-Select an idle project without a custom Compose override, on its existing
-agent branch. Run this from one host Bash shell after both fixtures pass.
+Select an idle project using the stock dev service, on its existing agent
+branch. The sandbox has a loopback-port override to preserve its endpoints. Run this from one host Bash shell after both fixtures pass.
 Capture the backup under the project and deployment locks. Keep the project
 reserved through observation. This example uses a 24-hour soak.
 
@@ -213,7 +214,12 @@ reserved through observation. This example uses a 24-hour soak.
   flock -n 9
   exec 8>>/run/lock/host-deployment.lock
   flock -xn 8
-  test ! -e "$source_dir/.dev/compose.yaml"
+  # Accept the sandbox's port-only override. A project build, image, mount,
+  # sidecar or custom healthcheck needs its own effective-image smoke.
+  if [[ -e "$source_dir/.dev/compose.yaml" ]]; then
+    docker compose -f "$source_dir/.dev/compose.yaml" config --no-consistency --format json |
+      python3 -c 'import json,sys; s=json.load(sys.stdin)["services"]; assert set(s)=={"dev"} and set(s["dev"]) <= {"ports","networks","command","entrypoint"} and not s["dev"].get("command") and not s["dev"].get("entrypoint")'
+  fi
   [[ $(git -C "$source_dir" branch --show-current) == agent/* ]]
   running() { docker ps -q --filter label=dev.managed=true --filter "label=dev.project=$project"; }
   previous=$(running)
@@ -224,6 +230,11 @@ reserved through observation. This example uses a 24-hour soak.
   read -r previous_id previous_tag < "$saved/previous-image"
   docker image tag "$previous_id" "buildfleet-dev:rollback-$(basename "$saved")"
   test "$(docker image inspect -f '{{.Id}}' "$image")" = "$tested"
+  compose_project=$(docker inspect -f '{{index .Config.Labels "com.docker.compose.project"}}' "$previous")
+  project_tag="$image-$compose_project"
+  # The launcher creates an absent tag under its own activity locks.
+  existing_tag=$(docker image ls -q --no-trunc "$project_tag")
+  [[ -z $existing_tag || $existing_tag == "$tested" ]]
   DEV_LOCK_HELD="$project" DEV_HOST_LOCK_HELD="$project" "$candidate/bin/dev" start "$project" --no-agent
   current=$(running)
   test "$(docker inspect -f '{{.Image}} {{.State.Health.Status}}' "$current")" = "$tested healthy"

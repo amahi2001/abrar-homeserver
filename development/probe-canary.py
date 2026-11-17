@@ -4,6 +4,7 @@ import argparse
 import json
 import os
 import signal
+import sys
 from pathlib import Path
 import subprocess
 import tempfile
@@ -52,6 +53,7 @@ def main():
 
     signal.signal(signal.SIGTERM, stop)
     project = "dev-probe-" + uuid.uuid4().hex[:12]
+    print(f"Disposable Compose project: {project}", file=sys.stderr, flush=True)
     paths = {"candidate": Path(__file__).with_name("compose.yaml")}
     if args.baseline:
         paths["baseline"] = args.baseline
@@ -70,7 +72,7 @@ def main():
             # Wait for daemon acknowledgement before cleaning up this project.
             saved = signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGTERM, signal.SIGINT})
             try:
-                run(*compose, "create", timeout=None)
+                run(*compose, "create", timeout=300)
             finally:
                 signal.pthread_sigmask(signal.SIG_SETMASK, saved)
             ids = {name: run(*compose, "ps", "-a", "-q", name) for name in paths}
@@ -92,7 +94,13 @@ def main():
             timing["candidate"]["recoverySeconds"] = round(wait(cid, "healthy", 45), 2)
             print(json.dumps(timing, indent=2))
         finally:
-            run(*compose, "down", "--timeout", "5")
+            # Removal may wait for daemon I/O; the ID above identifies only this run.
+            try:
+                run(*compose, "down", "--timeout", "5", timeout=180)
+            except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
+                ids = run("docker", "ps", "-aq", "--filter", f"label=com.docker.compose.project={project}").split()
+                if ids:
+                    run("docker", "rm", "-f", *ids, timeout=180)
 
 
 if __name__ == "__main__":
