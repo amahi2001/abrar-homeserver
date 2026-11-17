@@ -256,3 +256,17 @@ test("organization tracking cannot enlarge the personal deletion allowance", asy
   expect(result.stderr).toContain("Deletion guard");
   expect(mutations(result.calls)).toEqual([]);
 });
+
+test("non-Premium archive query returning the regular records preserves active changes", async () => {
+  const original=tracked({notes:"outdated"});
+  const result=await sync({src:{items:[source()],archived:[source()]},dst:{items:[original],archived:[original]}});
+  expect(result.code,result.stderr).toBe(0);
+  expect(mutations(result.calls).map(c=>c.args[0])).toEqual(["edit"]);
+});
+test("archived sources cannot enlarge the deletion budget through active destinations", async () => {
+  const archived=Array.from({length:40},(_,i)=>source({id:"archived-"+i}));
+  const copies=archived.map(item=>tracked({id:"copy-"+item.id,fields:[{name:"bw_id",value:item.id}]}));
+  const gone=[absentId,"deafbeef-0000-4000-8000-000000000002"].map(id=>tracked({id,fields:[{name:"bw_id",value:id}]}));
+  const result=await sync({src:{items:[source()],archived},dst:{items:[tracked(),...copies,...gone]}});
+  expect(result.stderr).toContain("Deletion guard"); expect(mutations(result.calls)).toEqual([]);
+});

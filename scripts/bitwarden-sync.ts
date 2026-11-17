@@ -4,6 +4,7 @@ import { spawn } from "node:child_process";
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import { isDeepStrictEqual } from "node:util";
 
 const state = process.env.BITWARDEN_SYNC_STATE_DIR || "/var/lib/bitwarden-sync";
@@ -126,7 +127,7 @@ function plan(src: Entry[], dst: Entry[], srcFolders: Entry[], dstFolders: Entry
     }
   }
   const sourceCounts = new Map<string, number>();
-  const present = new Set(src.map(e => e.id));
+  const present = new Map(src.map(e => [e.id, e]));
   for (const item of src) if (!tracked.has(item.id) && !item.organizationId) sourceCounts.set(key(item), (sourceCounts.get(key(item)) ?? 0) + 1);
   const writes: { source: Entry; target?: Entry; adopted: boolean; fields: Entry[] }[] = [];
   let skipped = 0;
@@ -152,7 +153,10 @@ function plan(src: Entry[], dst: Entry[], srcFolders: Entry[], dstFolders: Entry
   for (const [id, target] of tracked) if (!present.has(id)) {
     if (supported(target)) deletes.push({id, target}); else skipped++;
   }
-  const eligible = [...tracked.values()].filter(supported).length;
+  const eligible = [...tracked].filter(([id, target]) => {
+    const source = present.get(id);
+    return supported(target) && (!source || (supported(source) && source.type === target.type));
+  }).length;
   const blocked = deletes.length > 0 && (!src.some(supported) ||
     deletes.length > Math.min(10, Math.max(1, Math.floor(eligible * 0.05))));
   return { folders, folderCreates, writes, deletes, skipped, blocked };
@@ -179,7 +183,14 @@ async function synchronize(profile: string, preview: boolean) {
   async function items(read: typeof source) {
     const active = inventory(JSON.parse(await read(["list", "items"])));
     const archived = inventory(JSON.parse(await read(["list", "items", "--archived"])));
-    return inventory([...active, ...archived.map(item => ({...item, archived: true}))]);
+    // The CLI returns the active list again when archive filtering is unavailable.
+    const byId = new Map(active.map(item => [item.id, item]));
+    for (const item of archived) {
+      const previous = byId.get(item.id);
+      if (previous) requireState(!item.archivedDate && isDeepStrictEqual(previous, item), "Inconsistent archive inventory");
+      else byId.set(item.id, {...item, archived: true});
+    }
+    return [...byId.values()];
   }
   const changes = plan(await items(source), await items(dest),
     inventory(JSON.parse(await source(["list", "folders"])), true),
@@ -216,7 +227,7 @@ async function synchronize(profile: string, preview: boolean) {
       } catch (e) {
         if (!(e instanceof RetryableEdit) || attempt >= 3) throw e;
         console.warn("Transient edit failure; retrying");
-        await Bun.sleep(1000 * 2 ** attempt);
+        await delay(1000 * 2 ** attempt);
       }
     }
   }
