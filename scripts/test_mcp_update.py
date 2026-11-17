@@ -38,6 +38,7 @@ class FakeCommands:
         self.backup_failure = False
         self.start_failure = False
         self.exit_after_start = None
+        self.stale_status = False
         self.google_roots = updater.GOOGLE_ROOTS
 
     def __call__(self, *args, **kwargs):
@@ -64,9 +65,10 @@ class FakeCommands:
             if (self.services["hermes-dashboard.service"] != "active"
                     or self.unknown_after and self.status_calls >= self.unknown_after):
                 raise subprocess.CalledProcessError(1, args)
-            return json.dumps({"gateway_running": True, "gateway_busy": bool(self.busy_after and
+            running = self.stale_status or self.services["hermes-agent.service"] == "active"
+            return json.dumps({"gateway_running": running, "gateway_busy": bool(self.busy_after and
                                self.status_calls >= self.busy_after), "active_agents": 0,
-                               "gateway_drainable": True, "active_sessions": 1})
+                               "gateway_drainable": running, "active_sessions": 1})
         elif args[0] == "cp":
             if self.backup_failure:
                 raise subprocess.CalledProcessError(1, args)
@@ -139,8 +141,9 @@ class McpUpdateTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory, patch.object(updater.signal, "signal"), \
                 patch.object(updater, "refresh") as refresh:
             path = Path(directory) / "lock"
-            holder = ("import fcntl, sys; f = open(sys.argv[1], 'a'); "
-                      "fcntl.flock(f, fcntl.LOCK_EX); print('locked', flush=True); sys.stdin.read()")
+            holder = ("import fcntl, select, sys; f = open(sys.argv[1], 'a'); "
+                      "fcntl.flock(f, fcntl.LOCK_EX); print('locked', flush=True); "
+                      "select.select([sys.stdin], [], [], 5)")
             with subprocess.Popen([sys.executable, "-c", holder, str(path)], text=True,
                                   stdin=subprocess.PIPE, stdout=subprocess.PIPE) as proc:
                 try:
@@ -277,9 +280,19 @@ class McpUpdateTests(unittest.TestCase):
         self.assert_restored(commands)
 
     def test_gateway_exiting_after_start_is_not_hidden_by_active_dashboard(self):
-        commands, error = self.exercise(exit_after_start="hermes-agent.service")
+        commands, error = self.exercise(exit_after_start="hermes-agent.service", stale_status=True)
         self.assertRegex(str(error), "did not recover")
         self.assert_restored(commands)
+
+    def test_gateway_exit_with_unavailable_idle_state_retains_recovery_snapshot(self):
+        commands, error = self.exercise(exit_after_start="hermes-agent.service")
+        self.assertRegex(str(error), "rollback needs attention")
+        self.assertEqual(commands.services["hermes-dashboard.service"], "active")
+        self.assertEqual(commands.services["hermes-agent.service"], "failed")
+        backup, = commands.state.iterdir()
+        for index, directory in enumerate(commands.directories):
+            self.assertEqual((directory / "version").read_text(), "new")
+            self.assertEqual((backup / str(index) / "version").read_text(), "old")
 
     def test_resume_waits_for_gateway_to_be_ready_to_serve(self):
         with patch.object(updater, "run"), patch.object(updater.time, "sleep") as wait, \
