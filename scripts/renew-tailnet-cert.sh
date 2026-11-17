@@ -37,7 +37,11 @@ if systemctl is-active --quiet nginx.service; then systemctl reload --no-block n
 ln -s "$version" "$staged/cockpit-current"
 mv -Tf "$staged/cockpit-current" "$state/cockpit-current"
 if [[ "$(cat "$state/cockpit-active-generation" 2>/dev/null || true)" != "$version" ]]; then
-  systemctl try-restart cockpit.service
+  if systemctl is-failed --quiet cockpit.service; then
+    systemctl start cockpit.service
+  else
+    systemctl try-restart cockpit.service
+  fi
   printf '%s\n' "$version" > "$staged/cockpit-active"
   mv -Tf "$staged/cockpit-active" "$state/cockpit-active-generation"
 fi

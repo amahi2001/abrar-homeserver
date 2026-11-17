@@ -14,6 +14,8 @@ and WebUI state are preserved. Its DNS-only `A` record points to
 `100.91.234.17`. ACME DNS validation delegates
 `_acme-challenge.hermes.amahi.dev` through a `CNAME` to
 `_acme-challenge.buildfleet.duckdns.org`, using the existing DuckDNS credential.
+On the migrating installation, the deployed flake includes an optional `tailnet-legacy-host.nix` containing the Nix string `"buildfleet-server.tailcb7cdb.ts.net"`. Carry this file into manual builds for the migration window. Fresh installations omit the file. Remove the file and rebuild after clients move.
+
 The previous Transmission name, `buildfleet-server.tailcb7cdb.ts.net`, only works for clients with an existing DNS mapping. Tailscale can no longer issue a certificate for that name. Migrate those clients within seven days of cutover and remove the compatibility route after checking them. The old certificate expires on January 20, 2027.
 
 Nginx also preserves Transmission at `https://nix-server.tailcb7cdb.ts.net`;

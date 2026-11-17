@@ -1,7 +1,21 @@
 # Tailscale VPN configuration
 # Exit node + mesh VPN for remote access
 { config, pkgs, ... }:
-
+let
+  cockpitEnsure = "${pkgs.cockpit}/libexec/cockpit-certificate-ensure";
+  cockpitPrepare = pkgs.writeShellScript "cockpit-prepare-tailnet" ''
+    set -eu
+    certs=/var/lib/tailscale-nginx-cert/cockpit-current
+    if ! test -d "$certs"; then
+      exec ${cockpitEnsure} --for-cockpit-tls
+    fi
+    pair=$(${pkgs.coreutils}/bin/readlink -e "$certs")
+    exec ${pkgs.util-linux}/bin/unshare --mount --propagation private ${pkgs.runtimeShell} -eu -c '
+      ${pkgs.util-linux}/bin/mount --bind "$1" /etc/cockpit/ws-certs.d
+      exec ${cockpitEnsure} --for-cockpit-tls
+    ' _ "$pair"
+  '';
+in
 {
   services.tailscale = {
     enable = true;
@@ -48,13 +62,9 @@
   # removes this drop-in and restores Cockpit's original certificate choice.
   systemd.services.cockpit = {
     overrideStrategy = "asDropin";
-    serviceConfig = {
-      BindReadOnlyPaths = [ "-/var/lib/tailscale-nginx-cert/cockpit-current:/etc/cockpit/ws-certs.d" ];
-      ReadWritePaths = [ "-/etc/cockpit/ws-certs.d" ];
-      # The packaged '+' hook skips mount isolation. '!' retains it while
-      # allowing the helper to copy the key into Cockpit's private runtime dir.
-      ExecStartPre = [ "" "!${pkgs.cockpit}/libexec/cockpit-certificate-ensure --for-cockpit-tls" ];
-    };
+    # The stock pre-start is privileged so it can bootstrap a self-signed
+    # certificate. Only the published-pair path uses a private mount.
+    serviceConfig.ExecStartPre = [ "" "+${cockpitPrepare}" ];
   };
   systemd.timers.tailscale-nginx-cert = {
     wantedBy = [ "timers.target" ];
