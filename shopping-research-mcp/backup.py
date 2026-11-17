@@ -50,9 +50,10 @@ def managed_directory(directory, *, gid, mode):
     fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
     try:
         current = os.fstat(fd)
-        if (current.st_uid, current.st_gid) != (os.geteuid(), gid):
+        ownership_changed = (current.st_uid, current.st_gid) != (os.geteuid(), gid)
+        if ownership_changed:
             os.fchown(fd, os.geteuid(), gid)
-        if stat.S_IMODE(current.st_mode) != mode:
+        if ownership_changed or stat.S_IMODE(current.st_mode) != mode:
             os.fchmod(fd, mode)
     finally:
         os.close(fd)
