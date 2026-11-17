@@ -170,6 +170,31 @@ class SnapshotTests(unittest.TestCase):
 
 
 class WeeklyBackupTests(unittest.TestCase):
+    def test_daily_is_retained_when_weekly_target_is_read_only(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            state = Path(tmp)
+            (state / "data").mkdir()
+            weekly = state / "backups/weekly"
+            weekly.mkdir(parents=True)
+            manage = snapshots.managed_directory
+            def read_only(directory, **kwargs):
+                if directory == weekly:
+                    raise OSError(errno.EROFS, "fixture read-only weekly tier")
+                manage(directory, **kwargs)
+            def worker(args, **kwargs):
+                if "images" in args:
+                    return SimpleNamespace(stdout="a" * 64)
+                if args[1] == "ps":
+                    return SimpleNamespace(stdout="")
+                out = output_dir(args)
+                out.mkdir()
+                for name in ("manifest.json", "auth.sqlite", "shopping.sqlite"):
+                    (out / name).touch()
+            now = datetime(2026, 11, 11, tzinfo=timezone.utc)
+            with patch.object(snapshots, "managed_directory", side_effect=read_only), self.assertRaises(OSError):
+                snapshots.backup("daily", state=state, now=now, run=worker)
+            self.assertTrue((state / "backups/daily/20261111T000000Z/manifest.json").is_file())
+
     def test_failed_copy_is_not_published_or_counted_for_retention(self):
         with tempfile.TemporaryDirectory() as tmp:
             state = Path(tmp)

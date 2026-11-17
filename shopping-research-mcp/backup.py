@@ -99,18 +99,16 @@ def inspect_tier(directory, gid):
 
 def prepare_directories(root, requested, gid):
     legacy_count = 0
-    required = {requested, "weekly"} if requested == "daily" else {requested}
     for kind in ("daily", "pre-upgrade", "weekly"):
         try:
             legacy_count += inspect_tier(root / kind, gid)
         except (OSError, RuntimeError) as error:
-            if kind in required:
+            if kind == requested:
                 raise
             print(f"Skipping {kind} backup maintenance: {error}", file=sys.stderr)
     # Reclaim failed writes across all existing tiers before allocating a missing one.
-    for kind in required:
-        if not (root / kind).exists():
-            managed_directory(root / kind, gid=gid, mode=0o750)
+    if not (root / requested).exists():
+        managed_directory(root / requested, gid=gid, mode=0o750)
     if legacy_count:
         print(f"Retained {legacy_count} unmarked backup directories for inspection.", file=sys.stderr)
 
@@ -169,8 +167,11 @@ def backup(kind, *, state=STATE, now=None, run=subprocess.run):
         finished.rename(destination)
         shutil.rmtree(staging)
         prune(destination.parent, 7 if kind == "daily" else 3)
+        print(f"Consistent {kind} snapshot retained: {destination} ({size} bytes, "
+              f"{time.monotonic() - started:.1f}s, {shutil.disk_usage(destination.parent).free} bytes free)")
         if kind == "daily":
             weekly = root / "weekly"
+            managed_directory(weekly, gid=owner.st_gid, mode=0o750)
             week = now.strftime("%G-W%V")
             if not any((entry / "week").is_file() and (entry / "week").read_text() == week
                        for entry in weekly.iterdir() if entry.is_dir() and not entry.is_symlink()
@@ -182,8 +183,6 @@ def backup(kind, *, state=STATE, now=None, run=subprocess.run):
                 (staging / "week").write_text(week)
                 staging.rename(target)
                 prune(weekly, 4)
-        print(f"Consistent {kind} snapshot retained: {destination} ({size} bytes, "
-              f"{time.monotonic() - started:.1f}s, {shutil.disk_usage(destination.parent).free} bytes free)")
         return destination
 
 
