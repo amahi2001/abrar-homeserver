@@ -14,14 +14,14 @@ and WebUI state are preserved. Its DNS-only `A` record points to
 `100.91.234.17`. ACME DNS validation delegates
 `_acme-challenge.hermes.amahi.dev` through a `CNAME` to
 `_acme-challenge.buildfleet.duckdns.org`, using the existing DuckDNS credential.
-Nginx also preserves Transmission at `https://buildfleet-server.tailcb7cdb.ts.net`;
+Nginx also preserves Transmission at `https://nix-server.tailcb7cdb.ts.net`;
 its certificate is issued and renewed with `tailscale cert`.
 
 These endpoints are Nix-managed contracts: maintenance must preserve their URLs
 when replacing backends, and must not retire them because no client is connected.
 Deployment health gates must check the stable HTTPS endpoints and Hermes
 authentication. The built-in dashboard remains separately available at
-`http://buildfleet-server.tailcb7cdb.ts.net:9119`. WebUI is started manually
+`http://nix-server.tailcb7cdb.ts.net:9119`. WebUI is started manually
 with `hermes-webui-start`, which wraps its existing `ctl.sh` with the current
 Hermes runtime and localhost/proxy settings; no boot autostart service is
 configured. After reboot, run that command before expecting WebUI health

@@ -887,8 +887,8 @@ class HealthTests(unittest.TestCase):
         self.assertEqual(protected[protected.index("--noproxy") + 1], "*")
         self.assertNotIn("--fail", protected)
         transmission = next(args for args in self.calls if args[-1].endswith("/transmission/rpc"))
-        self.assertEqual(transmission[transmission.index("--resolve") + 1],
-                         "buildfleet-server.tailcb7cdb.ts.net:443:100.91.234.17")
+        self.assertNotIn("--resolve", transmission)
+        self.assertEqual(transmission[-1], "https://nix-server.tailcb7cdb.ts.net/transmission/rpc")
         self.assertEqual(transmission[transmission.index("--noproxy") + 1], "*")
         self.assertNotIn("--fail", transmission)
 

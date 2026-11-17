@@ -166,12 +166,25 @@ in
       };
     };
 
-    # Preserve Transmission's existing URL when nginx takes over tailnet :443.
-    virtualHosts."buildfleet-server.tailcb7cdb.ts.net" = {
+    # Legacy clients may still pin the old name to the tailnet address.
+    # Only fixed filenames can be selected. A missing legacy certificate on a
+    # new installation affects only clients requesting that retired hostname.
+    appendHttpConfig = ''
+      map $ssl_server_name $transmission_cert {
+        default current/cert.pem;
+        buildfleet-server.tailcb7cdb.ts.net cert.pem;
+      }
+      map $ssl_server_name $transmission_key {
+        default current/key.pem;
+        buildfleet-server.tailcb7cdb.ts.net key.pem;
+      }
+    '';
+    virtualHosts."nix-server.tailcb7cdb.ts.net" = {
+      serverAliases = [ "buildfleet-server.tailcb7cdb.ts.net" ];
       listen = tailnetListen;
       onlySSL = true;
-      sslCertificate = "/var/lib/tailscale-nginx-cert/cert.pem";
-      sslCertificateKey = "/var/lib/tailscale-nginx-cert/key.pem";
+      sslCertificate = "/var/lib/tailscale-nginx-cert/$transmission_cert";
+      sslCertificateKey = "/var/lib/tailscale-nginx-cert/$transmission_key";
       extraConfig = ''
         allow 100.64.0.0/10;
         allow fd7a:115c:a1e0::/48;

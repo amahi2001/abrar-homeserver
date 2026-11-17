@@ -222,11 +222,11 @@ def health_check(run, expected_hermes=None):
         raise RuntimeError("Hermes WebUI HTTPS endpoint does not require password login")
     for name, host, path in (
         ("Hermes WebUI", "hermes.amahi.dev", "/api/sessions"),
-        ("Transmission", "buildfleet-server.tailcb7cdb.ts.net", "/transmission/rpc"),
+        ("Transmission", "nix-server.tailcb7cdb.ts.net", "/transmission/rpc"),
     ):
         code = run([
             "curl", "--silent", "--show-error", "--max-time", "10", "--noproxy", "*",
-            "--resolve", f"{host}:443:100.91.234.17",
+            *(["--resolve", f"{host}:443:100.91.234.17"] if name == "Hermes WebUI" else []),
             "--output", "/dev/null", "--write-out", "%{http_code}", f"https://{host}{path}",
         ]).strip()
         if code != "401":

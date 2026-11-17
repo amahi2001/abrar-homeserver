@@ -28,7 +28,7 @@
 
   # Nginx owns tailnet HTTPS; rebuilds must not modify existing Serve routes.
   systemd.services.tailscale-nginx-cert = {
-    description = "Renew nginx certificate for the existing Tailscale hostname";
+    description = "Renew nginx certificate for the canonical Tailscale hostname";
     after = [ "tailscaled.service" ];
     requires = [ "tailscaled.service" ];
     before = [ "nginx.service" ];
@@ -41,16 +41,8 @@
       TimeoutStartSec = "120s";
       ExecStartPre = "${config.services.tailscale.package}/bin/tailscale wait --timeout=60s";
     };
-    script = ''
-      ${config.services.tailscale.package}/bin/tailscale cert --min-validity=168h \
-        --cert-file /var/lib/tailscale-nginx-cert/cert.pem \
-        --key-file /var/lib/tailscale-nginx-cert/key.pem \
-        buildfleet-server.tailcb7cdb.ts.net
-      ${pkgs.coreutils}/bin/chmod 0640 /var/lib/tailscale-nginx-cert/{cert,key}.pem
-      if ${pkgs.systemd}/bin/systemctl is-active --quiet nginx.service; then
-        ${pkgs.systemd}/bin/systemctl reload --no-block nginx.service
-      fi
-    '';
+    path = [ config.services.tailscale.package pkgs.openssl pkgs.coreutils pkgs.diffutils pkgs.systemd ];
+    script = builtins.readFile ./scripts/renew-tailnet-cert.sh;
   };
   systemd.timers.tailscale-nginx-cert = {
     wantedBy = [ "timers.target" ];
@@ -59,6 +51,11 @@
       Persistent = true;
     };
   };
+  # Cockpit reads the pair in its privileged certificate preparation step.
+  systemd.tmpfiles.rules = [
+    "L+ /etc/cockpit/ws-certs.d/95-tailnet.cert - - - - /var/lib/tailscale-nginx-cert/current/cert.pem"
+    "L+ /etc/cockpit/ws-certs.d/95-tailnet.key - - - - /var/lib/tailscale-nginx-cert/current/key.pem"
+  ];
   systemd.services.nginx = {
     wants = [ "tailscale-nginx-cert.service" ];
     after = [ "tailscale-nginx-cert.service" ];
