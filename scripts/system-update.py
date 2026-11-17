@@ -223,10 +223,12 @@ def health_check(run, expected_hermes=None):
     for name, host, path in (
         ("Hermes WebUI", "hermes.amahi.dev", "/api/sessions"),
         ("Transmission", "nix-server.tailcb7cdb.ts.net", "/transmission/rpc"),
+        *([("Legacy Transmission", "buildfleet-server.tailcb7cdb.ts.net", "/transmission/rpc")]
+          if os.path.isfile("/var/lib/tailscale-nginx-cert/cert.pem") else []),
     ):
         code = run([
             "curl", "--silent", "--show-error", "--max-time", "10", "--noproxy", "*",
-            *(["--resolve", f"{host}:443:100.91.234.17"] if name == "Hermes WebUI" else []),
+            *(["--resolve", f"{host}:443:100.91.234.17"] if name != "Transmission" else []),
             "--output", "/dev/null", "--write-out", "%{http_code}", f"https://{host}{path}",
         ]).strip()
         if code != "401":

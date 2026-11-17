@@ -170,21 +170,17 @@ in
     # Only fixed filenames can be selected. A missing legacy certificate on a
     # new installation affects only clients requesting that retired hostname.
     appendHttpConfig = ''
-      map $ssl_server_name $transmission_cert {
-        default current/cert.pem;
-        buildfleet-server.tailcb7cdb.ts.net cert.pem;
-      }
-      map $ssl_server_name $transmission_key {
-        default current/key.pem;
-        buildfleet-server.tailcb7cdb.ts.net key.pem;
+      map $ssl_server_name $transmission_directory {
+        default .;
+        include /var/lib/tailscale-nginx-cert/published-*.map;
       }
     '';
     virtualHosts."nix-server.tailcb7cdb.ts.net" = {
       serverAliases = [ "buildfleet-server.tailcb7cdb.ts.net" ];
       listen = tailnetListen;
       onlySSL = true;
-      sslCertificate = "/var/lib/tailscale-nginx-cert/$transmission_cert";
-      sslCertificateKey = "/var/lib/tailscale-nginx-cert/$transmission_key";
+      sslCertificate = "/var/lib/tailscale-nginx-cert/$transmission_directory/cert.pem";
+      sslCertificateKey = "/var/lib/tailscale-nginx-cert/$transmission_directory/key.pem";
       extraConfig = ''
         allow 100.64.0.0/10;
         allow fd7a:115c:a1e0::/48;

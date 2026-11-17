@@ -51,11 +51,6 @@
       Persistent = true;
     };
   };
-  # Cockpit reads the pair in its privileged certificate preparation step.
-  systemd.tmpfiles.rules = [
-    "L+ /etc/cockpit/ws-certs.d/95-tailnet.cert - - - - /var/lib/tailscale-nginx-cert/current/cert.pem"
-    "L+ /etc/cockpit/ws-certs.d/95-tailnet.key - - - - /var/lib/tailscale-nginx-cert/current/key.pem"
-  ];
   systemd.services.nginx = {
     wants = [ "tailscale-nginx-cert.service" ];
     after = [ "tailscale-nginx-cert.service" ];
