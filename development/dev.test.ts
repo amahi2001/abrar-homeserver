@@ -46,7 +46,7 @@ if(name==='gh') {
 if(name==='docker') {
  if(a[0]==='info')console.log('29.8.1');
  if(a.includes('config'))console.log(JSON.stringify({services:{dev:{image:process.env.DEV_IMAGE,build:process.env.FAKE_CUSTOM_BUILD?{context:process.env.DEV_SOURCE}:undefined,environment:{snapshot:process.env.DEV_AGENT_CONFIG},volumes:[{type:'bind',source:process.env.DEV_PROJECT_STATE+'/home',target:'/home/node'}]},...(process.env.FAKE_SIDECAR?{db:{image:'cached-db'}}:{})}}));
- if(a[0]==='inspect'&&a.includes('{{json .ExecIDs}}')) {console.log(process.env.FAKE_EXEC_IDS || 'null');process.exit(0)}
+ if(a[0]==='inspect'&&a.includes('{{json .ExecIDs}}')) {console.log(process.env.FAKE_EXEC_IDS || (process.env.FAKE_LATE_EXEC && existsSync(process.env.FAKE_LATE_EXEC) ? '["late-exec"]' : 'null'));process.exit(0)}
  if(a[0]==='inspect'&&a.includes('{{json .Mounts}}')) {console.log(JSON.stringify([{Type:'bind',Source:process.env.FAKE_HOME_UNKNOWN||process.env.DEV_STATE_ROOT+'/projects/app/home',Destination:'/home/node'}]));process.exit(0)}
  if(a[0]==='inspect') {if(a.includes('{{.State.Health.Status}}'))console.log(process.env.FAKE_HEALTH_FAIL?'unhealthy':'healthy');else console.log(JSON.stringify({Running:!process.env.FAKE_HEALTH_FAIL,Health:{Status:process.env.FAKE_HEALTH_FAIL?'unhealthy':'healthy'}}));process.exit(0)}
  if(a.includes('inspect')&&process.env.FAKE_IMAGE_MISSING)fail('image absent');
@@ -65,6 +65,7 @@ if(name==='docker') {
 }
 if(name==='devcontainer') {
  if(a[0]==='--version') {console.log(existsSync(process.env.FAKE_INSTALLED)?readFileSync(process.env.FAKE_INSTALLED,'utf8'):process.env.FAKE_CLI_VERSION||'0.89.0');process.exit(0)}
+ if(a[0]==='build'&&process.env.FAKE_LATE_EXEC)writeFileSync(process.env.FAKE_LATE_EXEC,'ready');
  if(a[0]==='up') {if(process.env.FAKE_UP_FAIL)fail('container unhealthy');console.log(JSON.stringify({containerId:'container-id'}));}
  if(process.env.FAKE_CHECK_DISPATCH_LOCK&&(a[0]==='build'||a[0]==='up'||a.includes('dev-agent'))) {
   const held=Bun.spawnSync(['flock','-n',process.env.DEV_STATE_ROOT+'/projects/app/home/.agent-session.lock','true']).exitCode!==0;
@@ -742,8 +743,12 @@ test("a shell permits other shells but protects its checkout and container until
     f.clear();
     expect(f.cli(["rebuild", "app"], { FAKE_RUNNING: "1" }).code).toBe(1);
     expect(f.calls().some(c => c.name === "devcontainer" && c.args[0] === "up")).toBe(false);
+    expect(f.calls().some(c => c.name === "docker" && c.args[0] === "image" && c.args[1] === "tag")).toBe(false);
   } finally { writeFileSync(marker + ".release", ""); await child.exited; }
   expect(f.cli(["rebuild", "app"], { FAKE_RUNNING: "1", FAKE_EXEC_IDS: '["legacy-proxy"]' }).code).toBe(1);
+  f.clear();
+  expect(f.cli(["rebuild", "app"], { FAKE_RUNNING: "1", FAKE_CUSTOM_BUILD: "1", FAKE_LATE_EXEC: marker + ".late" }).code).toBe(1);
+  expect(f.calls().some(c => c.name === "devcontainer" && c.args[0] === "up")).toBe(false);
   expect(f.cli(["rebuild", "app"], { FAKE_RUNNING: "1" }).code).toBe(0);
 });
 

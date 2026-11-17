@@ -336,6 +336,7 @@ export function main(argv = process.argv.slice(2)) {
     const configHash = createHash("sha256").update(JSON.stringify(config)).update(JSON.stringify(nativeConfig)).digest("hex");
     const recreate = force || metadata?.configHash !== configHash;
     const needsUp = recreate || !existing || run(["docker", "inspect", existing, "--format", "{{.State.Health.Status}}"]).stdout !== "healthy";
+    const tagBase = !config.services.dev.build && (force || run(["docker", "image", "inspect", workspaceImage], { allowFailure: true }).code !== 0);
     function prepare() {
       if (needsUp) checkExecs(existing);
       if (recreate) checkpointBrowser();
@@ -343,6 +344,11 @@ export function main(argv = process.argv.slice(2)) {
         configure(config);
         native("build");
       }
+      if (needsUp) {
+        if (container() !== existing) throw Error("Project container changed during preparation; retry when idle.");
+        checkExecs(existing);
+      }
+      if (tagBase) run(["docker", "image", "tag", image, workspaceImage]);
       // The project image was prepared once; ordinary starts must never rebuild it.
       delete config.services.dev.build;
       configure(config);
@@ -365,7 +371,7 @@ export function main(argv = process.argv.slice(2)) {
       const logs = run(["docker", "logs", "--tail", "80", id], { allowFailure: true });
       throw Error(`Container did not become healthy.\n${logs.stdout}\n${logs.stderr}`);
     }
-    return withProjectLock(home, ".agent-session.lock", () => needsUp ? withProjectLock(home, ".dev-shell.lock", prepare) : prepare());
+    return withProjectLock(home, ".agent-session.lock", () => needsUp || tagBase ? withProjectLock(home, ".dev-shell.lock", prepare) : prepare());
   }
 
   if (command === "view") {
@@ -432,8 +438,6 @@ export function main(argv = process.argv.slice(2)) {
       metadata.image = workspaceImage;
       metadata.baseImage = image;
       try {
-        const config = JSON.parse(compose(["config", "--format", "json"]).stdout);
-        if (!config.services.dev.build) run(["docker", "image", "tag", image, workspaceImage]);
         metadata.configHash = startContainer(true);
       } catch (error) { metadata = previous; throw error; }
       atomic(metadataPath, JSON.stringify(metadata, null, 2) + "\n");
@@ -519,9 +523,7 @@ export function main(argv = process.argv.slice(2)) {
     const existingExcludes = existsSync(excludes) ? readFileSync(excludes, "utf8") : "";
     if (!existingExcludes.includes("# dev runtime")) atomic(excludes, existingExcludes + "\n# dev runtime\n.env\n.env.*\n!.env.example\n.codex/\n.claude/\n.claude.json\nauth.json\nnode_modules/\n.venv/\n", 0o644);
     if (run(["docker", "image", "inspect", image], { allowFailure: true }).code) build();
-    const workspaceExists = run(["docker", "image", "inspect", workspaceImage], { allowFailure: true }).code === 0;
     metadata = { ...metadata, repo, privateDefault, source, composeProject, image: workspaceImage, baseImage: image };
-    if (!workspaceExists && !JSON.parse(compose(["config", "--format", "json"]).stdout).services.dev.build) run(["docker", "image", "tag", image, workspaceImage]);
     // Retain repository identity on failed first startup; readiness is committed below.
     if (!existsSync(metadataPath)) atomic(metadataPath, JSON.stringify(metadata, null, 2) + "\n");
     metadata.configHash = startContainer();
