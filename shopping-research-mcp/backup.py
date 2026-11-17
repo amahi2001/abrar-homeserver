@@ -39,45 +39,55 @@ def locked(path):
         yield
 
 
-def private_parent(directory):
+def managed_directory(directory, *, gid, mode):
     # Migrate earlier app-owned backup parents in place. The parent of this
     # directory is already controlled by the backup administrator.
-    directory.mkdir(mode=0o700, exist_ok=True)
+    directory.mkdir(mode=mode, exist_ok=True)
     fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
     try:
-        os.fchown(fd, os.geteuid(), -1)
-        os.fchmod(fd, 0o700)
+        os.fchown(fd, os.geteuid(), gid)
+        os.fchmod(fd, mode)
     finally:
         os.close(fd)
 
 
 def retire_orphan(run):
     # The daemon can retain a worker after the invoking client has exited.
-    row = run(["docker", "ps", "-a", "--no-trunc", "--filter", f"name=^/{WORKER}$", "--format",
-               '{{.ID}} {{.State}} {{.Label "' + OWNER_LABEL + '"}}'],
-              check=True, capture_output=True, text=True, timeout=30).stdout.strip()
+    query = ["docker", "ps", "-a", "--no-trunc", "--filter", f"name=^/{WORKER}$", "--format",
+             '{{.ID}} {{.State}} {{.Label "' + OWNER_LABEL + '"}}']
+    def observed():
+        return run(query, check=True, capture_output=True, text=True, timeout=30).stdout.strip()
+    row = observed()
     if not row:
         return
     match = re.fullmatch(r"([a-f0-9]{64}) (created|exited|dead) 1", row)
     if not match:
         raise RuntimeError("An active or unowned backup worker still exists; retry after it exits")
     # Address the observed ID; a simultaneous start makes non-forced removal fail.
-    run(["docker", "rm", match[1]], check=True, timeout=30)
+    try:
+        run(["docker", "rm", match[1]], check=True, timeout=30)
+    except subprocess.CalledProcessError:
+        if observed():  # --rm may have already finished.
+            raise
 
 
-def clean_abandoned(root, requested):
+def prepare_directories(root, requested, gid):
     legacy_count = 0
     for kind in ("daily", "pre-upgrade", "weekly"):
         directory = root / kind
-        if directory.is_symlink():
-            if kind == requested or (requested == "daily" and kind == "weekly"):
-                raise RuntimeError(f"Refusing linked {kind} backup directory")
+        required = kind == requested or (requested == "daily" and kind == "weekly")
+        if directory.is_symlink() or (directory.exists() and not directory.is_dir()):
+            if required:
+                raise RuntimeError(f"Refusing invalid {kind} backup directory")
+            print(f"Skipping invalid {kind} backup directory.", file=sys.stderr)
             continue
-        private_parent(directory)
+        if not directory.exists() and not required:
+            continue
+        managed_directory(directory, gid=gid, mode=0o750)
         for entry in directory.iterdir():
             if entry.is_symlink() or not entry.is_dir():
                 continue
-            if STAGING.fullmatch(entry.name):
+            if kind == "weekly" and STAGING.fullmatch(entry.name):
                 shutil.rmtree(entry)
             elif STAMP.fullmatch(entry.name) and not (entry / "manifest.json").is_file():
                 legacy_count += 1
@@ -100,11 +110,18 @@ def backup(kind, *, state=STATE, now=None, run=subprocess.run):
         if not re.fullmatch(r"(?:sha256:)?[a-f0-9]{12,64}", image):
             raise RuntimeError("Could not identify exactly one local application image")
         retire_orphan(run)
-        private_parent(root)
-        clean_abandoned(root, kind)
+        # Older helpers mount the whole root at /backups. Preserve group
+        # traversal so the previous worker still runs during upgrades/rollback.
+        managed_directory(root, gid=owner.st_gid, mode=0o750)
+        prepare_directories(root, kind, owner.st_gid)
+        work = root / ".worker-staging"
+        managed_directory(work, gid=os.getegid(), mode=0o700)
+        for entry in work.iterdir():
+            if STAGING.fullmatch(entry.name) and not entry.is_symlink() and entry.is_dir():
+                shutil.rmtree(entry)
         if destination.exists() or destination.is_symlink():
             raise RuntimeError("Snapshot destination already exists")
-        staging = destination.parent / f".{name}.incomplete"
+        staging = work / f".{name}.incomplete"
         staging.mkdir(mode=0o700)
         os.chown(staging, owner.st_uid, owner.st_gid, follow_symlinks=False)
         run([
@@ -122,8 +139,18 @@ def backup(kind, *, state=STATE, now=None, run=subprocess.run):
         if snapshot.is_symlink() or any(path.is_symlink() or not path.is_file() for path in files):
             raise RuntimeError("Backup CLI did not finish both databases and manifest")
         size = sum(path.stat().st_size for path in files)
-        snapshot.rename(destination)
-        staging.rmdir()
+        # Only the two standalone databases and the manifest belong in a
+        # published snapshot. SQLite may leave empty WAL and SHM sidecars.
+        for db in files[1:]:
+            wal = db.with_name(db.name + "-wal")
+            if wal.is_symlink() or (wal.exists() and wal.stat().st_size != 0):
+                raise RuntimeError("Backup is not a standalone SQLite database")
+        finished = staging / "complete"
+        finished.mkdir(mode=0o700)
+        for path in files:
+            path.rename(finished / path.name)
+        finished.rename(destination)
+        shutil.rmtree(staging)
         prune(destination.parent, 7 if kind == "daily" else 3)
         if kind == "daily":
             weekly = root / "weekly"
