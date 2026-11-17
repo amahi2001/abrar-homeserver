@@ -8,7 +8,7 @@ import os
 from pathlib import Path
 import pwd
 import re
-import select
+import stat
 import subprocess
 import time
 
@@ -56,31 +56,36 @@ def compose_sidecars(dev):
 
 
 @contextlib.contextmanager
-def agent_lock(container, uid, gid):
+def agent_lock(container, home, uid, gid):
     if run("docker", "inspect", container, "--format", "{{json .ExecIDs}}") not in ("null", "[]"):
         raise RuntimeError(f"Dev container {container} has active or unknown exec sessions")
-    # Keep stdin open while holding the same lock as dev-agent. This closes
-    # the race with `dev shell ... -- dev-agent` while dispatch is quiesced.
-    process = subprocess.Popen([
-        "docker", "exec", "-i", "--user", f"{uid}:{gid}", container,
-        "flock", "-n", "/home/node/.agent-session.lock",
-        "flock", "-n", "/home/node/.dev-shell.lock", "sh", "-c",
-        "printf 'locked\\n'; read -r release || true",
-    ], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    try:
-        ready, _, _ = select.select([process.stdout], [], [], 30)
-        if not ready or process.stdout.readline() != b"locked\n":
-            raise RuntimeError(f"Dev container {container} has active or unknown work")
+    mounts = json.loads(run("docker", "inspect", container, "--format", "{{json .Mounts}}"))
+    shared = [m for m in mounts if m.get("Destination") == "/home/node"]
+    if (len(shared) != 1 or shared[0].get("Type") != "bind" or shared[0].get("Source") != str(home)
+            or home.is_symlink() or not home.is_dir()):
+        raise RuntimeError(f"Cannot verify shared home for dev container {container}")
+    # The host descriptors survive container shutdown, daemon replacement and recovery.
+    with contextlib.ExitStack() as locks:
+        for name in (".agent-session.lock", ".dev-shell.lock"):
+            path = home / name
+            flags = os.O_RDWR | os.O_NOFOLLOW | os.O_NONBLOCK
+            try:
+                fd = os.open(path, flags | os.O_CREAT | os.O_EXCL, 0o600)
+                created = True
+            except FileExistsError:
+                fd = os.open(path, flags)
+                created = False
+            locks.callback(os.close, fd)
+            if created:
+                os.fchown(fd, uid, gid)
+            held, linked = os.fstat(fd), path.lstat()
+            if not stat.S_ISREG(held.st_mode) or not os.path.samestat(held, linked) or held.st_uid != uid:
+                raise RuntimeError(f"Cannot verify project lock for {container}")
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                raise RuntimeError(f"Dev container {container} has active work") from None
         yield
-    finally:
-        process.stdin.close()
-        try:
-            process.wait(timeout=10)
-        except subprocess.TimeoutExpired:
-            process.terminate()
-            process.wait(timeout=10)
-        process.stdout.close()
-        process.stderr.close()
 
 
 def runner_unit_target(unit, value):
@@ -183,7 +188,7 @@ def guard(directory):
                 raise RuntimeError(f"Dev project {project} has an active session or preparation")
             if dev_containers().get(project) != container:
                 raise RuntimeError(f"Dev project {project} changed during idle checks")
-            locks.enter_context(agent_lock(container, owner.pw_uid, owner.pw_gid))
+            locks.enter_context(agent_lock(container, state_dir / "home", owner.pw_uid, owner.pw_gid))
             # Same supported checkpoint as dev stop; old images without a viewer
             # can proceed, while a failed checkpoint leaves the running box alone.
             run("docker", "exec", "--user", f"{owner.pw_uid}:{owner.pw_gid}", container,

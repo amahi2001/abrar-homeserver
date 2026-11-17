@@ -140,6 +140,19 @@ class DevMaintenanceTests(unittest.TestCase):
                     for name in originals:
                         self.assertEqual((state / name).read_text(), "new state and active work")
 
+    def test_transient_health_exec_finishes_before_rollback(self):
+        with tempfile.TemporaryDirectory() as directory:
+            state = Path(directory)
+            home = state / "home"
+            home.mkdir()
+            volumes = [{"type": "bind", "source": str(home), "target": "/home/node"}]
+            snapshots = {"compose.json": json.dumps({"services": {"dev": {"volumes": volumes}}}).encode()}
+            current = {"Id": "new", "ExecIDs": ["healthcheck"],
+                       "Mounts": [{"Type": "bind", "Source": str(home), "Destination": "/home/node"}]}
+            with patch.object(maintenance, "run", return_value="null") as inspect, patch.object(maintenance.time, "sleep"):
+                with maintenance.rollback_dispatch(state, snapshots, current, current):
+                    inspect.assert_called_once_with("docker", "inspect", "new", "--format", "{{json .ExecIDs}}")
+
     def test_rollback_dispatch_lock_releases_after_recovery_failure(self):
         with tempfile.TemporaryDirectory() as directory:
             state = Path(directory)

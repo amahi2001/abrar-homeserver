@@ -519,7 +519,8 @@ test("custom builds use a project image and failed rebuild preserves metadata an
   f.clear();
   expect(f.cli(["start", "app", "--no-agent"], { FAKE_WORKSPACE_MISSING: "1", FAKE_CUSTOM_BUILD: "1" }).code).toBe(0);
   expect(f.calls().some(c => c.name === "devcontainer" && c.args[0] === "build")).toBe(true);
-  expect(f.calls().some(c => c.name === "docker" && c.args.slice(0, 2).join(" ") === "image tag")).toBe(false);
+  expect(f.calls().some(c => c.name === "docker" && c.args[0] === "image" && c.args[1] === "tag" &&
+    c.args[2].startsWith("buildfleet-dev:stage-") && c.args[3] === saved.image)).toBe(true);
   const beforeFailure = readFileSync(meta, "utf8");
   expect(f.cli(["rebuild", "app"], { FAKE_UP_FAIL: "1", FAKE_CUSTOM_BUILD: "1" }).code).toBe(1);
   expect(readFileSync(meta, "utf8")).toBe(beforeFailure);
@@ -747,8 +748,11 @@ test("a shell permits other shells but protects its checkout and container until
   } finally { writeFileSync(marker + ".release", ""); await child.exited; }
   expect(f.cli(["rebuild", "app"], { FAKE_RUNNING: "1", FAKE_EXEC_IDS: '["legacy-proxy"]' }).code).toBe(1);
   f.clear();
+  const config = join(f.state, "projects/app/compose.json"), saved = readFileSync(config, "utf8");
   expect(f.cli(["rebuild", "app"], { FAKE_RUNNING: "1", FAKE_CUSTOM_BUILD: "1", FAKE_LATE_EXEC: marker + ".late" }).code).toBe(1);
   expect(f.calls().some(c => c.name === "devcontainer" && c.args[0] === "up")).toBe(false);
+  expect(f.calls().some(c => c.name === "docker" && c.args[0] === "image" && c.args[1] === "tag")).toBe(false);
+  expect(readFileSync(config, "utf8")).toBe(saved);
   expect(f.cli(["rebuild", "app"], { FAKE_RUNNING: "1" }).code).toBe(0);
 });
 

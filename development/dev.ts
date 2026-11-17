@@ -1,8 +1,8 @@
 #!/usr/bin/env bun
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync, chmodSync, copyFileSync, readdirSync, lstatSync, unlinkSync, realpathSync, readlinkSync, symlinkSync, openSync, closeSync, fstatSync, constants } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, readFileSync, writeFileSync, renameSync, chmodSync, copyFileSync, readdirSync, lstatSync, unlinkSync, realpathSync, readlinkSync, symlinkSync, openSync, closeSync, fstatSync, constants } from "node:fs";
 import { homedir, hostname, userInfo } from "node:os";
-import { join, resolve, dirname } from "node:path";
+import { join, resolve, dirname, basename } from "node:path";
 
 const help = `Usage:
   dev start PROJECT [--agent codex|claude] [--repo OWNER/REPO] [--task NAME] [--no-agent] [-- agent arguments]
@@ -296,15 +296,15 @@ export function main(argv = process.argv.slice(2)) {
     workspaceFolder: `/workspace/${project}`, remoteUser: "node", updateRemoteUserUID: false,
     overrideCommand: false, userEnvProbe: "none", shutdownAction: "none",
   };
-  function configure(config: any) {
+  function configure(config: any, dir = projectState) {
     applySharedTokenEyeRuntime(config, nativeConfig);
-    atomic(join(projectState, "compose.json"), JSON.stringify(config, null, 2) + "\n");
-    atomic(configPath, JSON.stringify(nativeConfig, null, 2) + "\n");
+    atomic(join(dir, "compose.json"), JSON.stringify(config, null, 2) + "\n");
+    atomic(join(dir, "devcontainer.json"), JSON.stringify(nativeConfig, null, 2) + "\n");
   }
-  function native(command: string, args: string[] = [], inherit = false, allowFailure = false) {
-    if (!existsSync(configPath)) configure(JSON.parse(compose(["config", "--format", "json"]).stdout));
+  function native(command: string, args: string[] = [], inherit = false, allowFailure = false, file = configPath) {
+    if (!existsSync(file)) configure(JSON.parse(compose(["config", "--format", "json"]).stdout));
     const identity = command === "build" ? [] : ["--id-label", `com.docker.compose.project=${composeProject}`, "--id-label", "com.docker.compose.service=dev"];
-    return run([nativeCli, command, "--workspace-folder", source, "--config", configPath, "--user-data-folder", join(projectState, "devcontainers"), ...identity, ...args], { env: environment(), inherit, allowFailure });
+    return run([nativeCli, command, "--workspace-folder", source, "--config", file, "--user-data-folder", join(projectState, "devcontainers"), ...identity, ...args], { env: environment(), inherit, allowFailure });
   }
   function container() {
     const ids = run(["docker", "ps", "-q", "--filter", `label=com.docker.compose.project=${composeProject}`, "--filter", "label=com.docker.compose.service=dev"]).stdout.split("\n").filter(Boolean);
@@ -337,18 +337,39 @@ export function main(argv = process.argv.slice(2)) {
     const recreate = force || metadata?.configHash !== configHash;
     const needsUp = recreate || !existing || run(["docker", "inspect", existing, "--format", "{{.State.Health.Status}}"]).stdout !== "healthy";
     const tagBase = !config.services.dev.build && (force || run(["docker", "image", "inspect", workspaceImage], { allowFailure: true }).code !== 0);
-    function prepare() {
-      if (needsUp) checkExecs(existing);
-      if (recreate) checkpointBrowser();
-      if (config.services.dev.build && (force || run(["docker", "image", "inspect", config.services.dev.image], { allowFailure: true }).code)) {
-        configure(config);
-        native("build");
-      }
+    function stillIdle() {
       if (needsUp) {
         if (container() !== existing) throw Error("Project container changed during preparation; retry when idle.");
         checkExecs(existing);
       }
-      if (tagBase) run(["docker", "image", "tag", image, workspaceImage]);
+    }
+    function prepare() {
+      if (needsUp) checkExecs(existing);
+      if (recreate) checkpointBrowser();
+      const service = config.services.dev;
+      if (service.build && (force || run(["docker", "image", "inspect", service.image], { allowFailure: true }).code)) {
+        // A legacy shell can arrive during a long build. Publish the live
+        // configuration and tags only after the last admission check passes.
+        const dir = mkdtempSync(join(projectState, "build-"));
+        const stagedImage = `buildfleet-dev:stage-${process.pid}-${basename(dir)}`;
+        try {
+          const staged = structuredClone(config);
+          staged.services.dev.image = stagedImage;
+          delete staged.services.dev.build.tags;
+          configure(staged, dir);
+          native("build", [], false, false, join(dir, "devcontainer.json"));
+          stillIdle();
+          for (const tag of new Set<string>([service.image, ...(service.build.tags || [])])) {
+            run(["docker", "image", "tag", stagedImage, tag]);
+          }
+        } finally {
+          run(["docker", "image", "rm", stagedImage], { allowFailure: true });
+          rmSync(dir, { recursive: true, force: true });
+        }
+      } else {
+        stillIdle();
+        if (tagBase) run(["docker", "image", "tag", image, workspaceImage]);
+      }
       // The project image was prepared once; ordinary starts must never rebuild it.
       delete config.services.dev.build;
       configure(config);
