@@ -32,7 +32,10 @@ if (args[0] === "edit" && fixture.editError) {
 }
 if (args[0] === "unlock") console.log("fake-" + side + "-session");
 else if (args[0] === "status") console.log(JSON.stringify({status:"unlocked",serverUrl:side==="src"?"https://vault.invalid":null,userId:fixture.wrongAccount?"other":side}));
-else if (args[0] === "list") {
+else if (args[0] === "get") {
+  if (fixture.lookup) console.log(JSON.stringify(fixture.lookup));
+  else { console.error(fixture.lookupError || "Not found."); process.exit(1); }
+} else if (args[0] === "list") {
   if (fixture.invalidJson) console.log("invalid json");
   else console.log(JSON.stringify(fixture[side]?.[args[1]] ?? []));
 } else if (args[0] === "create") console.log(JSON.stringify({ ...call.payload, id: "created-" + args[1] }));
@@ -52,7 +55,7 @@ else if (args[0] === "logout" && fixture.loggedOut) { console.error("already log
       VW_CLIENTID: "user.src",
       VW_CLIENTSECRET: "fake-vault-secret",
       VW_PASSWORD: "fake-vault-password",
-      VW_SERVER_URL: "https://vault.invalid",
+      VW_SERVER_URL: fixture.serverUrl || "https://vault.invalid",
     };
     if (options.missingCredentials) delete env.BW_PASSWORD;
     const runtime = process.env.SYNC_TEST_RUNTIME || process.execPath;
@@ -72,6 +75,7 @@ else if (args[0] === "logout" && fixture.loggedOut) { console.error("already log
 
 const source = (extra = {}) => ({ id: "source-1", name: "Example", type: 1, login: { username: "user", password: "secret" }, ...extra });
 const tracked = (extra = {}) => ({ ...source(), id: "target-1", fields: [{ name: "bw_id", value: "source-1", type: 0 }], ...extra });
+const absentId = "deafbeef-0000-4000-8000-000000000000";
 const mutations = (calls: any[]) => calls.filter(c => ["create", "edit", "delete"].includes(c.args[0]));
 
 test("unchanged items cause no writes; server setup and credentials retain their direction", async () => {
@@ -129,7 +133,7 @@ test("collisions in either direction refuse all writes, even when a folder is pe
 
 test("a single missing tracked item is deleted from a nonempty inventory", async () => {
   const result = await sync({ src: { items: [source()] }, dst: { items: [tracked(),
-    tracked({ id: "gone", fields: [{ name: "bw_id", value: "gone-src" }] }), source({ id: "untracked" })] } });
+    tracked({ id: "gone", fields: [{ name: "bw_id", value: absentId }] }), source({ id: "untracked" })] } });
   expect(result.code).toBe(0);
   expect(mutations(result.calls).map(c => c.args)).toEqual([["delete", "item", "gone"]]);
 });
@@ -170,7 +174,7 @@ test("transient edit failure retries the same payload successfully", async () =>
 }, 10000);
 
 test("permanent edit failure exits nonzero without leaking session arguments or deleting", async () => {
-  const result = await sync({ src: { items: [source()] }, dst: { items: [tracked({ notes: "old" }), tracked({ id: "obsolete", fields: [{ name: "bw_id", value: "deleted" }] })] }, editError: "permission denied" });
+  const result = await sync({ src: { items: [source()] }, dst: { items: [tracked({ notes: "old" }), tracked({ id: "obsolete", fields: [{ name: "bw_id", value: absentId }] })] }, editError: "permission denied" });
   expect(result.code).toBe(1);
   expect(mutations(result.calls).map(c => c.args[0])).toEqual(["edit"]);
   expect(result.stderr).toContain("bw edit failed");
@@ -204,4 +208,29 @@ test("unrelated duplicate cloud folders are harmless, referenced duplicates are 
   expect(ok.code,ok.stderr).toBe(0);
   const held=await sync({dst,src:{items:[source({folderId:"s"})],folders:[{id:"s",name:"Same"}]}});
   expect(held.code).toBe(1);expect(mutations(held.calls)).toEqual([]);
+});
+
+test("unreadable or unlisted active source holds all writes; confirmed trash permits a deletion", async () => {
+  const base={src:{items:[source({notes:"update"})]},dst:{items:[tracked(),tracked({id:"gone",fields:[{name:"bw_id",value:absentId}]})]}};
+  for(const condition of [{lookupError:"decryption failed"}, {lookup:{id:absentId}}, {lookup:{id:"wrong",deletedDate:"2026-01-01"}}]) {
+    const result=await sync({...base,...condition});
+    expect(result.code).toBe(1);
+    expect(mutations(result.calls)).toEqual([]);
+  }
+  const result=await sync({...base,lookup:{id:absentId,deletedDate:"2026-01-01T00:00:00Z"}});
+  expect(result.code,result.stderr).toBe(0);
+  expect(mutations(result.calls).map(c=>c.args[0])).toEqual(["edit","delete"]);
+});
+test("organization tracking reserves the source identity during manual adoption", async () => {
+  const result=await sync({src:{items:[source()]},dst:{items:[tracked({organizationId:"org"}),source({id:"manual"})]}});
+  expect(result.code,result.stderr).toBe(0); expect(mutations(result.calls)).toEqual([]);
+});
+test("case-insensitive source folder collision holds before writes", async () => {
+  const result=await sync({src:{items:[source()],folders:[{id:"a",name:"work"},{id:"b",name:"WORK"}]}});
+  expect(result.code).toBe(1); expect(mutations(result.calls)).toEqual([]);
+});
+test("bare configured hostname uses the CLI HTTPS default", async () => {
+  const result=await sync({serverUrl:"vault.invalid/"});
+  expect(result.code,result.stderr).toBe(0);
+  expect(result.calls.find(c=>c.args[0]==="config").args[2]).toBe("https://vault.invalid");
 });

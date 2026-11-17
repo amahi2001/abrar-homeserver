@@ -9,6 +9,7 @@ import { isDeepStrictEqual } from "node:util";
 const state = process.env.BITWARDEN_SYNC_STATE_DIR || "/var/lib/bitwarden-sync";
 class SyncError extends Error {}
 class RetryableEdit extends SyncError {}
+class MissingItem extends SyncError {}
 function requireState(condition: unknown, message: string): asserts condition {
   if (!condition) throw new SyncError(message);
 }
@@ -28,7 +29,9 @@ async function bw(profile: string, args: string[], env: Record<string, string> =
     child.stdin.on("error", () => {}); // CLI rejection is reported by close.
     child.on("close", code => {
       if (code === 0) return resolve(Buffer.concat(output).toString().trim());
-      const transient = /FetchError|network|ECONNRESET|ECONNREFUSED|ETIMEDOUT|EAI_AGAIN|ENOTFOUND|socket hang up|\b(?:429|500|502|503|504)\b/i.test(Buffer.concat(errors).toString());
+      const detail = Buffer.concat(errors).toString().trim();
+      if (code === 1 && args[0] === "get" && args[1] === "item" && detail === "Not found.") return reject(new MissingItem("Source item absent"));
+      const transient = /FetchError|network|ECONNRESET|ECONNREFUSED|ETIMEDOUT|EAI_AGAIN|ENOTFOUND|socket hang up|\b(?:429|500|502|503|504)\b/i.test(detail);
       const ErrorType = args[0] === "edit" && transient ? RetryableEdit : SyncError;
       reject(new ErrorType(`bw ${args[0]} failed`)); // Neither CLI output nor item metadata belongs in the journal.
     });
@@ -37,6 +40,7 @@ async function bw(profile: string, args: string[], env: Record<string, string> =
 }
 
 async function openVault(profile: string, url: string, passwordVariable: string, id?: string, secret?: string, email?: string) {
+  url = new URL(url.includes("://") ? url : `https://${url}`).href.replace(/\/$/, "");
   await mkdir(profile, { recursive: true, mode: 0o700 });
   await bw(profile, ["logout"]).catch(() => {}); // Locked and logged-out profiles can both occur.
   await bw(profile, ["config", "server", url]);
@@ -93,8 +97,11 @@ function plan(src: Entry[], dst: Entry[], srcFolders: Entry[], dstFolders: Entry
     targetNames.set(name, targetNames.has(name) ? null : folder.id);
   }
   const folderCreates = new Map<string, string>();
+  const sourceNames = new Set<string>();
   for (const folder of srcFolders) {
     const name = folder.name.toLowerCase();
+    requireState(!sourceNames.has(name), "Ambiguous source folder");
+    sourceNames.add(name);
     const target = targetNames.get(name);
     requireState(target !== null, "Ambiguous destination folder");
     if (target) folders.set(folder.id, target);
@@ -104,13 +111,13 @@ function plan(src: Entry[], dst: Entry[], srcFolders: Entry[], dstFolders: Entry
   const tracked = new Map<string, Entry>();
   const manual = new Map<string, Entry[]>();
   for (const item of dst) {
-    if (item.organizationId || item.deletedDate) continue;
+    if (item.deletedDate) continue;
     const fields = (item.fields ?? []).filter((f: Entry) => f.name === "bw_id");
     if (fields.length) {
       const id = fields[0].value;
       requireState(fields.length === 1 && typeof id === "string" && id && !tracked.has(id), "Ambiguous destination tracking ID");
       tracked.set(id, item);
-    } else {
+    } else if (!item.organizationId) {
       const k = key(item);
       if (!manual.has(k)) manual.set(k, []);
       manual.get(k)!.push(item);
@@ -139,9 +146,9 @@ function plan(src: Entry[], dst: Entry[], srcFolders: Entry[], dstFolders: Entry
       writes.push({ source: item, target, adopted, fields });
     }
   }
-  const deletes: Entry[] = [];
+  const deletes: { id: string; target: Entry }[] = [];
   for (const [id, target] of tracked) if (!present.has(id)) {
-    if (supported(target)) deletes.push(target); else skipped++;
+    if (supported(target)) deletes.push({id, target}); else skipped++;
   }
   const blocked = deletes.length > 0 && (!src.some(e => !e.organizationId && !e.deletedDate) ||
     deletes.length > Math.min(10, Math.max(1, Math.floor(tracked.size * 0.05))));
@@ -172,16 +179,23 @@ async function synchronize(profile: string, preview: boolean) {
   const adopted = changes.writes.filter(w => w.adopted).length;
   console.log(`Plan: ${created} created, ${changes.writes.length-created-adopted} updated, ${adopted} adopted, ${changes.deletes.length} deleted, ${changes.folderCreates.size} source folders to map, ${changes.skipped} skipped.`);
   requireState(!changes.blocked, "Deletion guard held the entire sync; reconcile source and destination before retrying");
-  if (preview) return;
-  const createdFolders = new Map<string, string>();
-  for (const [id, name] of changes.folderCreates) {
-    const k = name.toLowerCase();
-    if (!createdFolders.has(k)) {
-      const folder = JSON.parse(await dest(["create", "folder"], { name }));
-      requireState(typeof folder.id === "string" && folder.id, "Could not verify created folder");
-      createdFolders.set(k, folder.id);
+  // bw list can omit an undecryptable or archived item. A UUID get uses the
+  // encrypted local inventory directly instead of the CLI's text search.
+  for (const {id} of changes.deletes) {
+    requireState(/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(id), "Invalid tracked source UUID");
+    try {
+      const item = JSON.parse(await source(["get", "item", id]));
+      requireState(item.id === id && !item.decryptionFailure && typeof item.deletedDate === "string" &&
+        Number.isFinite(Date.parse(item.deletedDate)), "Source absence could not be confirmed");
+    } catch (error) {
+      if (!(error instanceof MissingItem)) throw error;
     }
-    changes.folders.set(id, createdFolders.get(k)!);
+  }
+  if (preview) return;
+  for (const [id, name] of changes.folderCreates) {
+    const folder = JSON.parse(await dest(["create", "folder"], { name }));
+    requireState(typeof folder.id === "string" && folder.id, "Could not verify created folder");
+    changes.folders.set(id, folder.id);
   }
   for (const {source: item, target, fields} of changes.writes) {
     const data = owned(item, changes.folders.get(item.folderId) ?? null, fields);
@@ -197,7 +211,7 @@ async function synchronize(profile: string, preview: boolean) {
       }
     }
   }
-  for (const target of changes.deletes) await dest(["delete", "item", target.id]);
+  for (const {target} of changes.deletes) await dest(["delete", "item", target.id]);
   console.log("Sync finished.");
 }
 if (import.meta.main) main().catch(error => {
