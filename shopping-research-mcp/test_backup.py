@@ -1,4 +1,5 @@
-"""Snapshot copy failures never publish a completed weekly backup."""
+"""Only completed snapshots can become visible or displace a retained backup."""
+import errno
 import importlib.util
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -11,6 +12,62 @@ from unittest.mock import patch
 spec = importlib.util.spec_from_file_location("backup", Path(__file__).with_name("backup.py"))
 snapshots = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(snapshots)
+
+
+def output_dir(args):
+    mount = next(arg for arg in args if arg.endswith(",dst=/backups"))
+    return Path(mount.removeprefix("type=bind,src=").removesuffix(",dst=/backups")) / args[-1].removeprefix("/backups/")
+
+
+class SnapshotTests(unittest.TestCase):
+    def test_failed_write_or_dead_client_keeps_previous_snapshots(self):
+        for kind in ("daily", "pre-upgrade"):
+            with self.subTest(kind=kind), tempfile.TemporaryDirectory() as tmp:
+                state = Path(tmp)
+                (state / "data").mkdir()
+                old = state / "backups" / kind / "20260101T000000Z"
+                old.mkdir(parents=True)
+                (old / "manifest.json").write_text("{}")
+                # Neither an older unmarked format nor a link is ours to remove.
+                legacy = old.with_name("20260102T000000Z")
+                legacy.mkdir()
+                link = old.with_name(".20260101T000001Z.incomplete")
+                link.symlink_to(legacy, target_is_directory=True)
+                now = datetime(2026, 11, 11, tzinfo=timezone.utc)
+                final = old.with_name("20261111T000000Z")
+                staging = old.with_name(".20261111T000000Z.incomplete")
+                fail = True
+                worker_exists = True
+
+                def worker(args, **kwargs):
+                    if "images" in args:
+                        return SimpleNamespace(stdout="a" * 64)
+                    if args[1] == "ps":
+                        return SimpleNamespace(stdout="abc" if worker_exists else "")
+                    out = output_dir(args)
+                    self.assertEqual(out.parent, staging)
+                    self.assertFalse(final.exists())
+                    out.mkdir()
+                    (out / "shopping.sqlite").write_text("shopping")
+                    if fail:
+                        raise OSError(errno.ENOSPC, "fixture disk full")
+                    (out / "auth.sqlite").write_text("auth")
+                    (out / "manifest.json").write_text("{}")
+
+                with self.assertRaises(OSError):
+                    snapshots.backup(kind, state=state, now=now, run=worker)
+                self.assertFalse(final.exists())
+                self.assertTrue(staging.is_dir())
+                with self.assertRaisesRegex(RuntimeError, "worker still exists"):
+                    snapshots.backup(kind, state=state, now=now, run=worker)
+                self.assertTrue((staging / "snapshot/shopping.sqlite").is_file())
+                worker_exists = fail = False
+                snapshots.backup(kind, state=state, now=now, run=worker)
+                self.assertEqual((final / "auth.sqlite").read_text(), "auth")
+                self.assertFalse(staging.exists())
+                self.assertTrue(old.exists())
+                self.assertTrue(legacy.is_dir())
+                self.assertTrue(link.is_symlink())
 
 
 class WeeklyBackupTests(unittest.TestCase):
@@ -31,7 +88,7 @@ class WeeklyBackupTests(unittest.TestCase):
             def fake_cli(args, **kwargs):
                 if "images" in args:
                     return SimpleNamespace(stdout="a" * 64)
-                destination = state / "backups" / args[-1].removeprefix("/backups/")
+                destination = output_dir(args)
                 destination.mkdir()
                 for name in ("shopping.sqlite", "auth.sqlite"):
                     (destination / name).write_bytes(b"synthetic database")
