@@ -3,6 +3,7 @@
 import argparse
 import json
 import os
+import signal
 from pathlib import Path
 import subprocess
 import tempfile
@@ -46,6 +47,10 @@ def main():
     parser.add_argument("image", help="already-built image tag or digest")
     parser.add_argument("--baseline", type=Path, help="deployed compose.yaml")
     args = parser.parse_args()
+    def stop(signum, _frame):
+        raise SystemExit(128 + signum)
+
+    signal.signal(signal.SIGTERM, stop)
     project = "dev-probe-" + uuid.uuid4().hex[:12]
     paths = {"candidate": Path(__file__).with_name("compose.yaml")}
     if args.baseline:
@@ -63,7 +68,11 @@ def main():
         try:
             # A disconnected client cannot cancel an in-flight Docker create.
             # Wait for daemon acknowledgement before cleaning up this project.
-            run(*compose, "create", timeout=None)
+            saved = signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGTERM, signal.SIGINT})
+            try:
+                run(*compose, "create", timeout=None)
+            finally:
+                signal.pthread_sigmask(signal.SIG_SETMASK, saved)
             ids = {name: run(*compose, "ps", "-a", "-q", name) for name in paths}
             timing = {}
             for name, cid in ids.items():

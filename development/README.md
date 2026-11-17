@@ -179,8 +179,9 @@ uses the current tool locks and gives changed image inputs their own tag.
 ```bash
 candidate=$(nix build --no-link --print-out-paths .#dev)
 image=$("$candidate/bin/dev" build | tail -n 1)
-python3 development/probe-canary.py "$image" --baseline /etc/nixos-deployed/development/compose.yaml
-DEV_UI_SMOKE=1 bash development/smoke.sh "$image"
+tested=$(docker image inspect -f '{{.Id}}' "$image")
+python3 development/probe-canary.py "$tested" --baseline /etc/nixos-deployed/development/compose.yaml
+DEV_UI_SMOKE=1 bash development/smoke.sh "$tested"
 ```
 
 The probe uses the resolved Compose healthcheck with a private temporary project,
@@ -189,25 +190,54 @@ one-minute CPU use, marker loss and recovery. The smoke uses disposable source,
 account and home directories and exercises the actual entrypoint, browser and
 indexer. An indexing failure or a browser smoke failure stops promotion.
 
-For the first live box, install the shell/maintenance admission changes before
-the image and Compose tuning. Keep the candidate launcher outside the host
-profile while observing one quiet project. Record its previous Docker image ID
-and tag and save its private `project.json`, `compose.json` and `devcontainer.json`.
-Reserve that box through its existing startup lock. For an example 24-hour soak:
+Before changing a live box, install the guard-only launcher and maintenance
+changes while retaining the old image and Compose assets. Check interactive,
+timer and service launch paths for old pinned launchers. Redirect or drain
+those clients first, including TokenEye’s proxy if it uses the selected box.
+New managed shells take the shared lock. Docker exec snapshots only detect
+already-admitted legacy work. Keep other boxes on the installed launcher.
+
+Select an idle project without a custom Compose override, on its existing
+agent branch. Run this from one host Bash shell after both fixtures pass.
+Capture the backup under the project and deployment locks. Keep the project
+reserved through observation. This example uses a 24-hour soak.
 
 ```bash
-project=buildfleet-dev-sandbox
-state="$HOME/.local/state/dev/projects/$project"
-flock -n "$state/startup.lock" bash -eu -c '
-  DEV_LOCK_HELD="$1" "$2/bin/dev" rebuild "$1"
-  "$2/bin/dev" shell "$1" -- bun --version
+(
+  set -euo pipefail
+  umask 077
+  project=buildfleet-dev-sandbox
+  state="$HOME/.local/state/dev/projects/$project"
+  source_dir="$HOME/projects/$project"
+  exec 9>>"$state/startup.lock"
+  flock -n 9
+  exec 8>>/run/lock/host-deployment.lock
+  flock -xn 8
+  test ! -e "$source_dir/.dev/compose.yaml"
+  [[ $(git -C "$source_dir" branch --show-current) == agent/* ]]
+  running() { docker ps -q --filter label=dev.managed=true --filter "label=dev.project=$project"; }
+  previous=$(running)
+  [[ -n $previous && $previous != *$'\n'* ]]
+  saved=$(mktemp -d "$state/canary-XXXXXXXX")
+  cp "$state"/{project.json,compose.json,devcontainer.json} "$saved/"
+  docker inspect -f '{{.Image}} {{.Config.Image}}' "$previous" > "$saved/previous-image"
+  read -r previous_id previous_tag < "$saved/previous-image"
+  docker image tag "$previous_id" "buildfleet-dev:rollback-$(basename "$saved")"
+  test "$(docker image inspect -f '{{.Id}}' "$image")" = "$tested"
+  DEV_LOCK_HELD="$project" DEV_HOST_LOCK_HELD="$project" "$candidate/bin/dev" start "$project" --no-agent
+  current=$(running)
+  test "$(docker inspect -f '{{.Image}} {{.State.Health.Status}}' "$current")" = "$tested healthy"
+  "$candidate/bin/dev" shell "$project" -- bun --version
+  flock -u 8
   sleep 86400
-' -- "$project" "$candidate"
+  test "$(running)" = "$current"
+  test "$(docker inspect -f '{{.Image}} {{.State.Health.Status}}' "$current")" = "$tested healthy"
+)
 ```
 
-The lock defers normal starts and hourly replacement for that project during
-observation. Shells stay available. Other boxes use the installed launcher.
-Before promotion, inspect that the same image ID is still running and healthy.
+The private backup and rollback tag survive a failed check. A changed image
+or failed smoke ends promotion. The startup lock defers launches and hourly
+replacement for this project during observation. Shells stay available.
 For rollback, reserve the project and host deployment locks, confirm no running
 exec or held agent/shell lock, and hold both activity locks through restoration.
 Retag the saved ID with its original tag, restore the three saved configuration
