@@ -45,7 +45,8 @@ COPY --chmod=0755 codebase-memory.ts /opt/dev/
 COPY --chmod=0755 playwright-cli.sh /opt/dev/bin/playwright-cli
 COPY --chmod=0755 dev-ui.sh /usr/local/lib/dev/dev-ui.sh
 COPY --chmod=0755 entrypoint.sh agent-session.sh dev-finish.sh gh.sh /usr/local/lib/dev/
-RUN ln -s /opt/dev/codebase-memory.ts /usr/local/bin/dev-memory \
+RUN chmod 0755 /opt/dev \
+    && ln -s /opt/dev/codebase-memory.ts /usr/local/bin/dev-memory \
     && echo 'export PATH="/opt/dev/bin:$PATH"' > /etc/profile.d/dev-ui.sh \
     && ln -s /usr/local/lib/dev/dev-finish.sh /usr/local/bin/dev-finish \
     && ln -s /usr/local/lib/dev/agent-session.sh /usr/local/bin/dev-agent \
