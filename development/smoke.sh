@@ -49,7 +49,8 @@ done
 start "$one" one home-one
 start "$two" two home-two
 if [ "${DEV_UI_SMOKE:-0}" = 1 ]; then
-  docker cp "$(dirname "$0")/ui-smoke.ts" "$one:/tmp/ui-smoke.ts"
+  install -m 644 "$(dirname "$0")/ui-smoke.ts" "$work/ui-smoke.ts"
+  docker cp "$work/ui-smoke.ts" "$one:/tmp/ui-smoke.ts"
   inside bun /tmp/ui-smoke.ts
 fi
 inside bash -ec '
@@ -131,10 +132,10 @@ start "$one" one home-one
 inside bash -ec 'test -s source-marker; test -s "$HOME/.cache/cache-marker"; test -s "$CLAUDE_CONFIG_DIR/persistence-marker"'
 inside bash -ec 'test "$(stat -c %Y "$HOME/.local/state/dev-playwright-version")" = "$(cat "$HOME/.cache/playwright-install-time")"; test "$(grep -Fc /opt/dev/ui.md "$CODEX_HOME/AGENTS.md")" = 1'
 if [ "${DEV_UI_SMOKE:-0}" = 1 ]; then
-  docker cp "$(dirname "$0")/ui-smoke.ts" "$one:/tmp/ui-smoke.ts"
+  docker cp "$work/ui-smoke.ts" "$one:/tmp/ui-smoke.ts"
   inside bun /tmp/ui-smoke.ts persisted
   inside grep -Fq '"width":1200' .playwright/cli.config.json
-  docker cp "$(dirname "$0")/ui-smoke.ts" "$two:/tmp/ui-smoke.ts"
+  docker cp "$work/ui-smoke.ts" "$two:/tmp/ui-smoke.ts"
   docker exec --user "$(id -u):$(id -g)" "$two" bun /tmp/ui-smoke.ts isolated
 fi
 if [ -n "$config" ]; then docker logs "$one" | rg -q 'Synced Codex \+ Claude \(0 files changed\)'; fi

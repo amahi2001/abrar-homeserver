@@ -40,15 +40,12 @@ RUN curl -fsSL "$CODEBASE_MEMORY_INSTALLER" -o /tmp/cbm-install.sh \
     && test "$(/opt/codebase-memory-mcp/codebase-memory-mcp --version)" = "codebase-memory-mcp ${CODEBASE_MEMORY_VERSION}" \
     && ln -s /opt/codebase-memory-mcp/codebase-memory-mcp /usr/local/bin/codebase-memory-mcp \
     && rm /tmp/cbm-install.sh
-COPY instructions.md ui.md codebase-memory.ts /opt/dev/
-COPY browser-state.cjs /opt/dev/
-COPY playwright-cli.sh /opt/dev/bin/playwright-cli
-COPY dev-ui.sh /usr/local/lib/dev/dev-ui.sh
-COPY entrypoint.sh agent-session.sh dev-finish.sh gh.sh /usr/local/lib/dev/
-RUN chmod +x /usr/local/lib/dev/*.sh \
-    && chmod +x /opt/dev/bin/playwright-cli \
-    && chmod +x /opt/dev/codebase-memory.ts \
-    && ln -s /opt/dev/codebase-memory.ts /usr/local/bin/dev-memory \
+COPY --chmod=0644 instructions.md ui.md browser-state.cjs /opt/dev/
+COPY --chmod=0755 codebase-memory.ts /opt/dev/
+COPY --chmod=0755 playwright-cli.sh /opt/dev/bin/playwright-cli
+COPY --chmod=0755 dev-ui.sh /usr/local/lib/dev/dev-ui.sh
+COPY --chmod=0755 entrypoint.sh agent-session.sh dev-finish.sh gh.sh /usr/local/lib/dev/
+RUN ln -s /opt/dev/codebase-memory.ts /usr/local/bin/dev-memory \
     && echo 'export PATH="/opt/dev/bin:$PATH"' > /etc/profile.d/dev-ui.sh \
     && ln -s /usr/local/lib/dev/dev-finish.sh /usr/local/bin/dev-finish \
     && ln -s /usr/local/lib/dev/agent-session.sh /usr/local/bin/dev-agent \
