@@ -18,7 +18,9 @@ in
 
   systemd.services.shopping-research-mcp = {
     description = "Authenticated shopping research MCP server";
-    wantedBy = [ "multi-user.target" ];
+    unitConfig.StopWhenUnneeded = true;
+    environment.SHOPPING_REFRESH_SOCKET = "/tmp/shopping-refresh.sock";
+    environment.SHOPPING_BACKEND_PORT = "3348";
     after = [ "docker.service" "network-online.target" ];
     requires = [ "docker.service" ];
     wants = [ "network-online.target" ];
@@ -31,6 +33,35 @@ in
       TimeoutStopSec = "45s";
       UMask = "0077";
     };
+  };
+
+  systemd.sockets.shopping-research-mcp-proxy = {
+    wantedBy = [ "sockets.target" ];
+    listenStreams = [ "127.0.0.1:3347" ];
+  };
+  systemd.services.shopping-research-mcp-proxy = {
+    description = "Wake shopping MCP and forward queued connections";
+    requires = [ "shopping-research-mcp.service" ];
+    after = [ "shopping-research-mcp.service" ];
+    serviceConfig = {
+      ExecStart = "${pkgs.systemd}/lib/systemd/systemd-socket-proxyd --exit-idle-time=2min 127.0.0.1:3348";
+      DynamicUser = true;
+      NoNewPrivileges = true;
+    };
+  };
+  systemd.services.shopping-research-mcp-refresh = {
+    description = "Record shopping catalog observations";
+    requires = [ "shopping-research-mcp.service" ];
+    after = [ "shopping-research-mcp.service" ];
+    onFailure = [ "maintenance-alert@%n.service" ];
+    serviceConfig = { Type = "oneshot"; TimeoutStartSec = "3min"; };
+    script = ''
+      exec ${compose} exec -T app bun -e 'const r = await fetch("http://localhost/refresh", { unix: process.env.SHOPPING_REFRESH_SOCKET, method: "POST", signal: AbortSignal.timeout(150000) }); if (r.status !== 204) process.exit(1)'
+    '';
+  };
+  systemd.timers.shopping-research-mcp-refresh = {
+    wantedBy = [ "timers.target" ];
+    timerConfig = { OnCalendar = "*:0/15"; Persistent = true; AccuracySec = "10s"; };
   };
 
   systemd.services.shopping-research-mcp-backup = {
