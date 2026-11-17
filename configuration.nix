@@ -7,7 +7,9 @@
   runtimePackages,
   ...
 }:
-
+let
+  legacyTransmissionHost = import ./tailnet-legacy-host.nix;
+in
 {
   imports = [
     ./shopping-research-mcp/preserved-runtime.nix
@@ -201,7 +203,8 @@
     port = 9090;
     settings = {
       WebService = {
-        Origins = lib.mkForce "https://nix-server.tailcb7cdb.ts.net:9090 https://buildfleet-server.tailcb7cdb.ts.net:9090 https://100.91.234.17:9090";
+        Origins = lib.mkForce (lib.concatStringsSep " " ([ "https://nix-server.tailcb7cdb.ts.net:9090" "https://100.91.234.17:9090" ]
+          ++ lib.optional (legacyTransmissionHost != null) "https://${legacyTransmissionHost}:9090"));
       };
     };
   };

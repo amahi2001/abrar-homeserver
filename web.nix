@@ -23,8 +23,7 @@ let
       /var/lib/hermes/hermes-webui/ctl.sh start --skip-agent-install
   '';
   # Only the existing installation opts in during its client migration.
-  legacyTransmissionHost = if builtins.pathExists ./tailnet-legacy-host.nix
-    then import ./tailnet-legacy-host.nix else null;
+  legacyTransmissionHost = import ./tailnet-legacy-host.nix;
   tailnetListen = [
     {
       addr = "100.91.234.17";

@@ -1,5 +1,10 @@
 set -euo pipefail
 name=nix-server.tailcb7cdb.ts.net
+dns_name=$(tailscale status --json | jq -er '.Self.DNSName')
+if [[ "${dns_name%.}" != "$name" ]]; then
+  echo "Tailnet enrollment must assign $name before certificate issuance" >&2
+  exit 1
+fi
 state=/var/lib/tailscale-nginx-cert
 staged=$(mktemp -d "$state/.issuer-XXXXXXXX")
 trap 'rm -rf "$staged"' EXIT

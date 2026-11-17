@@ -55,7 +55,7 @@ in
       TimeoutStartSec = "120s";
       ExecStartPre = "${config.services.tailscale.package}/bin/tailscale wait --timeout=60s";
     };
-    path = [ config.services.tailscale.package pkgs.openssl pkgs.coreutils pkgs.diffutils pkgs.systemd ];
+    path = [ config.services.tailscale.package pkgs.openssl pkgs.jq pkgs.coreutils pkgs.diffutils pkgs.systemd ];
     script = builtins.readFile ./scripts/renew-tailnet-cert.sh;
   };
   # Pin the resolved pair for each Cockpit start. A generation rollback
