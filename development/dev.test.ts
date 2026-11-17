@@ -2,7 +2,7 @@ import { test, expect, afterEach } from "bun:test";
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, statSync, copyFileSync, symlinkSync, unlinkSync, chmodSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { projectName, repository, githubRemote, withAgentDispatchLock, applySharedTokenEyeRuntime } from "./dev";
+import { projectName, repository, githubRemote, withProjectLock, applySharedTokenEyeRuntime } from "./dev";
 import "./codebase-memory.test";
 
 const roots: string[] = [];
@@ -46,6 +46,7 @@ if(name==='gh') {
 if(name==='docker') {
  if(a[0]==='info')console.log('29.8.1');
  if(a.includes('config'))console.log(JSON.stringify({services:{dev:{image:process.env.DEV_IMAGE,build:process.env.FAKE_CUSTOM_BUILD?{context:process.env.DEV_SOURCE}:undefined,environment:{snapshot:process.env.DEV_AGENT_CONFIG},volumes:[{type:'bind',source:process.env.DEV_PROJECT_STATE+'/home',target:'/home/node'}]},...(process.env.FAKE_SIDECAR?{db:{image:'cached-db'}}:{})}}));
+ if(a[0]==='inspect'&&a.includes('{{json .ExecIDs}}')) {console.log(process.env.FAKE_EXEC_IDS || 'null');process.exit(0)}
  if(a[0]==='inspect'&&a.includes('{{json .Mounts}}')) {console.log(JSON.stringify([{Type:'bind',Source:process.env.FAKE_HOME_UNKNOWN||process.env.DEV_STATE_ROOT+'/projects/app/home',Destination:'/home/node'}]));process.exit(0)}
  if(a[0]==='inspect') {if(a.includes('{{.State.Health.Status}}'))console.log(process.env.FAKE_HEALTH_FAIL?'unhealthy':'healthy');else console.log(JSON.stringify({Running:!process.env.FAKE_HEALTH_FAIL,Health:{Status:process.env.FAKE_HEALTH_FAIL?'unhealthy':'healthy'}}));process.exit(0)}
  if(a.includes('inspect')&&process.env.FAKE_IMAGE_MISSING)fail('image absent');
@@ -73,6 +74,11 @@ if(name==='devcontainer') {
   if(hostHeld===a.includes('dev-agent'))fail('incorrect host deployment lock lifetime');
  }
  if(a.includes('dev-agent')&&process.env.FAKE_AGENT_STARTED) {writeFileSync(process.env.FAKE_AGENT_STARTED,'ready');await Bun.sleep(600);}
+ if(a.includes('hold-shell')) {
+  const marker=process.env.FAKE_SHELL_STARTED;
+  writeFileSync(marker,'ready');
+  for(let i=0;i<600 && !existsSync(marker+'.release');i++)await Bun.sleep(50);
+ }
  if(a.some(value=>value.includes('dev-ui'))&&process.env.FAKE_UI_FAIL)fail('viewer failed');
  if(a.includes('flock')&&process.env.FAKE_AGENT_ACTIVE)fail('locked');
  process.exit(0);
@@ -459,15 +465,15 @@ test("dispatch flock stays held across a callback and releases after success or 
   const home = mkdtempSync(join(tmpdir(), "dev-dispatch-")); roots.push(home);
   const path = join(home, ".agent-session.lock");
   const probe = () => Bun.spawnSync(["flock", "-n", path, "true"], { stdout: "pipe", stderr: "pipe" }).exitCode;
-  withAgentDispatchLock(home, () => expect(probe()).not.toBe(0));
+  withProjectLock(home, ".agent-session.lock", () => expect(probe()).not.toBe(0));
   expect(probe()).toBe(0);
-  expect(() => withAgentDispatchLock(home, () => { expect(probe()).not.toBe(0); throw Error("build failed"); })).toThrow("build failed");
+  expect(() => withProjectLock(home, ".agent-session.lock", () => { expect(probe()).not.toBe(0); throw Error("build failed"); })).toThrow("build failed");
   expect(probe()).toBe(0);
-  expect(() => withAgentDispatchLock(join(home, "missing"), () => {})).toThrow();
+  expect(() => withProjectLock(join(home, "missing"), ".agent-session.lock", () => {})).toThrow();
   const link = join(home, "linked-home"); symlinkSync(home, link);
-  expect(() => withAgentDispatchLock(link, () => {})).toThrow("shared project home");
+  expect(() => withProjectLock(link, ".agent-session.lock", () => {})).toThrow("shared project home");
   unlinkSync(path); symlinkSync(join(home, "missing-lock"), path);
-  expect(() => withAgentDispatchLock(home, () => {})).toThrow();
+  expect(() => withProjectLock(home, ".agent-session.lock", () => {})).toThrow();
 });
 
 test("an agent admitted during the base build prevents recreation without losing its work", () => {
@@ -719,6 +725,26 @@ test("active agent prevents a second start from changing its branch", () => {
   const r = f.cli(["start", "app", "--task", "overlap", "--no-agent"], { FAKE_RUNNING: "1", FAKE_AGENT_ACTIVE: "1" });
   expect(r.code).toBe(1);
   expect(f.git("branch", "--show-current")).toBe(branch);
+});
+
+test("a shell permits other shells but protects its checkout and container until it exits", async () => {
+  const f = fixture(); expect(f.cli(["start", "app", "--no-agent"]).code).toBe(0);
+  const marker = join(f.dir, "shell"), branch = f.git("branch", "--show-current");
+  const child = Bun.spawn([process.execPath, script, "shell", "app", "--", "hold-shell"], {
+    env: { ...f.env, FAKE_SHELL_STARTED: marker }, stdout: "pipe", stderr: "pipe",
+  });
+  try {
+    for (let i = 0; i < 300 && !existsSync(marker); i++) await Bun.sleep(20);
+    expect(existsSync(marker)).toBe(true);
+    expect(f.cli(["shell", "app", "--", "true"]).code).toBe(0);
+    expect(f.cli(["start", "app", "--task", "busy", "--no-agent"], { FAKE_RUNNING: "1" }).code).toBe(1);
+    expect(f.git("branch", "--show-current")).toBe(branch);
+    f.clear();
+    expect(f.cli(["rebuild", "app"], { FAKE_RUNNING: "1" }).code).toBe(1);
+    expect(f.calls().some(c => c.name === "devcontainer" && c.args[0] === "up")).toBe(false);
+  } finally { writeFileSync(marker + ".release", ""); await child.exited; }
+  expect(f.cli(["rebuild", "app"], { FAKE_RUNNING: "1", FAKE_EXEC_IDS: '["legacy-proxy"]' }).code).toBe(1);
+  expect(f.cli(["rebuild", "app"], { FAKE_RUNNING: "1" }).code).toBe(0);
 });
 
 test("launcher holds the project lock through the agent session while shell and stop remain available", async () => {

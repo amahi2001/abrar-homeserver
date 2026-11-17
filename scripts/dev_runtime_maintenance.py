@@ -1,7 +1,7 @@
 """Build current dev assets weekly, then refresh only idle running projects."""
 
 import argparse
-from contextlib import contextmanager
+from contextlib import contextmanager, ExitStack
 import fcntl
 import json
 import os
@@ -52,16 +52,20 @@ def rollback_dispatch(project_dir, snapshots, previous, current):
         if (len(mounted) != 1 or mounted[0].get("Type") != "bind"
                 or mounted[0].get("Source") != str(home)):
             raise RuntimeError("Rollback needs attention: unknown running project home mount")
-    path = home / ".agent-session.lock"
-    descriptor = os.open(path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
-    with os.fdopen(descriptor, "a") as lock:
-        try:
-            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
-            raise RuntimeError("Rollback needs attention: active agent work was left intact") from None
-        held, linked = os.fstat(lock.fileno()), path.lstat()
-        if (not stat.S_ISREG(held.st_mode) or (held.st_dev, held.st_ino) != (linked.st_dev, linked.st_ino)):
-            raise RuntimeError("Rollback needs attention: project agent lock changed")
+    with ExitStack() as locks:
+        for name in (".agent-session.lock", ".dev-shell.lock"):
+            path = home / name
+            descriptor = os.open(path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+            lock = locks.enter_context(os.fdopen(descriptor, "a"))
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                raise RuntimeError("Rollback needs attention: active work was left intact") from None
+            held, linked = os.fstat(lock.fileno()), path.lstat()
+            if (not stat.S_ISREG(held.st_mode) or (held.st_dev, held.st_ino) != (linked.st_dev, linked.st_ino)):
+                raise RuntimeError("Rollback needs attention: project lock changed")
+        if current is not None and current.get("ExecIDs", True) not in (None, []):
+            raise RuntimeError("Rollback needs attention: container exec active or unknown")
         yield
 
 
@@ -77,8 +81,11 @@ def running_projects():
 
 
 def idle(container):
+    if run("docker", "inspect", container, "--format", "{{json .ExecIDs}}") not in ("null", "[]"):
+        return False
     result = subprocess.run(["docker", "exec", "--user", f"{os.getuid()}:{os.getgid()}", container,
-                             "flock", "-n", "/home/node/.agent-session.lock", "true"],
+                             "flock", "-n", "/home/node/.agent-session.lock",
+                             "flock", "-n", "/home/node/.dev-shell.lock", "true"],
                             capture_output=True, timeout=30)
     return result.returncode == 0
 

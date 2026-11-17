@@ -329,6 +329,14 @@ class FleetTests(unittest.TestCase):
                 self.assertFalse((Path(directory) / "paused").exists())
                 resume.assert_not_called()
 
+    def test_legacy_exec_defers_maintenance_before_taking_container_locks(self):
+        with patch.object(fleet, "run", return_value='["proxy-exec"]'), \
+                patch.object(fleet.subprocess, "Popen") as command:
+            with self.assertRaisesRegex(RuntimeError, "active or unknown exec"):
+                with fleet.agent_lock("app", 1000, 1000):
+                    self.fail("maintenance admitted with a running exec")
+            command.assert_not_called()
+
     def test_dev_startup_lock_is_held_through_switch_and_released_after_recovery(self):
         @contextlib.contextmanager
         def agent(*args):

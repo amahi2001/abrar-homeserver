@@ -112,18 +112,18 @@ export function applySharedTokenEyeRuntime(config: any, nativeConfig: any, home 
   return true;
 }
 
-export function withAgentDispatchLock<T>(home: string, action: () => T): T {
+export function withProjectLock<T>(home: string, file: ".agent-session.lock" | ".dev-shell.lock", action: () => T, shared = false): T {
   if (!lstatSync(home).isDirectory()) throw Error("Cannot verify the shared project home directory.");
-  const path = join(home, ".agent-session.lock");
+  const path = join(home, file);
   const fd = openSync(path, constants.O_CREAT | constants.O_RDWR | constants.O_NOFOLLOW, 0o600);
   try {
-    if (!fstatSync(fd).isFile()) throw Error("Invalid project agent lock.");
+    if (!fstatSync(fd).isFile()) throw Error("Invalid project lock.");
     // flock locks the shared open-file description: the parent's FD keeps it
     // held after this helper exits, even while the container is replaced.
-    const lock = Bun.spawnSync(["flock", "-n", "0"], { stdin: fd, stdout: "pipe", stderr: "pipe" });
-    if (lock.exitCode !== 0) throw Error("Agent active or dispatch lock unavailable; preserving the running container.");
+    const lock = Bun.spawnSync(["flock", "-n", shared ? "-s" : "-x", "0"], { stdin: fd, stdout: "pipe", stderr: "pipe" });
+    if (lock.exitCode !== 0) throw Error(file === ".agent-session.lock" ? "Agent active or dispatch lock unavailable; preserving the running container." : "Shell or container change active; retry when idle.");
     const current = lstatSync(path), held = fstatSync(fd);
-    if (current.dev !== held.dev || current.ino !== held.ino) throw Error("Project agent lock changed; retry when idle.");
+    if (current.dev !== held.dev || current.ino !== held.ino) throw Error("Project lock changed; retry when idle.");
     return action();
   } finally { closeSync(fd); }
 }
@@ -316,6 +316,12 @@ export function main(argv = process.argv.slice(2)) {
     // Old images have no browser tooling; transport/checkpoint errors must fail.
     native("exec", ["bash", "-ec", "if [ -x /usr/local/bin/dev-ui ]; then dev-ui _checkpoint; fi"]);
   }
+  function checkExecs(id: string | undefined) {
+    // Older launchers' shells, including the shared forwarder, have no shell lock.
+    if (id && !["null", "[]"].includes(run(["docker", "inspect", id, "--format", "{{json .ExecIDs}}"]).stdout)) {
+      throw Error("Container exec active or unknown; retry when idle.");
+    }
+  }
   function startContainer(force = false) {
     const config = JSON.parse(compose(["config", "--format", "json"]).stdout);
     applySharedTokenEyeRuntime(config, nativeConfig);
@@ -327,9 +333,11 @@ export function main(argv = process.argv.slice(2)) {
       const mounted = JSON.parse(run(["docker", "inspect", existing, "--format", "{{json .Mounts}}"]).stdout).filter((mount: any) => mount.Destination === "/home/node");
       if (mounted.length !== 1 || mounted[0].Type !== "bind" || mounted[0].Source !== home) throw Error("Running container has an unknown project home mount; preserving it.");
     }
-    return withAgentDispatchLock(home, () => {
-      const configHash = createHash("sha256").update(JSON.stringify(config)).update(JSON.stringify(nativeConfig)).digest("hex");
-      const recreate = force || metadata?.configHash !== configHash;
+    const configHash = createHash("sha256").update(JSON.stringify(config)).update(JSON.stringify(nativeConfig)).digest("hex");
+    const recreate = force || metadata?.configHash !== configHash;
+    const needsUp = recreate || !existing || run(["docker", "inspect", existing, "--format", "{{.State.Health.Status}}"]).stdout !== "healthy";
+    function prepare() {
+      if (needsUp) checkExecs(existing);
       if (recreate) checkpointBrowser();
       if (config.services.dev.build && (force || run(["docker", "image", "inspect", config.services.dev.image], { allowFailure: true }).code)) {
         configure(config);
@@ -338,8 +346,8 @@ export function main(argv = process.argv.slice(2)) {
       // The project image was prepared once; ordinary starts must never rebuild it.
       delete config.services.dev.build;
       configure(config);
-      let id = container();
-      if (recreate || !id || run(["docker", "inspect", id, "--format", "{{.State.Health.Status}}"]).stdout !== "healthy") {
+      let id = existing;
+      if (needsUp) {
         const result = native("up", recreate ? ["--remove-existing-container"] : []);
         id = JSON.parse(result.stdout).containerId;
         if (typeof id !== "string" || !id) throw Error("Dev Containers CLI returned no container ID");
@@ -356,7 +364,8 @@ export function main(argv = process.argv.slice(2)) {
       }
       const logs = run(["docker", "logs", "--tail", "80", id], { allowFailure: true });
       throw Error(`Container did not become healthy.\n${logs.stdout}\n${logs.stderr}`);
-    });
+    }
+    return withProjectLock(home, ".agent-session.lock", () => needsUp ? withProjectLock(home, ".dev-shell.lock", prepare) : prepare());
   }
 
   if (command === "view") {
@@ -383,7 +392,8 @@ export function main(argv = process.argv.slice(2)) {
   if (command === "shell") {
     if (!metadata) throw Error("Project not initialized. Run dev start PROJECT first.");
     nativeReady();
-    const result = native("exec", agentArgs.length ? agentArgs : ["bash"], true, true);
+    const result = withProjectLock(join(projectState, "home"), ".dev-shell.lock",
+      () => native("exec", agentArgs.length ? agentArgs : ["bash"], true, true), true);
     process.exitCode = result.code; return;
   }
   if (command === "stop") {
@@ -500,7 +510,10 @@ export function main(argv = process.argv.slice(2)) {
     if (task || !branch.startsWith("agent/")) {
       if (task && git("status", "--porcelain")) throw Error("Uncommitted changes present. Resume without --task or finish them first.");
       const name = `agent/${task || "work"}-${new Date().toISOString().replace(/[-:.TZ]/g, "")}-${process.pid}`;
-      git("switch", "-c", name);
+      withProjectLock(join(projectState, "home"), ".dev-shell.lock", () => {
+        checkExecs(container());
+        git("switch", "-c", name);
+      });
     }
     const excludes = resolve(source, git("rev-parse", "--git-path", "info/exclude"));
     const existingExcludes = existsSync(excludes) ? readFileSync(excludes, "utf8") : "";

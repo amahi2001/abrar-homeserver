@@ -57,11 +57,14 @@ def compose_sidecars(dev):
 
 @contextlib.contextmanager
 def agent_lock(container, uid, gid):
+    if run("docker", "inspect", container, "--format", "{{json .ExecIDs}}") not in ("null", "[]"):
+        raise RuntimeError(f"Dev container {container} has active or unknown exec sessions")
     # Keep stdin open while holding the same lock as dev-agent. This closes
     # the race with `dev shell ... -- dev-agent` while dispatch is quiesced.
     process = subprocess.Popen([
         "docker", "exec", "-i", "--user", f"{uid}:{gid}", container,
-        "flock", "-n", "/home/node/.agent-session.lock", "sh", "-c",
+        "flock", "-n", "/home/node/.agent-session.lock",
+        "flock", "-n", "/home/node/.dev-shell.lock", "sh", "-c",
         "printf 'locked\\n'; read -r release || true",
     ], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     try:
