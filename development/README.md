@@ -148,6 +148,11 @@ Claude skips repeated tool-permission prompts. Docker mounts define their host
 filesystem access. One active agent session per project is enforced with `flock`.
 The launcher holds its project lock through the session; shells and explicit
 `dev stop` remain available while it runs.
+Shells share a separate project lock for their full lifetime. Replacement,
+rollback and daemon maintenance require it exclusively. An existing Docker
+exec also protects shells started by older launchers, including TokenEye's
+shared proxy. Drain the proxy in its own maintenance window before replacing
+that container. A warm attach can reuse a healthy box.
 
 ## Images, previews, and customization
 
@@ -165,6 +170,50 @@ RTK, Playwright CLI and Skills CLI follow the personal config
 lockfiles when a snapshot is present. Changed tool locks select a new image so
 updates are built once and reused across projects. Debian packages resolve at explicit image
 build time. Both x86_64 Linux and the server's existing Docker daemon are required.
+
+### Stage a devbox update
+
+Build the pinned launcher from the candidate checkout on the host. Its build
+uses the current tool locks and gives changed image inputs their own tag.
+
+```bash
+candidate=$(nix build --no-link --print-out-paths .#dev)
+image=$("$candidate/bin/dev" build | tail -n 1)
+python3 development/probe-canary.py "$image" --baseline /etc/nixos-deployed/development/compose.yaml
+DEV_UI_SMOKE=1 bash development/smoke.sh "$image"
+```
+
+The probe uses the resolved Compose healthcheck with a private temporary project,
+no network, no accounts and no fleet labels. It measures first readiness,
+one-minute CPU use, marker loss and recovery. The smoke uses disposable source,
+account and home directories and exercises the actual entrypoint, browser and
+indexer. An indexing failure or a browser smoke failure stops promotion.
+
+For the first live box, install the shell/maintenance admission changes before
+the image and Compose tuning. Keep the candidate launcher outside the host
+profile while observing one quiet project. Record its previous Docker image ID
+and tag and save its private `project.json`, `compose.json` and `devcontainer.json`.
+Reserve that box through its existing startup lock. For an example 24-hour soak:
+
+```bash
+project=buildfleet-dev-sandbox
+state="$HOME/.local/state/dev/projects/$project"
+flock -n "$state/startup.lock" bash -eu -c '
+  DEV_LOCK_HELD="$1" "$2/bin/dev" rebuild "$1"
+  "$2/bin/dev" shell "$1" -- bun --version
+  sleep 86400
+' -- "$project" "$candidate"
+```
+
+The lock defers normal starts and hourly replacement for that project during
+observation. Shells stay available. Other boxes use the installed launcher.
+Before promotion, inspect that the same image ID is still running and healthy.
+For rollback, reserve the project and host deployment locks, confirm no running
+exec or held agent/shell lock, and hold both activity locks through restoration.
+Retag the saved ID with its original tag, restore the three saved configuration
+files, and run Compose with the recorded project name, source and saved Compose
+file using `up -d --no-build --no-deps --wait dev`. Verify the original ID,
+mounts and readiness. Leave any newly active box running until it can drain.
 
 Ports 3000, 5173, and 8000 map to random **host-loopback** ports. Run `dev list`
 to find them, then forward a selected port over SSH, for example:
