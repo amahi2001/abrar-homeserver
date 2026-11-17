@@ -134,7 +134,7 @@ def require_idle():
     if not (current.get("gateway_running") is True
             and current.get("gateway_busy") is False
             and current.get("gateway_drainable") is True
-            and current.get("active_agents") == 0):
+            and type(agents) is int and agents == 0):
         raise RuntimeError("Hermes is busy or its idle state is unknown; retry maintenance when idle")
 
 
@@ -144,8 +144,13 @@ def resume(services):
     run("systemctl", "start", *reversed(services))
     for attempt in range(30):
         try:
-            run("systemctl", "is-active", "--quiet", *services)
-            if "hermes-agent.service" not in services or status().get("gateway_running") is True:
+            # is-active with multiple units succeeds if *any* unit is active.
+            for service in services:
+                run("systemctl", "is-active", "--quiet", service)
+            if "hermes-agent.service" not in services:
+                return
+            current = status()
+            if current.get("gateway_running") is True and current.get("gateway_drainable") is True:
                 return
         except (ValueError, RuntimeError, subprocess.SubprocessError):
             pass
@@ -229,11 +234,15 @@ def interrupted(signum, frame):
     raise RuntimeError(f"Maintenance interrupted by signal {signum}")
 
 
-def main():
+def main(lock_path=Path("/run/lock/nixos-flake-update.lock")):
     signal.signal(signal.SIGTERM, interrupted)
     signal.signal(signal.SIGINT, interrupted)
-    with Path("/run/lock/nixos-flake-update.lock").open("w") as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    with lock_path.open("a") as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            print("MCP maintenance deferred: maintenance lock is busy.", flush=True)
+            return 75
         try:
             refresh()
         except Deferred:

@@ -37,6 +37,7 @@ class FakeCommands:
         self.fail = None
         self.backup_failure = False
         self.start_failure = False
+        self.exit_after_start = None
         self.google_roots = updater.GOOGLE_ROOTS
 
     def __call__(self, *args, **kwargs):
@@ -52,9 +53,16 @@ class FakeCommands:
             if self.start_failure:
                 self.start_failure = False
                 raise subprocess.CalledProcessError(1, args)
+            if self.exit_after_start:
+                self.services[self.exit_after_start] = "failed"
+                self.exit_after_start = None
+        elif args[:3] == ("systemctl", "is-active", "--quiet"):
+            if not any(self.services[s] == "active" for s in args[3:]):
+                raise subprocess.CalledProcessError(3, args)
         elif args[0] == "curl":
             self.status_calls += 1
-            if self.unknown_after and self.status_calls >= self.unknown_after:
+            if (self.services["hermes-dashboard.service"] != "active"
+                    or self.unknown_after and self.status_calls >= self.unknown_after):
                 raise subprocess.CalledProcessError(1, args)
             return json.dumps({"gateway_running": True, "gateway_busy": bool(self.busy_after and
                                self.status_calls >= self.busy_after), "active_agents": 0,
@@ -115,18 +123,37 @@ class McpUpdateTests(unittest.TestCase):
                 self.assertFalse(any(call[0] in ("runuser", "cp") or call[:2] == ("systemctl", "stop")
                                      for call in commands.calls))
 
-    def test_main_returns_retry_exit_code_only_for_known_busy_work(self):
+    def test_main_returns_retry_exit_code_for_known_busy_work(self):
         with tempfile.TemporaryDirectory() as directory, \
-                patch.object(updater, "Path", return_value=Path(directory) / "lock"), \
                 patch.object(updater.signal, "signal"), \
                 patch.object(updater, "refresh", side_effect=updater.Deferred("busy")), \
                 contextlib.redirect_stdout(io.StringIO()) as output:
-            self.assertEqual(updater.main(), 75)
+            self.assertEqual(updater.main(Path(directory) / "lock"), 75)
             self.assertIn("deferred", output.getvalue())
         with patch.object(updater, "status", return_value={"gateway_busy": True}):
             with self.assertRaises(RuntimeError) as raised:
                 updater.require_idle()
             self.assertNotIsInstance(raised.exception, updater.Deferred)
+
+    def test_contended_lock_defers_then_releases_for_retry(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(updater.signal, "signal"), \
+                patch.object(updater, "refresh") as refresh:
+            path = Path(directory) / "lock"
+            holder = ("import fcntl, sys; f = open(sys.argv[1], 'a'); "
+                      "fcntl.flock(f, fcntl.LOCK_EX); print('locked', flush=True); sys.stdin.read()")
+            with subprocess.Popen([sys.executable, "-c", holder, str(path)], text=True,
+                                  stdin=subprocess.PIPE, stdout=subprocess.PIPE) as proc:
+                try:
+                    self.assertEqual(proc.stdout.readline().strip(), "locked")
+                    self.assertEqual(updater.main(path), 75)
+                    refresh.assert_not_called()
+                finally:
+                    proc.communicate(timeout=5)
+            self.assertEqual(updater.main(path), 0)
+            refresh.assert_called_once_with()
+            refresh.side_effect = BlockingIOError()
+            with self.assertRaises(BlockingIOError):
+                updater.main(path)
 
     def test_python_smoke_uses_semantic_ssl_version_and_checks_base_interpreter(self):
         for version, same_base, accepted in (("OpenSSL 3.6.5 29 Sep 2026", True, True),
@@ -156,6 +183,9 @@ class McpUpdateTests(unittest.TestCase):
                 with patch.object(updater, "status", return_value=incomplete):
                     with self.assertRaisesRegex(RuntimeError, "busy or its idle state is unknown"):
                         updater.require_idle()
+        with patch.object(updater, "status", return_value={**idle, "active_agents": False}):
+            with self.assertRaisesRegex(RuntimeError, "busy or its idle state is unknown"):
+                updater.require_idle()
 
     def test_embedded_smoke_program_compiles(self):
         compile(updater.SMOKE, "mcp-smoke", "exec")
@@ -246,6 +276,20 @@ class McpUpdateTests(unittest.TestCase):
         self.assertIsNotNone(error)
         self.assert_restored(commands)
 
+    def test_gateway_exiting_after_start_is_not_hidden_by_active_dashboard(self):
+        commands, error = self.exercise(exit_after_start="hermes-agent.service")
+        self.assertRegex(str(error), "did not recover")
+        self.assert_restored(commands)
+
+    def test_resume_waits_for_gateway_to_be_ready_to_serve(self):
+        with patch.object(updater, "run"), patch.object(updater.time, "sleep") as wait, \
+                patch.object(updater, "status", side_effect=[
+                    {"gateway_running": True, "gateway_drainable": False},
+                    {"gateway_running": True, "gateway_drainable": True},
+                ]):
+            updater.resume(updater.SERVICES)
+        wait.assert_called_once_with(2)
+
     def test_busy_or_unknown_gateway_after_partial_resume_keeps_runtime_and_services(self):
         for state in ("busy", "unknown"):
             with self.subTest(state=state):
@@ -261,12 +305,12 @@ class McpUpdateTests(unittest.TestCase):
                 self.assertEqual(stops, [("systemctl", "stop", *updater.SERVICES)])
                 self.assertEqual(len(list(commands.state.iterdir())), 1)
 
-    def test_previously_stopped_dashboard_remains_stopped(self):
+    def test_stopped_dashboard_keeps_gateway_admission_unknown(self):
         commands, error = self.exercise(services={"hermes-agent.service": "active", "hermes-dashboard.service": "inactive"})
-        self.assertIsNone(error)
+        self.assertIsInstance(error, subprocess.CalledProcessError)
         self.assertEqual(commands.services["hermes-dashboard.service"], "inactive")
-        stops = [call for call in commands.calls if call[:2] == ("systemctl", "stop")]
-        self.assertEqual(stops, [("systemctl", "stop", "hermes-agent.service")])
+        self.assertFalse(any(call[0] in ("cp", "runuser") or call[:2] in
+                             (("systemctl", "stop"), ("systemctl", "start")) for call in commands.calls))
 
     def test_transitioning_services_are_not_interrupted(self):
         commands, error = self.exercise(services={"hermes-agent.service": "activating", "hermes-dashboard.service": "active"})
