@@ -41,12 +41,27 @@ mv -Tf "$staged/active-map" "$map"
 if systemctl is-active --quiet nginx.service; then systemctl reload --no-block nginx.service; fi
 ln -s "$version" "$staged/cockpit-current"
 mv -Tf "$staged/cockpit-current" "$state/cockpit-current"
-if [[ "$(cat "$state/cockpit-active-generation" 2>/dev/null || true)" != "$version" ]]; then
-  if systemctl is-failed --quiet cockpit.service; then
-    systemctl start cockpit.service
-  else
-    systemctl try-restart cockpit.service
-  fi
+active=$(cat "$state/cockpit-active-generation" 2>/dev/null || true)
+if systemctl is-failed --quiet cockpit.service; then
+  systemctl start cockpit.service
+elif [[ "$active" != "$version" ]]; then
+  systemctl try-restart cockpit.service
+fi
+if [[ "$active" != "$version" ]]; then
   printf '%s\n' "$version" > "$staged/cockpit-active"
   mv -Tf "$staged/cockpit-active" "$state/cockpit-active-generation"
 fi
+
+# Retain valid generations for reloads and rollback. Remove only the expired
+# random-name pairs generated here, after a further 30-day grace period.
+retire_before=$(date -u -d '30 days ago' +%s)
+for retired in "$state"/pair-????????; do
+  [[ -d "$retired" && ! -L "$retired" && "${retired##*/}" != "$version" && "${retired##*/}" != "$previous" ]] || continue
+  [[ -L "$retired/95-tailnet.cert" && -f "$retired/cert.pem" ]] || continue
+  expiry=$(openssl x509 -in "$retired/cert.pem" -enddate -noout) || continue
+  seconds=$(date -u -d "${expiry#notAfter=}" +%s) || continue
+  if (( seconds < retire_before )); then
+    rm -f -- "$retired/95-tailnet.cert" "$retired/95-tailnet.key" "$retired/cert.pem" "$retired/key.pem"
+    rmdir -- "$retired"
+  fi
+done

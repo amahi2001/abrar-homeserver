@@ -181,6 +181,7 @@ in
       }
     '';
     virtualHosts."nix-server.tailcb7cdb.ts.net" = {
+      default = legacyTransmissionHost != null;
       serverAliases = lib.optional (legacyTransmissionHost != null) legacyTransmissionHost;
       listen = tailnetListen;
       onlySSL = true;
