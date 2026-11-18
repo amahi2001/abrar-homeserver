@@ -5,6 +5,7 @@ from contextlib import ExitStack
 import errno
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -21,6 +22,7 @@ HOST = "/agent/host-claude"
 BOX = "/agent/claude"
 BOX_DATA = "/agent/token-eye/data"
 PREIMAGE_ATTR = "user.tokeneye.home_rename_preimage"
+OWNER_LIMIT = 16 << 20
 
 
 # Run in the exact container selected from this project's locked metadata.
@@ -64,8 +66,18 @@ def invalid_constant(value):
     raise ValueError("invalid JSON number")
 
 
+def native_int(text):
+    if len(text) > 20:
+        require(math.isfinite(float(text)))
+    return int(text)
+
+
 def decode(raw):
-    return json.loads(raw, object_pairs_hook=unique_fields, parse_constant=invalid_constant)
+    value = json.loads(raw.decode("utf-8"), object_pairs_hook=unique_fields,
+                       parse_constant=invalid_constant, parse_int=native_int)
+    # Python also accepts overflow as infinity and unpaired escaped surrogates.
+    json.dumps(value, ensure_ascii=False, allow_nan=False, separators=(",", ":")).encode("utf-8")
+    return value
 
 
 def recorded_preimage(owner):
@@ -122,7 +134,7 @@ def proposal(raw, home, legacy):
                 and isinstance(entry["account"], dict) and set(entry["account"]) == {"root", "clientRoot"}
                 and isinstance(entry["installed"], dict) and isinstance(entry["previous"], dict))
     entries = {o["account"]["root"]: o for o in record["accounts"]}
-    require(len(record["accounts"]) == 2 and set(entries) == {BOX, HOST})
+    require([entry["account"]["root"] for entry in record["accounts"]] == [BOX, HOST])
     for name, root in ((BOX, box), (HOST, new)):
         entry = entries[name]
         installed = entry["installed"]
@@ -145,7 +157,9 @@ def proposal(raw, home, legacy):
         return raw
     host["account"]["clientRoot"] = str(new)
     host["installed"][KEY] = str(new / CA)
-    return json.dumps(record, indent=2, ensure_ascii=False).encode()
+    candidate = json.dumps(record, indent=2, ensure_ascii=False, allow_nan=False).encode()
+    require(len(candidate) <= OWNER_LIMIT)
+    return candidate
 
 
 def reconcile(mode, updater, legacy, deployment_lock, preimage_id=None):
@@ -174,9 +188,9 @@ def reconcile(mode, updater, legacy, deployment_lock, preimage_id=None):
         check_box(container, home, data, mode != "check")
         require(not os.path.lexists(updater.pending)
                 and not os.path.lexists(data / "claude-routing-pending.json"))
-        routing = decode(contents(data / "routing-owner.json", 16 << 20, private=True))
+        routing = decode(contents(data / "routing-owner.json", OWNER_LIMIT, private=True))
         require(routing["applying"] is False)
-        raw = contents(owner, 16 << 20, private=True)
+        raw = contents(owner, OWNER_LIMIT, private=True)
         candidate = proposal(raw, home, legacy)
         selected = recorded_preimage(owner)
         require(selected is None or raw == candidate)
@@ -184,7 +198,7 @@ def reconcile(mode, updater, legacy, deployment_lock, preimage_id=None):
         backup = updater.state / f"host-ca-home-rename.{key}.preimage"
         backup_exists = os.path.lexists(backup)
         if raw != candidate and backup_exists:
-            require(contents(backup, 16 << 20, private=True) == raw)
+            require(contents(backup, OWNER_LIMIT, private=True) == raw)
         if mode == "check":
             if raw == candidate:
                 return f"current {selected}" if selected else "current"
@@ -192,14 +206,14 @@ def reconcile(mode, updater, legacy, deployment_lock, preimage_id=None):
         if mode == "apply":
             if raw == candidate:
                 require(selected == key)
-                snapshot = contents(backup, 16 << 20, private=True)
+                snapshot = contents(backup, OWNER_LIMIT, private=True)
                 require(hashlib.sha256(snapshot).hexdigest() == key
                         and snapshot != raw and proposal(snapshot, home, legacy) == raw)
                 return f"current {key}"
             require(hashlib.sha256(raw).hexdigest() == key)
             replacement = candidate
         else:
-            preimage = contents(backup, 16 << 20, private=True)
+            preimage = contents(backup, OWNER_LIMIT, private=True)
             require(hashlib.sha256(preimage).hexdigest() == key)
             if raw == preimage:
                 return "already_restored"
@@ -208,14 +222,14 @@ def reconcile(mode, updater, legacy, deployment_lock, preimage_id=None):
         def unchanged():
             require(proposal(raw, home, legacy) == candidate)
             require(recorded_preimage(owner) == selected)
-            require(contents(owner, 16 << 20, private=True) == raw)
+            require(contents(owner, OWNER_LIMIT, private=True) == raw)
 
         def before_replace():
             check_box(container, home, data, True)
             if mode == "apply" and not backup_exists:
                 # Fully stage the backup, recheck, then publish without replacing any file.
                 atomic(backup, raw, before_replace=unchanged, exclusive=True)
-            require(contents(backup, 16 << 20, private=True) == (raw if mode == "apply" else replacement))
+            require(contents(backup, OWNER_LIMIT, private=True) == (raw if mode == "apply" else replacement))
             unchanged()
 
         # Stage and sync the replacement before the final checks and rename.

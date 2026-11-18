@@ -38,8 +38,8 @@ class HomeAliasTests(unittest.TestCase):
         self.host = self.home / ".claude"
         self.box = self.home / ".local/state/dev/accounts/claude"
         records = []
-        for name, root, client in ((alias.HOST, self.host, self.legacy / ".claude"),
-                                   (alias.BOX, self.box, Path(alias.BOX))):
+        for name, root, client in ((alias.BOX, self.box, Path(alias.BOX)),
+                                   (alias.HOST, self.host, self.legacy / ".claude")):
             root.mkdir(mode=0o700, parents=True)
             atomic(root / alias.CA, b"fixture public CA")
             installed = {k: "fixture-"+k for k in alias.KEYS}
@@ -76,7 +76,7 @@ class HomeAliasTests(unittest.TestCase):
         self.assertEqual(self.backup.read_bytes(), self.raw)
         self.assertEqual(self.backup.stat().st_mode & 0o777, 0o600)
         expected = json.loads(self.raw)
-        entry = expected["accounts"][0]
+        entry = expected["accounts"][1]
         entry["account"]["clientRoot"] = str(self.host)
         entry["installed"][alias.KEY] = str(self.host / alias.CA)
         self.assertEqual(json.loads(self.owner.read_bytes()), expected)
@@ -195,11 +195,22 @@ class HomeAliasTests(unittest.TestCase):
         path = self.host / "settings.json"
         raw = path.read_bytes()
         duplicate = raw.replace(b'"NODE_EXTRA_CA_CERTS":', b'"NODE_EXTRA_CA_CERTS":"other","NODE_EXTRA_CA_CERTS":')
-        for settings in (duplicate, b'{"extra":NaN,' + raw[1:]):
+        for settings in (duplicate, b'{"extra":NaN,' + raw[1:], b'{"extra":1e400,' + raw[1:],
+                         raw.decode().encode("utf-16"), b"\xef\xbb\xbf" + raw,
+                         b'{"extra":"\\udfff",' + raw[1:]):
             atomic(path, settings)
             with self.assertRaises(ValueError):
                 self.run_repair("check")
         self.assertFalse(self.backup.exists())
+
+    def test_native_scope_order_and_output_size_are_checked_before_eligibility(self):
+        with patch.object(alias, "OWNER_LIMIT", len(self.raw)), self.assertRaises(ValueError):
+            self.run_repair("check")
+        record = json.loads(self.raw)
+        record["accounts"].reverse()
+        atomic(self.owner, json.dumps(record).encode())
+        with self.assertRaises(ValueError):
+            self.run_repair("check")
 
     def test_receipt_change_after_publishing_backup_preserves_both_and_allows_retry(self):
         changed = self.raw + b"\n"
