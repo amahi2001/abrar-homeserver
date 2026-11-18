@@ -11,6 +11,7 @@ const help = `Usage:
   dev view PROJECT [browser|desktop] [--stop]
   dev list
   dev setup [--refresh-runtime]
+  dev image
   dev build
   dev rebuild PROJECT
 
@@ -112,6 +113,8 @@ export function applySharedTokenEyeRuntime(config: any, nativeConfig: any, home 
   return true;
 }
 
+class ProjectBusy extends Error {}
+
 export function withProjectLock<T>(home: string, file: ".agent-session.lock" | ".dev-shell.lock", action: () => T, shared = false): T {
   if (!lstatSync(home).isDirectory()) throw Error("Cannot verify the shared project home directory.");
   const path = join(home, file);
@@ -121,7 +124,7 @@ export function withProjectLock<T>(home: string, file: ".agent-session.lock" | "
     // flock locks the shared open-file description: the parent's FD keeps it
     // held after this helper exits, even while the container is replaced.
     const lock = Bun.spawnSync(["flock", "-n", shared ? "-s" : "-x", "0"], { stdin: fd, stdout: "pipe", stderr: "pipe" });
-    if (lock.exitCode !== 0) throw Error(file === ".agent-session.lock" ? "Agent active or dispatch lock unavailable; preserving the running container." : "Shell or container change active; retry when idle.");
+    if (lock.exitCode !== 0) throw new ProjectBusy(file === ".agent-session.lock" ? "Agent active or dispatch lock unavailable; preserving the running container." : "Shell or container change active; retry when idle.");
     const current = lstatSync(path), held = fstatSync(fd);
     if (current.dev !== held.dev || current.ino !== held.ino) throw Error("Project lock changed; retry when idle.");
     return action();
@@ -222,6 +225,8 @@ export function main(argv = process.argv.slice(2)) {
   for (const file of ["Dockerfile", "entrypoint.sh", "agent-session.sh", "dev-finish.sh", "gh.sh", "instructions.md", "dev-ui.sh", "ui.md", "playwright-cli.sh", "browser-state.cjs", "codebase-memory.ts"]) fingerprint.update(readFileSync(join(assets, file)));
   if (existsSync(join(assets, "skills"))) hashFiles(join(assets, "skills"));
   const image = `buildfleet-dev:${fingerprint.digest("hex").slice(0, 16)}`;
+
+  if (command === "image") { console.log(image); return; }
 
   function build() {
     const args = ["docker", "build", "--tag", image, "--pull", "--build-arg", `APT_REFRESH=${Math.floor(Date.now() / (7 * 86400000))}`, "--build-arg", `PLAYWRIGHT_CLI_VERSION=${playwrightVersion}`];
@@ -325,7 +330,7 @@ export function main(argv = process.argv.slice(2)) {
       if (!Array.isArray(JSON.parse(result)) || attempt === 3) break;
       Bun.sleepSync(200);
     }
-    throw Error("Container exec active or unknown; retry when idle.");
+    throw new ProjectBusy("Container exec active or unknown; retry when idle.");
   }
   function startContainer(force = false) {
     const config = JSON.parse(compose(["config", "--format", "json"]).stdout);
@@ -458,7 +463,7 @@ export function main(argv = process.argv.slice(2)) {
     nativeReady();
     if (metadata) {
       const id = container();
-      if (id && run(["docker", "exec", "--user", `${process.getuid!()}:${process.getgid!()}`, id, "flock", "-n", "/home/node/.agent-session.lock", "true"], { allowFailure: true }).code) throw Error("Agent active; finish its session before starting or rebuilding.");
+      if (id && run(["docker", "exec", "--user", `${process.getuid!()}:${process.getgid!()}`, id, "flock", "-n", "/home/node/.agent-session.lock", "true"], { allowFailure: true }).code) throw new ProjectBusy("Agent active; finish its session before starting or rebuilding.");
     }
     if (command === "rebuild") {
       if (!metadata) throw Error("Project not initialized.");
@@ -568,5 +573,9 @@ export function main(argv = process.argv.slice(2)) {
 
 if (import.meta.main) {
   try { main(); }
-  catch (error) { console.error(`dev: ${error instanceof Error ? error.message : error}`); process.exitCode = 1; }
+  catch (error) {
+    console.error(`dev: ${error instanceof Error ? error.message : error}`);
+    const maintenanceRebuild = process.argv[2] === "rebuild" && process.env.DEV_MAINTENANCE === process.argv[3];
+    process.exitCode = maintenanceRebuild && error instanceof ProjectBusy ? 75 : 1;
+  }
 }

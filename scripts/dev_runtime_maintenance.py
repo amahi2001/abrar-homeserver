@@ -17,8 +17,14 @@ def log(message):
     print(f"[dev-runtime-maintenance] {message}", flush=True)
 
 
+class ProjectBusy(RuntimeError):
+    pass
+
+
 def run(*args, env=None, timeout=120):
     result = subprocess.run(args, capture_output=True, text=True, timeout=timeout, env=env)
+    if result.returncode == 75 and len(args) == 3 and args[1] == "rebuild" and env and env.get("DEV_MAINTENANCE") == args[2]:
+        raise ProjectBusy
     if result.returncode:
         raise RuntimeError(f"{Path(args[0]).name} {args[1]} failed ({result.returncode})")
     return result.stdout.strip()
@@ -152,12 +158,15 @@ def refresh(dev, project, container, project_dir, desired):
         run("docker", "image", "tag", previous["Image"], f"{metadata['image']}-previous")
         try:
             run(dev, "rebuild", project, env={**os.environ, "DEV_LOCK_HELD": project,
-                                            "DEV_HOST_LOCK_HELD": project}, timeout=1200)
+                                            "DEV_HOST_LOCK_HELD": project, "DEV_MAINTENANCE": project}, timeout=1200)
             current = running_projects()[project]
             health = inspect(current)
             if health["State"].get("Health", {}).get("Status") != "healthy":
                 raise RuntimeError(f"{project}: rebuilt container is not healthy")
             return {"candidate": desired["id"], "image": health["Image"]}
+        except ProjectBusy:
+            log(f"{project}: new work admitted before publication; retrying next hour")
+            return None
         except BaseException as error:
             current = running_projects().get(project)
             with rollback_dispatch(project_dir, snapshots, previous, inspect(current) if current else None):

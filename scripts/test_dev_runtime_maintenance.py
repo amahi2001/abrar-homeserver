@@ -96,6 +96,12 @@ class DevMaintenanceTests(unittest.TestCase):
                 self.assertEqual((state / name).read_text(), data)
             self.assertEqual(subprocess.run(["flock", "-n", str(agent_lock), "true"]).returncode, 0)
             self.assertEqual((source / "work.txt").read_text(), "uncommitted work")
+            def became_busy(*args, **kwargs):
+                if args[:2] == ("dev", "rebuild"):
+                    raise maintenance.ProjectBusy
+            with patch.object(maintenance, "running_projects", return_value={"app": "old"}), patch.object(maintenance, "idle", return_value=True), patch.object(maintenance, "inspect", return_value=prior), patch.object(maintenance, "run", side_effect=became_busy), patch.object(maintenance, "rollback_dispatch") as rollback:
+                self.assertIsNone(maintenance.refresh("dev", "app", "old", state, {"id": "new"}))
+                rollback.assert_not_called()
             failure = KeyboardInterrupt("interrupted")
             with patch.object(maintenance, "running_projects", side_effect=[{"app": "old"}, {"app": "new"}]), patch.object(maintenance, "idle", return_value=True), patch.object(maintenance, "inspect", return_value=prior), patch.object(maintenance, "run", side_effect=commands) as run:
                 with self.assertRaisesRegex(KeyboardInterrupt, "interrupted"):
