@@ -144,6 +144,7 @@ class Updater:
         status = command("docker", "inspect", "--format", "{{.State.Health.Status}}", containers[0]).stdout.strip()
         if status != b"healthy":
             raise Deferred("box_unavailable")
+        return containers[0]
 
     def routes(self):
         result = []

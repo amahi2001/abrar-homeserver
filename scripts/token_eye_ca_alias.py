@@ -7,8 +7,9 @@ import json
 import os
 from pathlib import Path
 import stat
+import subprocess
 
-from token_eye_update import Deferred, Updater, atomic, locked
+from token_eye_update import Deferred, Updater, atomic, command, locked
 
 
 CA = ".token-eye-headroom-ca.pem"
@@ -16,11 +17,40 @@ KEY = "NODE_EXTRA_CA_CERTS"
 KEYS = {"HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", KEY}
 HOST = "/agent/host-claude"
 BOX = "/agent/claude"
+BOX_DATA = "/agent/token-eye/data"
+
+
+# Run in the exact container selected from this project's locked metadata.
+BOX_CHECK = """import json, os, sys
+from pathlib import Path
+for path, expected in json.loads(sys.argv[1]).items():
+    info = os.stat(path)
+    if [info.st_dev, info.st_ino] != expected:
+        raise SystemExit(1)
+if sys.argv[2] == "offline":
+    for name in ("tcp", "tcp6"):
+        for row in Path("/proc/net", name).read_text().splitlines()[1:]:
+            _, local, _, state, *_ = row.split()
+            if int(local.split(":")[1], 16) in (8787, 8788) and state not in ("06", "07"):
+                raise SystemExit(1)
+"""
 
 
 def require(condition):
     if not condition:
         raise ValueError("unexpected_state")
+
+
+def check_box(container, home, data, offline):
+    files = {}
+    for mounted, local, names in ((HOST, home / ".claude", ("settings.json", CA)),
+                                  (BOX, home / ".local/state/dev/accounts/claude", ("settings.json", CA)),
+                                  (BOX_DATA, data, ("claude-routing-owner.json",))):
+        for name in ("", *names):
+            info = (local / name).stat()
+            files[str(Path(mounted) / name)] = [info.st_dev, info.st_ino]
+    command("docker", "exec", container, "python3", "-c", BOX_CHECK, json.dumps(files),
+            "offline" if offline else "check", timeout=10)
 
 
 def contents(path, limit, private=False):
@@ -42,7 +72,15 @@ def proposal(raw, home, legacy):
                 for d in (home, new, box)))
     require((old / CA).samefile(new / CA))
     record = json.loads(raw)
-    require(record["version"] == 1 and record["enabled"] is True)
+    require(isinstance(record, dict) and set(record) == {"version", "enabled", "accounts"}
+            and type(record["version"]) is int and record["version"] == 1
+            and record["enabled"] is True and isinstance(record["accounts"], list))
+    for entry in record["accounts"]:
+        require(isinstance(entry, dict)
+                and set(entry) == {"account", "env_existed", "previous", "installed", "certificate_hash"}
+                and type(entry["env_existed"]) is bool
+                and isinstance(entry["account"], dict) and set(entry["account"]) == {"root", "clientRoot"}
+                and isinstance(entry["installed"], dict) and isinstance(entry["previous"], dict))
     entries = {o["account"]["root"]: o for o in record["accounts"]}
     require(len(record["accounts"]) == 2 and set(entries) == {BOX, HOST})
     for name, root in ((BOX, box), (HOST, new)):
@@ -51,6 +89,7 @@ def proposal(raw, home, legacy):
         require(set(installed) == KEYS and set(entry["previous"]) == KEYS)
         require(all(isinstance(v, str) for v in installed.values()))
         settings = json.loads(contents(root / "settings.json", 1 << 20))["env"]
+        require(isinstance(settings, dict))
         actual = {k: settings.get(k) for k in KEYS}
         if name == HOST:
             require(entry["account"]["clientRoot"] in (str(old), str(new)))
@@ -88,29 +127,22 @@ def reconcile(mode, updater, legacy, deployment_lock):
                                  (data / ".operations.lock", False)):
                 require(path.parent.resolve() == path.parent and path.is_file())
                 locks.enter_context(locked(path, shared))
-            # The native owner locks prevent a new supervised listener until completion.
-            # Check the existing box's network namespace for orphaned listeners/streams.
-            updater.box_ready()
-            code = """from pathlib import Path
-for name in ('tcp', 'tcp6'):
-    for row in Path('/proc/net', name).read_text().splitlines()[1:]:
-        _, local, _, state, *_ = row.split()
-        if int(local.split(':')[1], 16) in (8787, 8788) and state not in ('06', '07'):
-            raise SystemExit(1)
-"""
-            updater.in_box("python3", "-c", code, timeout=10)
+        container = updater.box_ready()
+        # Native owner locks prevent a new supervised listener during a mutation.
+        check_box(container, home, data, mode != "check")
         require(not os.path.lexists(updater.pending)
                 and not os.path.lexists(data / "claude-routing-pending.json"))
         raw = contents(owner, 16 << 20, private=True)
         candidate = proposal(raw, home, legacy)
+        backup_exists = os.path.lexists(backup)
+        if raw != candidate and backup_exists:
+            require(contents(backup, 16 << 20, private=True) == raw)
         if mode == "check":
             return "current" if raw == candidate else "eligible"
         if mode == "apply":
             if raw == candidate:
                 return "current"
-            if os.path.lexists(backup):
-                require(contents(backup, 16 << 20, private=True) == raw)
-            else:
+            if not backup_exists:
                 atomic(backup, raw)
             replacement = candidate
         else:
@@ -121,6 +153,7 @@ for name in ('tcp', 'tcp6'):
             replacement = preimage
         require(contents(owner, 16 << 20, private=True) == raw)
         require(proposal(raw, home, legacy) == candidate)
+        check_box(container, home, data, True)
         atomic(owner, replacement)
         return "applied" if mode == "apply" else "restored"
 
@@ -133,6 +166,6 @@ if __name__ == "__main__":
                         Path("/run/lock/host-deployment.lock")))
     except Deferred:
         raise SystemExit("deferred_busy") from None
-    except (OSError, ValueError, KeyError, TypeError, RuntimeError):
+    except (OSError, ValueError, KeyError, TypeError, RuntimeError, subprocess.SubprocessError):
         # File contents and native output may contain account credentials.
         raise SystemExit("deferred_or_changed_state") from None
