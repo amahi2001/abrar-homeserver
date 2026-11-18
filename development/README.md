@@ -185,7 +185,7 @@ export DEV_AGENT_CONFIG
 candidate=$(nix build --no-link --print-out-paths .#dev)
 image=$("$candidate/bin/dev" image)
 if ! docker image inspect "$image" >/dev/null 2>&1; then
-  installed=$(/run/current-system/sw/bin/dev image)
+  installed=$(env -u DEV_AGENT_CONFIG /run/current-system/sw/bin/dev image)
   if [[ $image == "$installed" ]]; then
     echo "Installed base tag missing. Recover its validated image before staging." >&2
     exit 1
