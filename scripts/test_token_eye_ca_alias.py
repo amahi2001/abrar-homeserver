@@ -58,13 +58,13 @@ class HomeAliasTests(unittest.TestCase):
         atomic(self.owner, self.raw)
         atomic(self.data / "routing-owner.json", b'{"applying": false}')
 
-    def run_repair(self, mode):
+    def run_repair(self, mode, key=None):
         return alias.reconcile(mode, self.u, self.legacy, self.deployment,
-                               self.key if mode == "rollback" else None)
+                               None if mode == "check" else key or self.key)
 
     def test_only_two_fields_change_and_rollback_is_exact(self):
         settings = (self.host / "settings.json").read_bytes()
-        self.assertEqual(self.run_repair("check"), "eligible")
+        self.assertEqual(self.run_repair("check"), f"eligible {self.key}")
         args = self.docker.call_args.args
         self.assertEqual(args[:8], ("docker", "exec", "--workdir", "/", "exact-container-id",
                                     "/usr/bin/python3", "-IS", "-c"))
@@ -80,7 +80,7 @@ class HomeAliasTests(unittest.TestCase):
         entry["account"]["clientRoot"] = str(self.host)
         entry["installed"][alias.KEY] = str(self.host / alias.CA)
         self.assertEqual(json.loads(self.owner.read_bytes()), expected)
-        self.assertEqual(self.run_repair("apply"), "current")
+        self.assertEqual(self.run_repair("apply"), f"current {self.key}")
         self.assertEqual(self.run_repair("rollback"), "restored")
         self.assertEqual(self.owner.read_bytes(), self.raw)
         self.assertEqual(self.run_repair("rollback"), "already_restored")
@@ -185,7 +185,10 @@ class HomeAliasTests(unittest.TestCase):
         self.assertFalse(self.backup.exists())
         self.docker.side_effect = None
         key = hashlib.sha256(changed).hexdigest()
-        self.assertEqual(self.run_repair("apply"), f"applied {key}")
+        with self.assertRaises(ValueError):
+            self.run_repair("apply")
+        self.assertEqual(self.run_repair("check"), f"eligible {key}")
+        self.assertEqual(self.run_repair("apply", key), f"applied {key}")
         self.assertEqual((self.u.state / f"host-ca-home-rename.{key}.preimage").read_bytes(), changed)
 
     def test_invalid_or_ambiguous_settings_block_preview(self):
@@ -209,8 +212,13 @@ class HomeAliasTests(unittest.TestCase):
         self.assertEqual(self.owner.read_bytes(), changed)
         self.assertEqual(self.backup.read_bytes(), self.raw)
         key = hashlib.sha256(changed).hexdigest()
-        self.assertEqual(self.run_repair("apply"), f"applied {key}")
+        self.assertEqual(self.run_repair("apply", key), f"applied {key}")
         self.assertEqual((self.u.state / f"host-ca-home-rename.{key}.preimage").read_bytes(), changed)
+        self.assertEqual(self.run_repair("check"), f"current {key}")
+        with self.assertRaises(ValueError):
+            self.run_repair("rollback", self.key)
+        self.assertEqual(self.run_repair("rollback", key), "restored")
+        self.assertEqual(self.owner.read_bytes(), changed)
 
     def test_concurrent_preimage_is_never_replaced_or_removed(self):
         def create_during_staging(path, data, **kwargs):

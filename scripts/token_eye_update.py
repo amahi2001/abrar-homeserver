@@ -29,14 +29,16 @@ def digest(path):
         return hashlib.file_digest(source, "sha256").hexdigest()
 
 
-def atomic(path, data, mode=0o600, before_replace=None, exclusive=False):
+def atomic(path, data, mode=0o600, before_replace=None, exclusive=False, xattr=None):
     with tempfile.NamedTemporaryFile(dir=path.parent, delete=False) as output:
         temporary = Path(output.name)
         try:
             output.write(data)
             output.flush()
-            os.fsync(output.fileno())
             os.fchmod(output.fileno(), mode)
+            if xattr is not None:
+                os.setxattr(output.fileno(), *xattr)
+            os.fsync(output.fileno())
             if before_replace is not None:
                 before_replace()
             if exclusive:

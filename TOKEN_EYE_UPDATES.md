@@ -42,19 +42,23 @@ named links in `token-eye.nix`. Routing and the separate dogfood timer keep runn
 ## One-time host Claude home rename
 
 From the server configuration checkout, run `python3 scripts/token_eye_ca_alias.py check`
-as the runtime owner. An `eligible` result means both home names resolve to the
+as the runtime owner. Save the SHA-256 from the `eligible <sha256>` result.
+Eligibility means both home names resolve to the
 same host account, the installed CA files match their recorded hashes, and the
 two accounts' managed settings already match the new host path.
 
-During an offline routing maintenance window, run the same command with `apply`.
+During an offline routing maintenance window, run the same command with `apply --preimage <sha256>`.
+The digest pins the exact original bytes approved for that write and identifies
+the rollback snapshot even if the apply process exits before reporting success.
+The staged receipt also carries this ID in a Linux user extended attribute.
+A subsequent `check` reports it with the current receipt.
 It acquires the deployment, devbox, native configuration and proxy owner locks
 and checks the box for remaining routing sockets. A busy owner or an unavailable
 socket check defers the repair. The helper changes the host client directory
 and installed CA path in the ownership receipt. It preserves the original
 restore values and prints the SHA-256 of its mode-0600 preimage at
 `~/.local/state/token-eye-nixos/runtime/update/host-ca-home-rename.<sha256>.preimage`.
-Treat that file as a credential and retain the identifier from the successful
-apply. An intervening edit can leave a snapshot of the earlier receipt. Its
+Treat that file as a credential. An intervening edit can leave a snapshot of the earlier receipt. Its
 separate filename allows a retry against the changed bytes.
 Use `rollback --preimage <sha256>` in the same maintenance window
 to restore the exact original bytes while the receipt still matches the repair.
