@@ -178,6 +178,9 @@ uses the current tool locks and gives changed image inputs their own tag.
 
 ```bash
 set -euo pipefail
+# Keep the same immutable personal tool/config export for build and startup.
+DEV_AGENT_CONFIG=$(realpath -e "${DEV_AGENT_CONFIG:-$HOME/.local/share/agent-config/export}")
+export DEV_AGENT_CONFIG
 candidate=$(nix build --no-link --print-out-paths .#dev)
 image=$("$candidate/bin/dev" build | tail -n 1)
 tested=$(docker image inspect -f '{{.Id}}' "$image")
@@ -221,6 +224,7 @@ reserved through observation. This example uses a 24-hour soak.
   python3 development/check-project-canary.py ports "$previous" "$project" "$source_dir" "$image"
   saved=$(mktemp -d "$state/canary-XXXXXXXX")
   cp "$state"/{project.json,compose.json,devcontainer.json} "$saved/"
+  docker inspect -f '{{json .NetworkSettings.Ports}}' "$previous" > "$saved/ports.json"
   docker inspect -f '{{.Image}} {{.Config.Image}}' "$previous" > "$saved/previous-image"
   read -r previous_id previous_tag < "$saved/previous-image"
   docker image tag "$previous_id" "buildfleet-dev:rollback-$(basename "$saved")"
@@ -232,6 +236,7 @@ reserved through observation. This example uses a 24-hour soak.
   [[ -z $existing_tag || $existing_tag == "$tested" ]]
   DEV_LOCK_HELD="$project" DEV_HOST_LOCK_HELD="$project" "$candidate/bin/dev" start "$project" --no-agent
   current=$(running)
+  cmp "$saved/ports.json" <(docker inspect -f '{{json .NetworkSettings.Ports}}' "$current")
   test "$(docker inspect -f '{{.Image}} {{.State.Health.Status}}' "$current")" = "$tested healthy"
   "$candidate/bin/dev" shell "$project" -- bun --version
   flock -u 8

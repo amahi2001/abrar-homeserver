@@ -17,21 +17,21 @@ def run(*args, **kwargs):
 def check_ports(container, project, source, image):
     compose = ["docker", "compose", "--project-directory", str(source), "-f", str(Path(__file__).with_name("compose.yaml"))]
     override = source / ".dev/compose.yaml"
-    if override.exists():
-        services = json.loads(run("docker", "compose", "-f", str(override), "config", "--no-consistency", "--format", "json"))["services"]
-        dev = services.get("dev", {})
-        if (set(services) != {"dev"} or set(dev) - {"ports", "networks", "command", "entrypoint"}
-                or dev.get("command") or dev.get("entrypoint") or dev.get("networks") != {"default": None}):
-            raise ValueError("A custom service needs its own effective-image smoke")
-        compose.extend(["-f", str(override)])
     env = {**os.environ, "DEV_PROJECT": project, "DEV_IMAGE": image, "DEV_SOURCE": str(source),
            "DEV_UID": str(os.getuid()), "DEV_GID": str(os.getgid()), "DEV_GIT_NAME": "Fixture",
            "DEV_GIT_EMAIL": "fixture@example.invalid"}
     for name in ("PROJECT_STATE", "CREDENTIALS", "ACCOUNTS", "AGENT_CONFIG"):
         env["DEV_" + name] = "/tmp/canary"
-    config = json.loads(run(*compose, "config", "--format", "json", env=env))
+    def resolved(files):
+        return json.loads(run(*compose, *files, "config", "--format", "json", env=env))
+    stock = resolved([])
+    merged = resolved(["-f", str(override)]) if override.exists() else stock
+    service = merged["services"]["dev"]
     planned = sorted((f"{p['target']}/{p['protocol']}", p.get("host_ip"), str(p.get("published")))
-                     for p in config["services"]["dev"].get("ports", []))
+                     for p in service.pop("ports", []))
+    stock["services"]["dev"].pop("ports", None)
+    if merged != stock:
+        raise ValueError("Only port-preserving overrides are supported by the stock image smoke")
     published = json.loads(run("docker", "inspect", "-f", "{{json .NetworkSettings.Ports}}", container))
     actual = sorted((key, p["HostIp"], p["HostPort"]) for key, ports in published.items() for p in ports or [])
     if not actual or planned != actual or any(ip not in ("127.0.0.1", "::1") for _, ip, _ in actual):
