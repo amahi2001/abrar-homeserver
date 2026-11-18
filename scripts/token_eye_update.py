@@ -29,15 +29,22 @@ def digest(path):
         return hashlib.file_digest(source, "sha256").hexdigest()
 
 
-def atomic(path, data, mode=0o600):
+def atomic(path, data, mode=0o600, before_replace=None, exclusive=False, xattr=None):
     with tempfile.NamedTemporaryFile(dir=path.parent, delete=False) as output:
         temporary = Path(output.name)
         try:
             output.write(data)
             output.flush()
-            os.fsync(output.fileno())
             os.fchmod(output.fileno(), mode)
-            os.replace(temporary, path)
+            if xattr is not None:
+                os.setxattr(output.fileno(), *xattr)
+            os.fsync(output.fileno())
+            if before_replace is not None:
+                before_replace()
+            if exclusive:
+                os.link(temporary, path)
+            else:
+                os.replace(temporary, path)
         finally:
             temporary.unlink(missing_ok=True)
     descriptor = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
@@ -144,6 +151,7 @@ class Updater:
         status = command("docker", "inspect", "--format", "{{.State.Health.Status}}", containers[0]).stdout.strip()
         if status != b"healthy":
             raise Deferred("box_unavailable")
+        return containers[0]
 
     def routes(self):
         result = []
