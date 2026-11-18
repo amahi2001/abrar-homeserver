@@ -36,7 +36,7 @@ else if (args[0] === "export") {
   const account=fixture[side] ?? {};
   const present=new Map((account.items||[]).filter(i=>!i.organizationId).map(i=>[i.id,{id:i.id,archivedDate:i.archivedDate}]));
   for(const i of account.archived||[]) if(!i.organizationId&&!present.has(i.id)) present.set(i.id,{id:i.id,archivedDate:"2026-01-01"});
-  console.log(JSON.stringify({encrypted:true,items:account.encrypted??[...present.values()]}));
+  console.log(JSON.stringify({encrypted:true,items:account.encrypted??[...present.values()],folders:account.encryptedFolders??(account.folders||[]).filter(f=>f.id)}));
 }
 else if (args[0] === "get") {
   if (fixture.lookup) console.log(JSON.stringify(fixture.lookup));
@@ -289,4 +289,17 @@ test("an archive hidden by the subscription still reserves the destination track
 test("empty and missing optional login values converge", async () => {
   const result=await sync({src:{items:[source({login:{username:"",password:""}})]},dst:{items:[tracked({login:{}})]}});
   expect(result.code,result.stderr).toBe(0); expect(mutations(result.calls)).toEqual([]);
+});
+
+test("a missing decrypted destination folder refuses folder creation and all other writes", async () => {
+  const result=await sync({src:{folders:[{id:"work",name:"Work"}],items:[source({folderId:"work"})]},dst:{encryptedFolders:[{id:"hidden-work"}]}});
+  expect(result.stderr).toContain("Inconsistent folder inventory"); expect(mutations(result.calls)).toEqual([]);
+});
+test("empty optional identity, card and TOTP values converge after the SDK round trip", async () => {
+  for(const [a,b] of [[{type:4,identity:{firstName:"A",middleName:""}},{type:4,identity:{firstName:"A"}}],
+    [{type:3,card:{cardholderName:"A",expMonth:""}},{type:3,card:{cardholderName:"A"}}],
+    [{login:{username:"A",totp:""}},{login:{username:"A"}}]]) {
+    const result=await sync({src:{items:[source(a)]},dst:{items:[tracked(b)]}});
+    expect(result.code,result.stderr).toBe(0); expect(mutations(result.calls)).toEqual([]);
+  }
 });
