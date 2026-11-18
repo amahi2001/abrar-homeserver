@@ -70,7 +70,7 @@ function inventory(entries: unknown, folders = false): Entry[] {
   const real = folders ? entries.filter(e => !(e?.name === "No Folder" && (e.id === "" || e.id === null))) : entries;
   const ids = new Set<string>();
   for (const e of real) {
-    requireState(e && typeof e.id === "string" && e.id && !ids.has(e.id) && typeof e.name === "string" && e.name !== "[error: cannot decrypt]" &&
+    requireState(e && typeof e.id === "string" && e.id && !ids.has(e.id) && typeof e.name === "string" && (folders || e.name !== "[error: cannot decrypt]") &&
       (folders || !e.decryptionFailure && Number.isInteger(e.type) && (e.fields == null || Array.isArray(e.fields))), "Invalid or duplicate inventory entry");
     ids.add(e.id);
   }
@@ -91,7 +91,6 @@ function comparable(payload: Entry) {
   const optionalStrings = (values: Entry) => Object.fromEntries(
     Object.entries(values).filter(([,value]) => value !== "" && value != null));
   if (payload.type === 4) return {...payload, identity: optionalStrings(payload.identity)};
-  if (payload.type === 3) return {...payload, card: optionalStrings(payload.card)};
   if (payload.type !== 1) return payload;
   const { passwordRevisionDate, fido2Credentials, ...login } = payload.login;
   return { ...payload, login: optionalStrings(login) };

@@ -295,11 +295,21 @@ test("a missing decrypted destination folder refuses folder creation and all oth
   const result=await sync({src:{folders:[{id:"work",name:"Work"}],items:[source({folderId:"work"})]},dst:{encryptedFolders:[{id:"hidden-work"}]}});
   expect(result.stderr).toContain("Inconsistent folder inventory"); expect(mutations(result.calls)).toEqual([]);
 });
-test("empty optional identity, card and TOTP values converge after the SDK round trip", async () => {
+test("empty optional identity and TOTP values converge after the SDK round trip", async () => {
   for(const [a,b] of [[{type:4,identity:{firstName:"A",middleName:""}},{type:4,identity:{firstName:"A"}}],
-    [{type:3,card:{cardholderName:"A",expMonth:""}},{type:3,card:{cardholderName:"A"}}],
     [{login:{username:"A",totp:""}},{login:{username:"A"}}]]) {
     const result=await sync({src:{items:[source(a)]},dst:{items:[tracked(b)]}});
     expect(result.code,result.stderr).toBe(0); expect(mutations(result.calls)).toEqual([]);
   }
+});
+
+test("an absent security code differs from a present empty card code", async () => {
+  const result=await sync({src:{items:[source({type:3,card:{}})]},dst:{items:[tracked({type:3,card:{code:""}})]}});
+  expect(result.code,result.stderr).toBe(0);
+  expect(mutations(result.calls).map(c=>c.payload.card)).toEqual([{}]);
+});
+test("valid folder names are preserved when their encrypted IDs match", async () => {
+  const result=await sync({src:{items:[source({folderId:"folder"})],folders:[{id:"folder",name:"[error: cannot decrypt]"}]}});
+  expect(result.code,result.stderr).toBe(0);
+  expect(mutations(result.calls)[0].payload.name).toBe("[error: cannot decrypt]");
 });
