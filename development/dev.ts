@@ -321,7 +321,7 @@ export function main(argv = process.argv.slice(2)) {
     const id = metadata && container();
     if (!id) return;
     // Checkpoint the live box directly, including legacy boxes with no saved native config.
-    run(["docker", "exec", "--user", `${process.getuid!()}:${process.getgid!()}`, id, "bash", "-ec",
+    run(["docker", "exec", "--user", `${process.getuid!()}:${process.getgid!()}`, "--workdir", nativeConfig.workspaceFolder, id, "bash", "-ec",
       "if [ -x /usr/local/bin/dev-ui ]; then dev-ui _checkpoint; fi"]);
   }
   function checkExecs(id: string | undefined) {

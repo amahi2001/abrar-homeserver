@@ -349,7 +349,9 @@ test("failed browser checkpoint blocks stop/recreation and preserves project met
     const snapshot = join(f.dir, "changed-snapshot"); mkdirSync(snapshot, { recursive: true });
     const result = f.cli([command, "app", ...(command === "start" ? ["--no-agent"] : [])], { FAKE_RUNNING: "1", FAKE_UI_FAIL: "1", DEV_AGENT_CONFIG: snapshot });
     expect(result.code).toBe(1);
-    expect(f.calls().some(c => c.args.some(value => value.includes("dev-ui _checkpoint")))).toBe(true);
+    const checkpoint = f.calls().find(c => c.args.some(value => value.includes("dev-ui _checkpoint")));
+    expect(checkpoint.name).toBe("docker");
+    expect(checkpoint.args[checkpoint.args.indexOf("--workdir") + 1]).toBe("/workspace/app");
     expect(f.calls().some(c => c.args.includes("up") || c.args.at(-1) === "stop")).toBe(false);
     expect(readFileSync(path, "utf8")).toBe(before);
   }
