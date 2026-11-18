@@ -27,7 +27,6 @@ class HomeAliasTests(unittest.TestCase):
         self.docker = self.enterContext(patch.object(alias, "command"))
         self.data = self.u.project / "home/.local/share/com.amahi.tokeneye.desktop"
         self.owner = self.data / "claude-routing-owner.json"
-        self.backup = self.u.state / "host-ca-home-rename.preimage"
         for d in (self.data, self.u.state):
             d.mkdir(mode=0o700, parents=True)
         self.proxy_lock = self.data / "headroom-proxy/.operations.lock"
@@ -54,11 +53,14 @@ class HomeAliasTests(unittest.TestCase):
                             "env_existed": False,
                             "certificate_hash": hashlib.sha256(b"fixture public CA").hexdigest()})
         self.raw = json.dumps({"version": 1, "enabled": True, "accounts": records}).encode()
+        self.key = hashlib.sha256(self.raw).hexdigest()
+        self.backup = self.u.state / f"host-ca-home-rename.{self.key}.preimage"
         atomic(self.owner, self.raw)
         atomic(self.data / "routing-owner.json", b'{"applying": false}')
 
     def run_repair(self, mode):
-        return alias.reconcile(mode, self.u, self.legacy, self.deployment)
+        return alias.reconcile(mode, self.u, self.legacy, self.deployment,
+                               self.key if mode == "rollback" else None)
 
     def test_only_two_fields_change_and_rollback_is_exact(self):
         settings = (self.host / "settings.json").read_bytes()
@@ -70,7 +72,7 @@ class HomeAliasTests(unittest.TestCase):
         info = (self.host / alias.CA).stat()
         self.assertEqual(mapping[alias.HOST + "/" + alias.CA], [info.st_dev, info.st_ino])
         self.assertFalse(self.backup.exists())
-        self.assertEqual(self.run_repair("apply"), "applied")
+        self.assertEqual(self.run_repair("apply"), f"applied {self.key}")
         self.assertEqual(self.backup.read_bytes(), self.raw)
         self.assertEqual(self.backup.stat().st_mode & 0o777, 0o600)
         expected = json.loads(self.raw)
@@ -182,8 +184,9 @@ class HomeAliasTests(unittest.TestCase):
         self.assertEqual(self.owner.read_bytes(), changed)
         self.assertFalse(self.backup.exists())
         self.docker.side_effect = None
-        self.assertEqual(self.run_repair("apply"), "applied")
-        self.assertEqual(self.backup.read_bytes(), changed)
+        key = hashlib.sha256(changed).hexdigest()
+        self.assertEqual(self.run_repair("apply"), f"applied {key}")
+        self.assertEqual((self.u.state / f"host-ca-home-rename.{key}.preimage").read_bytes(), changed)
 
     def test_invalid_or_ambiguous_settings_block_preview(self):
         path = self.host / "settings.json"
@@ -195,7 +198,7 @@ class HomeAliasTests(unittest.TestCase):
                 self.run_repair("check")
         self.assertFalse(self.backup.exists())
 
-    def test_receipt_change_during_backup_preserves_edit_and_allows_retry(self):
+    def test_receipt_change_after_publishing_backup_preserves_both_and_allows_retry(self):
         changed = self.raw + b"\n"
         def change_during_backup(path, data, **kwargs):
             atomic(path, data, **kwargs)
@@ -204,9 +207,20 @@ class HomeAliasTests(unittest.TestCase):
         with patch.object(alias, "atomic", side_effect=change_during_backup), self.assertRaises(ValueError):
             self.run_repair("apply")
         self.assertEqual(self.owner.read_bytes(), changed)
-        self.assertFalse(self.backup.exists())
-        self.assertEqual(self.run_repair("apply"), "applied")
-        self.assertEqual(self.backup.read_bytes(), changed)
+        self.assertEqual(self.backup.read_bytes(), self.raw)
+        key = hashlib.sha256(changed).hexdigest()
+        self.assertEqual(self.run_repair("apply"), f"applied {key}")
+        self.assertEqual((self.u.state / f"host-ca-home-rename.{key}.preimage").read_bytes(), changed)
+
+    def test_concurrent_preimage_is_never_replaced_or_removed(self):
+        def create_during_staging(path, data, **kwargs):
+            if path == self.backup:
+                atomic(self.backup, b"another writer")
+            atomic(path, data, **kwargs)
+        with patch.object(alias, "atomic", side_effect=create_during_staging), self.assertRaises(FileExistsError):
+            self.run_repair("apply")
+        self.assertEqual(self.backup.read_bytes(), b"another writer")
+        self.assertEqual(self.owner.read_bytes(), self.raw)
 
 
 if __name__ == "__main__":

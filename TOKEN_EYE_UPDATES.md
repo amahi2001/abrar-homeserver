@@ -51,7 +51,10 @@ It acquires the deployment, devbox, native configuration and proxy owner locks
 and checks the box for remaining routing sockets. A busy owner or an unavailable
 socket check defers the repair. The helper changes the host client directory
 and installed CA path in the ownership receipt. It preserves the original
-restore values and saves a mode-0600 preimage at
-`~/.local/state/token-eye-nixos/runtime/update/host-ca-home-rename.preimage`.
-Treat that file as a credential. Use `rollback` in the same maintenance window
+restore values and prints the SHA-256 of its mode-0600 preimage at
+`~/.local/state/token-eye-nixos/runtime/update/host-ca-home-rename.<sha256>.preimage`.
+Treat that file as a credential and retain the identifier from the successful
+apply. An intervening edit can leave a snapshot of the earlier receipt. Its
+separate filename allows a retry against the changed bytes.
+Use `rollback --preimage <sha256>` in the same maintenance window
 to restore the exact original bytes while the receipt still matches the repair.

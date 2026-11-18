@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import stat
 import subprocess
 
@@ -134,11 +135,13 @@ def proposal(raw, home, legacy):
     return json.dumps(record, indent=2, ensure_ascii=False).encode()
 
 
-def reconcile(mode, updater, legacy, deployment_lock):
+def reconcile(mode, updater, legacy, deployment_lock, preimage_id=None):
     home = updater.home
     data = updater.project / "home/.local/share/com.amahi.tokeneye.desktop"
     owner = data / "claude-routing-owner.json"
-    backup = updater.state / "host-ca-home-rename.preimage"
+    require(mode in ("check", "apply", "rollback")
+            and (bool(re.fullmatch(r"[0-9a-f]{64}", preimage_id or "")) if mode == "rollback"
+                 else preimage_id is None))
     for directory in (data, updater.state):
         info = directory.lstat()
         require(directory.resolve() == directory and stat.S_ISDIR(info.st_mode)
@@ -162,6 +165,8 @@ def reconcile(mode, updater, legacy, deployment_lock):
         require(routing["applying"] is False)
         raw = contents(owner, 16 << 20, private=True)
         candidate = proposal(raw, home, legacy)
+        key = preimage_id or hashlib.sha256(raw).hexdigest()
+        backup = updater.state / f"host-ca-home-rename.{key}.preimage"
         backup_exists = os.path.lexists(backup)
         if raw != candidate and backup_exists:
             require(contents(backup, 16 << 20, private=True) == raw)
@@ -173,6 +178,7 @@ def reconcile(mode, updater, legacy, deployment_lock):
             replacement = candidate
         else:
             preimage = contents(backup, 16 << 20, private=True)
+            require(hashlib.sha256(preimage).hexdigest() == key)
             if raw == preimage:
                 return "already_restored"
             require(proposal(preimage, home, legacy) == raw and raw == candidate)
@@ -183,29 +189,25 @@ def reconcile(mode, updater, legacy, deployment_lock):
 
         def before_replace():
             check_box(container, home, data, True)
-            unchanged()
             if mode == "apply" and not backup_exists:
-                atomic(backup, raw)
-                created = backup.lstat()
-                try:
-                    unchanged()
-                except Exception:
-                    if (os.path.samestat(created, backup.lstat())
-                            and contents(backup, 16 << 20, private=True) == raw):
-                        backup.unlink()
-                    raise
+                # Fully stage the backup, recheck, then publish without replacing any file.
+                atomic(backup, raw, before_replace=unchanged, exclusive=True)
+            require(contents(backup, 16 << 20, private=True) == (raw if mode == "apply" else replacement))
+            unchanged()
 
         # Stage and sync the replacement before the final checks and rename.
         atomic(owner, replacement, before_replace=before_replace)
-        return "applied" if mode == "apply" else "restored"
+        return f"applied {key}" if mode == "apply" else "restored"
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("mode", nargs="?", choices=("check", "apply", "rollback"), default="check")
+    parser.add_argument("--preimage", help="SHA-256 printed by the successful apply, for rollback")
+    args = parser.parse_args()
     try:
-        print(reconcile(parser.parse_args().mode, Updater(), Path("/home/buildfleet"),
-                        Path("/run/lock/host-deployment.lock")))
+        print(reconcile(args.mode, Updater(), Path("/home/buildfleet"),
+                        Path("/run/lock/host-deployment.lock"), args.preimage))
     except Deferred:
         raise SystemExit("deferred_busy") from None
     except (OSError, ValueError, KeyError, TypeError, RuntimeError, subprocess.SubprocessError):
