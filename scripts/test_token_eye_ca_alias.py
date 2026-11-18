@@ -180,6 +180,20 @@ class HomeAliasTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.run_repair("apply")
         self.assertEqual(self.owner.read_bytes(), changed)
+        self.assertFalse(self.backup.exists())
+        self.docker.side_effect = None
+        self.assertEqual(self.run_repair("apply"), "applied")
+        self.assertEqual(self.backup.read_bytes(), changed)
+
+    def test_invalid_or_ambiguous_settings_block_preview(self):
+        path = self.host / "settings.json"
+        raw = path.read_bytes()
+        duplicate = raw.replace(b'"NODE_EXTRA_CA_CERTS":', b'"NODE_EXTRA_CA_CERTS":"other","NODE_EXTRA_CA_CERTS":')
+        for settings in (duplicate, b'{"extra":NaN,' + raw[1:]):
+            atomic(path, settings)
+            with self.assertRaises(ValueError):
+                self.run_repair("check")
+        self.assertFalse(self.backup.exists())
 
 
 if __name__ == "__main__":

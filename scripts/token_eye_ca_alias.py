@@ -61,6 +61,10 @@ def invalid_constant(value):
     raise ValueError("invalid JSON number")
 
 
+def decode(raw):
+    return json.loads(raw, object_pairs_hook=unique_fields, parse_constant=invalid_constant)
+
+
 def check_box(container, home, data, offline):
     files = {}
     for mounted, local, names in ((HOST, home / ".claude", ("settings.json", CA)),
@@ -93,7 +97,7 @@ def proposal(raw, home, legacy):
     require(all(d.stat().st_uid == os.getuid() and not d.stat().st_mode & 0o022
                 for d in (home, new, box)))
     require((old / CA).samefile(new / CA))
-    record = json.loads(raw, object_pairs_hook=unique_fields, parse_constant=invalid_constant)
+    record = decode(raw)
     require(isinstance(record, dict) and set(record) == {"version", "enabled", "accounts"}
             and type(record["version"]) is int and record["version"] == 1
             and record["enabled"] is True and isinstance(record["accounts"], list))
@@ -110,7 +114,7 @@ def proposal(raw, home, legacy):
         installed = entry["installed"]
         require(set(installed) == KEYS and set(entry["previous"]) == KEYS)
         require(all(isinstance(v, str) for v in installed.values()))
-        settings = json.loads(contents(root / "settings.json", 1 << 20))["env"]
+        settings = decode(contents(root / "settings.json", 1 << 20))["env"]
         require(isinstance(settings, dict))
         actual = {k: settings.get(k) for k in KEYS}
         if name == HOST:
@@ -154,8 +158,7 @@ def reconcile(mode, updater, legacy, deployment_lock):
         check_box(container, home, data, mode != "check")
         require(not os.path.lexists(updater.pending)
                 and not os.path.lexists(data / "claude-routing-pending.json"))
-        routing = json.loads(contents(data / "routing-owner.json", 16 << 20, private=True),
-                             object_pairs_hook=unique_fields)
+        routing = decode(contents(data / "routing-owner.json", 16 << 20, private=True))
         require(routing["applying"] is False)
         raw = contents(owner, 16 << 20, private=True)
         candidate = proposal(raw, home, legacy)
@@ -167,8 +170,6 @@ def reconcile(mode, updater, legacy, deployment_lock):
         if mode == "apply":
             if raw == candidate:
                 return "current"
-            if not backup_exists:
-                atomic(backup, raw)
             replacement = candidate
         else:
             preimage = contents(backup, 16 << 20, private=True)
@@ -179,6 +180,8 @@ def reconcile(mode, updater, legacy, deployment_lock):
         check_box(container, home, data, True)
         require(proposal(raw, home, legacy) == candidate)
         require(contents(owner, 16 << 20, private=True) == raw)
+        if mode == "apply" and not backup_exists:
+            atomic(backup, raw)
         atomic(owner, replacement)
         return "applied" if mode == "apply" else "restored"
 
