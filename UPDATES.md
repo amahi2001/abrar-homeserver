@@ -14,14 +14,18 @@ and WebUI state are preserved. Its DNS-only `A` record points to
 `100.91.234.17`. ACME DNS validation delegates
 `_acme-challenge.hermes.amahi.dev` through a `CNAME` to
 `_acme-challenge.buildfleet.duckdns.org`, using the existing DuckDNS credential.
-Nginx also preserves Transmission at `https://buildfleet-server.tailcb7cdb.ts.net`;
+The tracked host setting in `tailnet-legacy-host.nix` enrolls the current server in the transition. Set it to `null` on a fresh installation or after the last client migrates and rebuild. For new enrollment, set the Tailscale node name to `nix-server` and verify that `tailscale status --json | python3 -c 'import json,sys; print(json.load(sys.stdin)["Self"]["DNSName"])' ` returns `nix-server.tailcb7cdb.ts.net.`. Issuance checks that name before publishing. Before activating the migration, verify the built system contains `etc/buildfleet/transmission-legacy-host` and the previous certificate is still present and valid.
+
+The previous Transmission name, `buildfleet-server.tailcb7cdb.ts.net`, only works for clients with an existing DNS mapping. Tailscale can no longer issue a certificate for that name. Migrate those clients within seven days of cutover and remove the compatibility route after checking them. The old certificate expires on January 20, 2027.
+
+Nginx also preserves Transmission at `https://nix-server.tailcb7cdb.ts.net`;
 its certificate is issued and renewed with `tailscale cert`.
 
 These endpoints are Nix-managed contracts: maintenance must preserve their URLs
 when replacing backends, and must not retire them because no client is connected.
 Deployment health gates must check the stable HTTPS endpoints and Hermes
 authentication. The built-in dashboard remains separately available at
-`http://buildfleet-server.tailcb7cdb.ts.net:9119`. WebUI is started manually
+`http://nix-server.tailcb7cdb.ts.net:9119`. WebUI is started manually
 with `hermes-webui-start`, which wraps its existing `ctl.sh` with the current
 Hermes runtime and localhost/proxy settings; no boot autostart service is
 configured. After reboot, run that command before expecting WebUI health

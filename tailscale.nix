@@ -1,7 +1,21 @@
 # Tailscale VPN configuration
 # Exit node + mesh VPN for remote access
 { config, pkgs, ... }:
-
+let
+  cockpitEnsure = "${pkgs.cockpit}/libexec/cockpit-certificate-ensure";
+  cockpitPrepare = pkgs.writeShellScript "cockpit-prepare-tailnet" ''
+    set -eu
+    certs=/var/lib/tailscale-nginx-cert/cockpit-current
+    if ! test -d "$certs"; then
+      exec ${cockpitEnsure} --for-cockpit-tls
+    fi
+    pair=$(${pkgs.coreutils}/bin/readlink -e "$certs")
+    exec ${pkgs.util-linux}/bin/unshare --mount --propagation private ${pkgs.runtimeShell} -eu -c '
+      ${pkgs.util-linux}/bin/mount --bind "$1" /etc/cockpit/ws-certs.d
+      exec ${cockpitEnsure} --for-cockpit-tls
+    ' _ "$pair"
+  '';
+in
 {
   services.tailscale = {
     enable = true;
@@ -28,7 +42,7 @@
 
   # Nginx owns tailnet HTTPS; rebuilds must not modify existing Serve routes.
   systemd.services.tailscale-nginx-cert = {
-    description = "Renew nginx certificate for the existing Tailscale hostname";
+    description = "Renew nginx certificate for the canonical Tailscale hostname";
     after = [ "tailscaled.service" ];
     requires = [ "tailscaled.service" ];
     before = [ "nginx.service" ];
@@ -41,16 +55,16 @@
       TimeoutStartSec = "120s";
       ExecStartPre = "${config.services.tailscale.package}/bin/tailscale wait --timeout=60s";
     };
-    script = ''
-      ${config.services.tailscale.package}/bin/tailscale cert --min-validity=168h \
-        --cert-file /var/lib/tailscale-nginx-cert/cert.pem \
-        --key-file /var/lib/tailscale-nginx-cert/key.pem \
-        buildfleet-server.tailcb7cdb.ts.net
-      ${pkgs.coreutils}/bin/chmod 0640 /var/lib/tailscale-nginx-cert/{cert,key}.pem
-      if ${pkgs.systemd}/bin/systemctl is-active --quiet nginx.service; then
-        ${pkgs.systemd}/bin/systemctl reload --no-block nginx.service
-      fi
-    '';
+    path = [ config.services.tailscale.package pkgs.openssl pkgs.jq pkgs.coreutils pkgs.diffutils pkgs.systemd ];
+    script = builtins.readFile ./scripts/renew-tailnet-cert.sh;
+  };
+  # Pin the resolved pair for each Cockpit start. A generation rollback
+  # removes this drop-in and restores Cockpit's original certificate choice.
+  systemd.services.cockpit = {
+    overrideStrategy = "asDropin";
+    # The stock pre-start is privileged so it can bootstrap a self-signed
+    # certificate. Only the published-pair path uses a private mount.
+    serviceConfig.ExecStartPre = [ "" "+${cockpitPrepare}" ];
   };
   systemd.timers.tailscale-nginx-cert = {
     wantedBy = [ "timers.target" ];

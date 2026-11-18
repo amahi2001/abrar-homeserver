@@ -175,7 +175,7 @@ def hermes_status(run):
     return json.loads(curl(run, "http://127.0.0.1:9119/api/status"))
 
 
-def health_check(run, expected_hermes=None):
+def health_check(run, expected_hermes=None, legacy_host_file=Path("/etc/buildfleet/transmission-legacy-host")):
     # On-demand Sonarr/Radarr and external Internet access are not required.
     for unit in CRITICAL_UNITS:
         run(["systemctl", "is-active", "--quiet", unit])
@@ -222,11 +222,13 @@ def health_check(run, expected_hermes=None):
         raise RuntimeError("Hermes WebUI HTTPS endpoint does not require password login")
     for name, host, path in (
         ("Hermes WebUI", "hermes.amahi.dev", "/api/sessions"),
-        ("Transmission", "buildfleet-server.tailcb7cdb.ts.net", "/transmission/rpc"),
+        ("Transmission", "nix-server.tailcb7cdb.ts.net", "/transmission/rpc"),
+        *([("Legacy Transmission", legacy_host_file.read_text().strip(), "/transmission/rpc")]
+          if legacy_host_file.exists() else []),
     ):
         code = run([
             "curl", "--silent", "--show-error", "--max-time", "10", "--noproxy", "*",
-            "--resolve", f"{host}:443:100.91.234.17",
+            *(["--resolve", f"{host}:443:100.91.234.17"] if name != "Transmission" else []),
             "--output", "/dev/null", "--write-out", "%{http_code}", f"https://{host}{path}",
         ]).strip()
         if code != "401":

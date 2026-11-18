@@ -22,6 +22,8 @@ let
       PYTHONDONTWRITEBYTECODE=1 \
       /var/lib/hermes/hermes-webui/ctl.sh start --skip-agent-install
   '';
+  # Only the existing installation opts in during its client migration.
+  legacyTransmissionHost = import ./tailnet-legacy-host.nix;
   tailnetListen = [
     {
       addr = "100.91.234.17";
@@ -36,6 +38,9 @@ let
   ];
 in
 {
+  environment.etc = lib.optionalAttrs (legacyTransmissionHost != null) {
+    "buildfleet/transmission-legacy-host".text = legacyTransmissionHost + "\n";
+  };
   environment.systemPackages = [ hermesWebuiStart ];
 
   # Update SSH directly in Cloudflare; DuckDNS remains an independent fallback.
@@ -166,12 +171,22 @@ in
       };
     };
 
-    # Preserve Transmission's existing URL when nginx takes over tailnet :443.
-    virtualHosts."buildfleet-server.tailcb7cdb.ts.net" = {
+    # Legacy clients may still pin the old name to the tailnet address.
+    # Only fixed filenames can be selected. A missing legacy certificate on a
+    # new installation affects only clients requesting that retired hostname.
+    appendHttpConfig = ''
+      map $ssl_server_name $transmission_directory {
+        default .;
+        include /var/lib/tailscale-nginx-cert/published-*.map;
+      }
+    '';
+    virtualHosts."nix-server.tailcb7cdb.ts.net" = {
+      default = legacyTransmissionHost != null;
+      serverAliases = lib.optional (legacyTransmissionHost != null) legacyTransmissionHost;
       listen = tailnetListen;
       onlySSL = true;
-      sslCertificate = "/var/lib/tailscale-nginx-cert/cert.pem";
-      sslCertificateKey = "/var/lib/tailscale-nginx-cert/key.pem";
+      sslCertificate = "/var/lib/tailscale-nginx-cert/$transmission_directory/cert.pem";
+      sslCertificateKey = "/var/lib/tailscale-nginx-cert/$transmission_directory/key.pem";
       extraConfig = ''
         allow 100.64.0.0/10;
         allow fd7a:115c:a1e0::/48;
