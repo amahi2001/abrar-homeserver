@@ -182,10 +182,18 @@ set -euo pipefail
 DEV_AGENT_CONFIG=$(realpath -e "${DEV_AGENT_CONFIG:-$HOME/.local/share/agent-config/export}")
 export DEV_AGENT_CONFIG
 candidate=$(nix build --no-link --print-out-paths .#dev)
-image=$("$candidate/bin/dev" build | tail -n 1)
+image=$("$candidate/bin/dev" image)
+if ! docker image inspect "$image" >/dev/null 2>&1; then
+  installed=$(python3 -c 'import json; print(json.load(open("/var/lib/dev-runtime-maintenance/state.json"))["candidate"]["image"])')
+  if [[ $image == "$installed" ]]; then
+    echo "Installed base tag missing. Recover its validated image before staging." >&2
+    exit 1
+  fi
+  "$candidate/bin/dev" build
+fi
 tested=$(docker image inspect -f '{{.Id}}' "$image")
 python3 development/probe-canary.py "$tested" --baseline /etc/nixos-deployed/development/compose.yaml
-DEV_UI_SMOKE=1 bash development/smoke.sh "$tested"
+DEV_UI_SMOKE=1 bash development/smoke.sh "$tested" "$DEV_AGENT_CONFIG"
 ```
 
 The probe uses the resolved Compose healthcheck with a private temporary project,
@@ -254,7 +262,9 @@ exec or held agent/shell lock, and hold both activity locks through restoration.
 Retag the saved ID with its original tag, restore the three saved configuration
 files, and run Compose with the recorded project name, source and saved Compose
 file using `up -d --no-build --no-deps --wait dev`. Verify the original ID,
-mounts and readiness. Leave any newly active box running until it can drain.
+mounts, readiness and the saved `ports.json` against the recovered container.
+The port preflight requires that the recorded rollback Compose configuration
+reproduces those endpoints. Leave any newly active box running until it can drain.
 
 Ports 3000, 5173, and 8000 map to random **host-loopback** ports. Run `dev list`
 to find them, then forward a selected port over SSH, for example:
