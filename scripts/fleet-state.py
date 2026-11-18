@@ -55,10 +55,20 @@ def compose_sidecars(dev):
     return siblings
 
 
+def check_execs(container):
+    for attempt in range(4):
+        execs = json.loads(run("docker", "inspect", container, "--format", "{{json .ExecIDs}}"))
+        if execs is None or execs == []:
+            return
+        if not isinstance(execs, list) or attempt == 3:
+            break
+        time.sleep(.2)
+    raise RuntimeError(f"Dev container {container} has active or unknown exec sessions")
+
+
 @contextlib.contextmanager
 def agent_lock(container, home, uid, gid):
-    if run("docker", "inspect", container, "--format", "{{json .ExecIDs}}") not in ("null", "[]"):
-        raise RuntimeError(f"Dev container {container} has active or unknown exec sessions")
+    check_execs(container)
     mounts = json.loads(run("docker", "inspect", container, "--format", "{{json .Mounts}}"))
     shared = [m for m in mounts if m.get("Destination") == "/home/node"]
     if (len(shared) != 1 or shared[0].get("Type") != "bind" or shared[0].get("Source") != str(home)
@@ -226,6 +236,9 @@ def guard(directory):
         except FileExistsError:
             raise RuntimeError("Fleet pause marker already exists; inspect it before retrying") from None
         try:
+            # Legacy execs may have appeared while checking browsers and runners.
+            for container in manifest["dev"].values():
+                check_execs(container)
             stopped = True
             for repository, pidfd in listeners:
                 runner.stop_idle(repository, pidfd)

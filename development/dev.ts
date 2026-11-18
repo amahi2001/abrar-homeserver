@@ -318,9 +318,14 @@ export function main(argv = process.argv.slice(2)) {
   }
   function checkExecs(id: string | undefined) {
     // Older launchers' shells, including the shared forwarder, have no shell lock.
-    if (id && !["null", "[]"].includes(run(["docker", "inspect", id, "--format", "{{json .ExecIDs}}"]).stdout)) {
-      throw Error("Container exec active or unknown; retry when idle.");
+    if (!id) return;
+    for (let attempt = 0; attempt < 4; attempt++) {
+      const result = run(["docker", "inspect", id, "--format", "{{json .ExecIDs}}"]).stdout;
+      if (result === "null" || result === "[]") return;
+      if (!Array.isArray(JSON.parse(result)) || attempt === 3) break;
+      Bun.sleepSync(200);
     }
+    throw Error("Container exec active or unknown; retry when idle.");
   }
   function startContainer(force = false) {
     const config = JSON.parse(compose(["config", "--format", "json"]).stdout);
@@ -337,17 +342,19 @@ export function main(argv = process.argv.slice(2)) {
     const recreate = force || metadata?.configHash !== configHash;
     const needsUp = recreate || !existing || run(["docker", "inspect", existing, "--format", "{{.State.Health.Status}}"]).stdout !== "healthy";
     const tagBase = !config.services.dev.build && (force || run(["docker", "image", "inspect", workspaceImage], { allowFailure: true }).code !== 0);
+    const service = config.services.dev;
+    const buildProject = !!service.build && (force || run(["docker", "image", "inspect", service.image], { allowFailure: true }).code !== 0);
+    const needsAdmission = needsUp || tagBase || buildProject;
     function stillIdle() {
-      if (needsUp) {
+      if (needsAdmission) {
         if (container() !== existing) throw Error("Project container changed during preparation; retry when idle.");
         checkExecs(existing);
       }
     }
     function prepare() {
-      if (needsUp) checkExecs(existing);
+      if (needsAdmission) checkExecs(existing);
       if (recreate) checkpointBrowser();
-      const service = config.services.dev;
-      if (service.build && (force || run(["docker", "image", "inspect", service.image], { allowFailure: true }).code)) {
+      if (buildProject) {
         // A legacy shell can arrive during a long build. Publish the live
         // configuration and tags only after the last admission check passes.
         const dir = mkdtempSync(join(projectState, "build-"));
@@ -392,7 +399,7 @@ export function main(argv = process.argv.slice(2)) {
       const logs = run(["docker", "logs", "--tail", "80", id], { allowFailure: true });
       throw Error(`Container did not become healthy.\n${logs.stdout}\n${logs.stderr}`);
     }
-    return withProjectLock(home, ".agent-session.lock", () => needsUp || tagBase ? withProjectLock(home, ".dev-shell.lock", prepare) : prepare());
+    return withProjectLock(home, ".agent-session.lock", () => needsAdmission ? withProjectLock(home, ".dev-shell.lock", prepare) : prepare());
   }
 
   if (command === "view") {

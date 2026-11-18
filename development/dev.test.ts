@@ -729,6 +729,17 @@ test("active agent prevents a second start from changing its branch", () => {
   expect(f.git("branch", "--show-current")).toBe(branch);
 });
 
+test("a healthy custom box defers publication of a missing tag while a shell is active", () => {
+  const f = fixture(), custom = { FAKE_CUSTOM_BUILD: "1" };
+  expect(f.cli(["start", "app", "--no-agent"], custom).code).toBe(0);
+  f.clear();
+  const home = join(f.state, "projects/app/home");
+  withProjectLock(home, ".dev-shell.lock", () => {
+    expect(f.cli(["start", "app", "--no-agent"], { ...custom, FAKE_RUNNING: "1", FAKE_WORKSPACE_MISSING: "1" }).code).toBe(1);
+  }, true);
+  expect(f.calls().some(c => c.name === "devcontainer" && c.args[0] === "build")).toBe(false);
+});
+
 test("a shell permits other shells but protects its checkout and container until it exits", async () => {
   const f = fixture(); expect(f.cli(["start", "app", "--no-agent"]).code).toBe(0);
   const marker = join(f.dir, "shell"), branch = f.git("branch", "--show-current");
