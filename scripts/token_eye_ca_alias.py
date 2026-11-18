@@ -23,6 +23,12 @@ BOX_DATA = "/agent/token-eye/data"
 # Run in the exact container selected from this project's locked metadata.
 BOX_CHECK = """import json, os, sys
 from pathlib import Path
+scope = json.loads(os.environ["TOKEN_EYE_CLAUDE_ACCOUNTS"])
+expected_scope = json.loads(sys.argv[3])
+if (len(scope) != len(expected_scope)
+        or {a["root"]: a["clientRoot"] for a in scope} != expected_scope
+        or os.environ.get("TOKEN_EYE_DATA_DIR") != "/agent/token-eye/data"):
+    raise SystemExit(1)
 for path, expected in json.loads(sys.argv[1]).items():
     info = os.stat(path)
     if [info.st_dev, info.st_ino] != expected:
@@ -50,7 +56,8 @@ def check_box(container, home, data, offline):
             info = (local / name).stat()
             files[str(Path(mounted) / name)] = [info.st_dev, info.st_ino]
     command("docker", "exec", container, "python3", "-c", BOX_CHECK, json.dumps(files),
-            "offline" if offline else "check", timeout=10)
+            "offline" if offline else "check",
+            json.dumps({HOST: str(home / ".claude"), BOX: BOX}), timeout=10)
 
 
 def contents(path, limit, private=False):

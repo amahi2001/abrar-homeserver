@@ -1,5 +1,6 @@
 import hashlib
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -63,7 +64,7 @@ class HomeAliasTests(unittest.TestCase):
         self.assertEqual(self.run_repair("check"), "eligible")
         args = self.docker.call_args.args
         self.assertEqual(args[:3], ("docker", "exec", "exact-container-id"))
-        mapping = json.loads(args[-2])
+        mapping = json.loads(args[-3])
         info = (self.host / alias.CA).stat()
         self.assertEqual(mapping[alias.HOST + "/" + alias.CA], [info.st_dev, info.st_ino])
         self.assertFalse(self.backup.exists())
@@ -140,9 +141,15 @@ class HomeAliasTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.run_repair("check")
         info = self.host.stat()
-        for inode, code in ((info.st_ino, 0), (info.st_ino + 1, 1)):
+        scope = {alias.HOST: str(self.host), alias.BOX: alias.BOX}
+        env = {**os.environ, "TOKEN_EYE_DATA_DIR": alias.BOX_DATA,
+               "TOKEN_EYE_CLAUDE_ACCOUNTS": json.dumps(
+                   [{"root": k, "clientRoot": v} for k, v in scope.items()])}
+        for inode, current, code in ((info.st_ino, scope, 0), (info.st_ino + 1, scope, 1),
+                                     (info.st_ino, {alias.HOST: str(self.home)}, 1)):
             mapping = json.dumps({str(self.host): [info.st_dev, inode]})
-            result = subprocess.run([sys.executable, "-c", alias.BOX_CHECK, mapping, "check"])
+            result = subprocess.run([sys.executable, "-c", alias.BOX_CHECK, mapping, "check",
+                                     json.dumps(current)], env=env)
             self.assertEqual(result.returncode, code)
 
 
