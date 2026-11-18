@@ -80,16 +80,33 @@ inside bash -ec '
   rtk ls .
 '
 if [ -n "$config" ]; then
-  inside bash -ec '
-    test -f "$HOME/.agents/skills/caveman-help/SKILL.md"
-    test -f "$HOME/.agents/skills/ponytail/SKILL.md"
-    test -f "$CLAUDE_CONFIG_DIR/skills/caveman/SKILL.md"
-    rg -q "rtk hook claude" "$CLAUDE_CONFIG_DIR/settings.json"
-    rg -q "rtk hook codex" "$CODEX_HOME/hooks.json"
-    rg -q "agent-config:start" "$CODEX_HOME/AGENTS.md" "$CLAUDE_CONFIG_DIR/CLAUDE.md"
-    rg -q "gpt-6.1-sol" "$CODEX_HOME/config.toml"
-    test ! -w /opt/agent-config/instructions.md
-  '
+  docker exec -i --user "$(id -u):$(id -g)" "$one" python3 - <<'CHECK_CONFIG'
+import json
+import os
+from pathlib import Path
+import tomllib
+
+root = Path("/opt/agent-config")
+codex = Path(os.environ["CODEX_HOME"])
+claude = Path(os.environ["CLAUDE_CONFIG_DIR"])
+for skill in (root / "skills").glob("*/SKILL.md"):
+    installed = Path.home() / ".agents/skills" / skill.parent.name / "SKILL.md"
+    assert installed.is_file() and installed.samefile(claude / "skills" / skill.parent.name / "SKILL.md")
+
+def includes(actual, expected):
+    if isinstance(expected, dict):
+        return isinstance(actual, dict) and all(k in actual and includes(actual[k], v) for k, v in expected.items())
+    if isinstance(expected, list):
+        return isinstance(actual, list) and all(any(includes(item, wanted) for item in actual) for wanted in expected)
+    return actual == expected
+
+for name, target, decode in (("codex.toml", codex / "config.toml", tomllib.loads),
+                             ("claude.json", claude / "settings.json", json.loads),
+                             ("codex-hooks.json", codex / "hooks.json", json.loads)):
+    assert includes(decode(target.read_text()), decode((root / "configs" / name).read_text())), name
+assert not os.access(root / "instructions.md", os.W_OK)
+CHECK_CONFIG
+  inside bash -ec 'rg -q "agent-config:start" "$CODEX_HOME/AGENTS.md" "$CLAUDE_CONFIG_DIR/CLAUDE.md"'
 fi
 docker exec --user "$(id -u):$(id -g)" "$two" bash -ec '
   test ! -e /workspace/one

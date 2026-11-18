@@ -173,7 +173,8 @@ build time. Both x86_64 Linux and the server's existing Docker daemon are requir
 
 ### Stage a devbox update
 
-Build the pinned launcher from the candidate checkout on the host. Its build
+Install the reviewed guard-only launcher (including `dev image`) with the previous
+Docker and Compose assets first. Build the pinned candidate launcher on the host. Its build
 uses the current tool locks and gives changed image inputs their own tag.
 
 ```bash
@@ -184,7 +185,7 @@ export DEV_AGENT_CONFIG
 candidate=$(nix build --no-link --print-out-paths .#dev)
 image=$("$candidate/bin/dev" image)
 if ! docker image inspect "$image" >/dev/null 2>&1; then
-  installed=$(python3 -c 'import json; print(json.load(open("/var/lib/dev-runtime-maintenance/state.json"))["candidate"]["image"])')
+  installed=$(/run/current-system/sw/bin/dev image)
   if [[ $image == "$installed" ]]; then
     echo "Installed base tag missing. Recover its validated image before staging." >&2
     exit 1
@@ -219,8 +220,8 @@ reserved through observation. This example uses a 24-hour soak.
   set -euo pipefail
   umask 077
   project=buildfleet-dev-sandbox
-  state="$HOME/.local/state/dev/projects/$project"
-  source_dir="$HOME/projects/$project"
+  state="${DEV_STATE_ROOT:-$HOME/.local/state/dev}/projects/$project"
+  source_dir="${DEV_ROOT:-$HOME/projects}/$project"
   exec 9>>"$state/startup.lock"
   flock -n 9
   exec 8>>/run/lock/host-deployment.lock
