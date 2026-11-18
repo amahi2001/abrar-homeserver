@@ -23,10 +23,14 @@ BOX_DATA = "/agent/token-eye/data"
 # Run in the exact container selected from this project's locked metadata.
 BOX_CHECK = """import json, os, sys
 from pathlib import Path
-scope = json.loads(os.environ["TOKEN_EYE_CLAUDE_ACCOUNTS"])
-expected_scope = json.loads(sys.argv[3])
-if (len(scope) != len(expected_scope)
-        or {a["root"]: a["clientRoot"] for a in scope} != expected_scope
+def unique(pairs):
+    value = dict(pairs)
+    if len(value) != len(pairs):
+        raise ValueError("duplicate key")
+    return value
+scope = json.loads(os.environ["TOKEN_EYE_CLAUDE_ACCOUNTS"], object_pairs_hook=unique)
+expected_scope = [{"root": k, "clientRoot": v} for k, v in json.loads(sys.argv[3]).items()]
+if (len(scope) != len(expected_scope) or any(account not in scope for account in expected_scope)
         or os.environ.get("TOKEN_EYE_DATA_DIR") != "/agent/token-eye/data"):
     raise SystemExit(1)
 for path, expected in json.loads(sys.argv[1]).items():
@@ -47,6 +51,16 @@ def require(condition):
         raise ValueError("unexpected_state")
 
 
+def unique_fields(pairs):
+    fields = dict(pairs)
+    require(len(fields) == len(pairs))
+    return fields
+
+
+def invalid_constant(value):
+    raise ValueError("invalid JSON number")
+
+
 def check_box(container, home, data, offline):
     files = {}
     for mounted, local, names in ((HOST, home / ".claude", ("settings.json", CA)),
@@ -55,7 +69,8 @@ def check_box(container, home, data, offline):
         for name in ("", *names):
             info = (local / name).stat()
             files[str(Path(mounted) / name)] = [info.st_dev, info.st_ino]
-    command("docker", "exec", container, "python3", "-c", BOX_CHECK, json.dumps(files),
+    command("docker", "exec", "--workdir", "/", container, "/usr/bin/python3", "-IS", "-c",
+            BOX_CHECK, json.dumps(files),
             "offline" if offline else "check",
             json.dumps({HOST: str(home / ".claude"), BOX: BOX}), timeout=10)
 
@@ -78,7 +93,7 @@ def proposal(raw, home, legacy):
     require(all(d.stat().st_uid == os.getuid() and not d.stat().st_mode & 0o022
                 for d in (home, new, box)))
     require((old / CA).samefile(new / CA))
-    record = json.loads(raw)
+    record = json.loads(raw, object_pairs_hook=unique_fields, parse_constant=invalid_constant)
     require(isinstance(record, dict) and set(record) == {"version", "enabled", "accounts"}
             and type(record["version"]) is int and record["version"] == 1
             and record["enabled"] is True and isinstance(record["accounts"], list))
@@ -139,6 +154,9 @@ def reconcile(mode, updater, legacy, deployment_lock):
         check_box(container, home, data, mode != "check")
         require(not os.path.lexists(updater.pending)
                 and not os.path.lexists(data / "claude-routing-pending.json"))
+        routing = json.loads(contents(data / "routing-owner.json", 16 << 20, private=True),
+                             object_pairs_hook=unique_fields)
+        require(routing["applying"] is False)
         raw = contents(owner, 16 << 20, private=True)
         candidate = proposal(raw, home, legacy)
         backup_exists = os.path.lexists(backup)
@@ -158,9 +176,9 @@ def reconcile(mode, updater, legacy, deployment_lock):
                 return "already_restored"
             require(proposal(preimage, home, legacy) == raw and raw == candidate)
             replacement = preimage
-        require(contents(owner, 16 << 20, private=True) == raw)
-        require(proposal(raw, home, legacy) == candidate)
         check_box(container, home, data, True)
+        require(proposal(raw, home, legacy) == candidate)
+        require(contents(owner, 16 << 20, private=True) == raw)
         atomic(owner, replacement)
         return "applied" if mode == "apply" else "restored"
 

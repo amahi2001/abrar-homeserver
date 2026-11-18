@@ -55,6 +55,7 @@ class HomeAliasTests(unittest.TestCase):
                             "certificate_hash": hashlib.sha256(b"fixture public CA").hexdigest()})
         self.raw = json.dumps({"version": 1, "enabled": True, "accounts": records}).encode()
         atomic(self.owner, self.raw)
+        atomic(self.data / "routing-owner.json", b'{"applying": false}')
 
     def run_repair(self, mode):
         return alias.reconcile(mode, self.u, self.legacy, self.deployment)
@@ -63,7 +64,8 @@ class HomeAliasTests(unittest.TestCase):
         settings = (self.host / "settings.json").read_bytes()
         self.assertEqual(self.run_repair("check"), "eligible")
         args = self.docker.call_args.args
-        self.assertEqual(args[:3], ("docker", "exec", "exact-container-id"))
+        self.assertEqual(args[:8], ("docker", "exec", "--workdir", "/", "exact-container-id",
+                                    "/usr/bin/python3", "-IS", "-c"))
         mapping = json.loads(args[-3])
         info = (self.host / alias.CA).stat()
         self.assertEqual(mapping[alias.HOST + "/" + alias.CA], [info.st_dev, info.st_ino])
@@ -135,6 +137,11 @@ class HomeAliasTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 self.run_repair("apply")
             self.assertEqual(self.owner.read_bytes(), raw)
+        duplicate = self.raw.replace(b'"enabled": true', b'"enabled": false, "enabled": true')
+        atomic(self.owner, duplicate)
+        with self.assertRaises(ValueError):
+            self.run_repair("apply")
+        self.assertEqual(self.owner.read_bytes(), duplicate)
 
     def test_preview_blocks_conflicting_preimage_and_changed_mount_identity(self):
         atomic(self.backup, b"unrelated preimage")
@@ -151,6 +158,28 @@ class HomeAliasTests(unittest.TestCase):
             result = subprocess.run([sys.executable, "-c", alias.BOX_CHECK, mapping, "check",
                                      json.dumps(current)], env=env)
             self.assertEqual(result.returncode, code)
+        declared = json.loads(env["TOKEN_EYE_CLAUDE_ACCOUNTS"])
+        declared[0]["unexpected"] = True
+        env["TOKEN_EYE_CLAUDE_ACCOUNTS"] = json.dumps(declared)
+        result = subprocess.run([sys.executable, "-c", alias.BOX_CHECK, "{}", "check",
+                                 json.dumps(scope)], env=env)
+        self.assertEqual(result.returncode, 1)
+
+    def test_pending_routing_and_receipt_drift_during_final_probe_defer(self):
+        routing = self.data / "routing-owner.json"
+        atomic(routing, b'{"applying": true}')
+        with self.assertRaises(ValueError):
+            self.run_repair("check")
+        atomic(routing, b'{"applying": false}')
+        self.docker.reset_mock()
+        changed = self.raw + b" "
+        def mutate_on_second_probe(*args, **kwargs):
+            if self.docker.call_count == 2:
+                atomic(self.owner, changed)
+        self.docker.side_effect = mutate_on_second_probe
+        with self.assertRaises(ValueError):
+            self.run_repair("apply")
+        self.assertEqual(self.owner.read_bytes(), changed)
 
 
 if __name__ == "__main__":
