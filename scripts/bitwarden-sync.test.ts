@@ -32,6 +32,12 @@ if (args[0] === "edit" && fixture.editError) {
 }
 if (args[0] === "unlock") console.log("fake-" + side + "-session");
 else if (args[0] === "status") console.log(JSON.stringify({status:"unlocked",serverUrl:side==="src"?"https://vault.invalid":null,userId:fixture.wrongAccount?"other":side}));
+else if (args[0] === "export") {
+  const account=fixture[side] ?? {};
+  const present=new Map((account.items||[]).filter(i=>!i.organizationId).map(i=>[i.id,{id:i.id,archivedDate:i.archivedDate}]));
+  for(const i of account.archived||[]) if(!i.organizationId&&!present.has(i.id)) present.set(i.id,{id:i.id,archivedDate:"2026-01-01"});
+  console.log(JSON.stringify({encrypted:true,items:account.encrypted??[...present.values()]}));
+}
 else if (args[0] === "get") {
   if (fixture.lookup) console.log(JSON.stringify(fixture.lookup));
   else { console.error(fixture.lookupError || "Not found."); process.exit(1); }
@@ -269,4 +275,18 @@ test("archived sources cannot enlarge the deletion budget through active destina
   const gone=[absentId,"deafbeef-0000-4000-8000-000000000002"].map(id=>tracked({id,fields:[{name:"bw_id",value:id}]}));
   const result=await sync({src:{items:[source()],archived},dst:{items:[tracked(),...copies,...gone]}});
   expect(result.stderr).toContain("Deletion guard"); expect(mutations(result.calls)).toEqual([]);
+});
+
+test("an unlisted encrypted personal record holds all writes before a manual adoption", async () => {
+  const result=await sync({src:{items:[source()],encrypted:[{id:"source-1"},{id:absentId}]},dst:{items:[source({id:"manual"})]}});
+  expect(result.stderr).toContain("inventory is incomplete"); expect(mutations(result.calls)).toEqual([]);
+});
+test("an archive hidden by the subscription still reserves the destination tracking identity", async () => {
+  const hidden=tracked({id:absentId,archivedDate:"2026-01-01"});
+  const result=await sync({src:{items:[source()]},dst:{encrypted:[{id:absentId,archivedDate:hidden.archivedDate}]},lookup:hidden});
+  expect(result.code,result.stderr).toBe(0); expect(mutations(result.calls)).toEqual([]);
+});
+test("empty and missing optional login values converge", async () => {
+  const result=await sync({src:{items:[source({login:{username:"",password:""}})]},dst:{items:[tracked({login:{}})]}});
+  expect(result.code,result.stderr).toBe(0); expect(mutations(result.calls)).toEqual([]);
 });
