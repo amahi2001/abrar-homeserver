@@ -38,3 +38,20 @@ cat ~/.local/state/token-eye-nixos/runtime/update/latest.json
 Stop automatic updates with `systemctl --user disable --now token-eye-update.timer`.
 To persist removal across NixOS rebuilds, remove the updater's timer enablement and
 named links in `token-eye.nix`. Routing and the separate dogfood timer keep running.
+
+## One-time host Claude home rename
+
+From the server configuration checkout, run `python3 scripts/token_eye_ca_alias.py check`
+as the runtime owner. An `eligible` result means both home names resolve to the
+same host account, the installed CA files match their recorded hashes, and the
+two accounts' managed settings already match the new host path.
+
+During an offline routing maintenance window, run the same command with `apply`.
+It acquires the deployment, devbox, native configuration and proxy owner locks
+and checks the box for remaining routing sockets. A busy owner or an unavailable
+socket check defers the repair. The helper changes the host client directory
+and installed CA path in the ownership receipt. It preserves the original
+restore values and saves a mode-0600 preimage at
+`~/.local/state/token-eye-nixos/runtime/update/host-ca-home-rename.preimage`.
+Treat that file as a credential. Use `rollback` in the same maintenance window
+to restore the exact original bytes while the receipt still matches the repair.
