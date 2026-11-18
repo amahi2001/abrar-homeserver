@@ -376,7 +376,7 @@ class FleetTests(unittest.TestCase):
                 self.assertEqual(resume.call_args.args[0]["dev"], {"app": "running-id"})
                 self.owner_lookup.assert_called_once_with("amahi")
                 agent_lock.assert_called_once_with("running-id", project / "home", self.owner.pw_uid, self.owner.pw_gid)
-                late_execs.assert_called_once_with("running-id")
+                self.assertEqual([call.args for call in late_execs.call_args_list], [("running-id",), ("running-id",)])
             with (project / "startup.lock").open("a") as released:
                 fcntl.flock(released, fcntl.LOCK_EX | fcntl.LOCK_NB)
 

@@ -72,6 +72,8 @@ class DevMaintenanceTests(unittest.TestCase):
 
             failure = RuntimeError("unhealthy replacement")
             def commands(*args, **kwargs):
+                if args[:2] == ("docker", "inspect"):
+                    return "null"
                 if args[:2] == ("dev", "rebuild"):
                     self.assertEqual(kwargs["env"]["DEV_HOST_LOCK_HELD"], "app")
                     self.assertEqual(subprocess.run(["flock", "-n", str(agent_lock), "true"]).returncode, 0)
@@ -82,7 +84,7 @@ class DevMaintenanceTests(unittest.TestCase):
                     self.assertNotEqual(subprocess.run(["flock", "-n", str(agent_lock), "true"]).returncode, 0)
                 return ""
 
-            prior = {"ExecIDs": None, "Image": "sha256:previous", "Config": {"Labels": {"com.docker.compose.project": "dev-app"}},
+            prior = {"Id": "old", "ExecIDs": None, "Image": "sha256:previous", "Config": {"Labels": {"com.docker.compose.project": "dev-app"}},
                      "Mounts": [{"Type": "bind", "Source": str(home), "Destination": "/home/node"}]}
             with patch.object(maintenance, "running_projects", side_effect=[{"app": "old"}, {"app": "new"}]), patch.object(maintenance, "idle", return_value=True), patch.object(maintenance, "inspect", return_value=prior), patch.object(maintenance, "run", side_effect=commands) as run:
                 with self.assertRaisesRegex(RuntimeError, "previous image and project configuration restored"):
@@ -113,16 +115,16 @@ class DevMaintenanceTests(unittest.TestCase):
                 originals = {"project.json": json.dumps(metadata), "compose.json": json.dumps(compose), "devcontainer.json": "original"}
                 for name, data in originals.items():
                     (state / name).write_text(data)
-                prior = {"ExecIDs": None, "Image": "old", "Config": {"Labels": {"com.docker.compose.project": "dev-app"}},
+                prior = {"Id": "old", "ExecIDs": None, "Image": "old", "Config": {"Labels": {"com.docker.compose.project": "dev-app"}},
                          "Mounts": [{"Type": "bind", "Source": str(home), "Destination": "/home/node"}]}
-                current = {**prior, "Image": "new"}
+                current = {**prior, "Id": "new", "Image": "new"}
                 if reason == "unknown-mount":
                     current["Mounts"] = [{"Type": "bind", "Source": "/unknown/home", "Destination": "/home/node"}]
-                if reason == "legacy-exec":
-                    current["ExecIDs"] = ["already-running"]
                 name = ".dev-shell.lock" if reason == "busy-shell" else ".agent-session.lock"
                 with (home / name).open("a") as admitted:
                     def commands(*args, **kwargs):
+                        if args[:2] == ("docker", "inspect"):
+                            return '["late-proxy"]' if reason == "legacy-exec" else "null"
                         if args[:2] == ("dev", "rebuild"):
                             for name in originals:
                                 (state / name).write_text("new state and active work")
@@ -159,9 +161,9 @@ class DevMaintenanceTests(unittest.TestCase):
             home = state / "home"
             home.mkdir()
             snapshots = {"compose.json": json.dumps({"services": {"dev": {"volumes": [{"type": "bind", "source": str(home), "target": "/home/node"}]}}}).encode()}
-            runtime = {"ExecIDs": None, "Mounts": [{"Type": "bind", "Source": str(home), "Destination": "/home/node"}]}
+            runtime = {"Id": "current", "ExecIDs": None, "Mounts": [{"Type": "bind", "Source": str(home), "Destination": "/home/node"}]}
             path = home / ".agent-session.lock"
-            with self.assertRaisesRegex(RuntimeError, "recovery failed"):
+            with patch.object(maintenance, "run", return_value="null"), self.assertRaisesRegex(RuntimeError, "recovery failed"):
                 with maintenance.rollback_dispatch(state, snapshots, runtime, runtime):
                     self.assertNotEqual(subprocess.run(["flock", "-n", str(path), "true"]).returncode, 0)
                     raise RuntimeError("recovery failed")

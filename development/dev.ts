@@ -388,7 +388,7 @@ export function main(argv = process.argv.slice(2)) {
       }
       // Native up skips Compose when dev is running; keep its sidecars running too.
       const sidecars = Object.keys(config.services).filter(service => service !== "dev");
-      if (sidecars.length) run(["docker", "compose", "--project-directory", source, "-p", composeProject, "-f", join(projectState, "compose.json"), "up", "-d", "--no-build", "--no-deps", "--wait", ...sidecars], { env: environment() });
+      if (sidecars.length) run(["docker", "compose", "--project-directory", source, "-p", composeProject, "-f", join(projectState, "compose.json"), "up", "-d", "--no-build", "--no-deps", ...(needsAdmission ? [] : ["--no-recreate"]), "--wait", ...sidecars], { env: environment() });
       // Give first-time indexing a bounded window; healthy warm boxes return immediately.
       for (let i = 0; i < 1200; i++) {
         const state = JSON.parse(run(["docker", "inspect", id, "--format", "{{json .State}}"]).stdout);
@@ -404,23 +404,24 @@ export function main(argv = process.argv.slice(2)) {
 
   if (command === "view") {
     if (!metadata) throw Error("Project not initialized. Run dev start PROJECT --no-agent first.");
-    const id = container();
-    if (!id) throw Error("Project is not running. Run dev start PROJECT --no-agent first.");
-    nativeReady();
-    const port = viewer === "browser" ? "8931" : "6080";
-    const mapping = run(["docker", "port", id, `${port}/tcp`]).stdout;
-    const match = /^127\.0\.0\.1:(\d+)$/.exec(mapping);
-    if (!match || Number(match[1]) < 1 || Number(match[1]) > 65535) throw Error(`Expected one host-loopback mapping for ${port}; found ${mapping || "none"}. Rebuild an idle box if viewer ports are missing.`);
-    const target = process.env.DEV_SSH_TARGET || `${userInfo().username}@${hostname()}`;
-    if (/[\r\n]/.test(target) || target.startsWith("-") || !target) throw Error("Invalid DEV_SSH_TARGET");
-    native("exec", ["dev-ui", stopViewer ? "stop" : "start", viewer], true);
-    if (!stopViewer) {
-      const published = match[1];
-      const quoted = "'" + target.replaceAll("'", "'\\''") + "'";
-      console.log(`${viewer}: http://127.0.0.1:${published}/${viewer === "desktop" ? "vnc.html?autoconnect=1&resize=remote" : ""}`);
-      console.log(`On your computer: ssh -N -L ${published}:127.0.0.1:${published} ${quoted}`);
-    }
-    return;
+    return withProjectLock(join(projectState, "home"), ".dev-shell.lock", () => {
+      const id = container();
+      if (!id) throw Error("Project is not running. Run dev start PROJECT --no-agent first.");
+      nativeReady();
+      const port = viewer === "browser" ? "8931" : "6080";
+      const mapping = run(["docker", "port", id, `${port}/tcp`]).stdout;
+      const match = /^127\.0\.0\.1:(\d+)$/.exec(mapping);
+      if (!match || Number(match[1]) < 1 || Number(match[1]) > 65535) throw Error(`Expected one host-loopback mapping for ${port}; found ${mapping || "none"}. Rebuild an idle box if viewer ports are missing.`);
+      const target = process.env.DEV_SSH_TARGET || `${userInfo().username}@${hostname()}`;
+      if (/[\r\n]/.test(target) || target.startsWith("-") || !target) throw Error("Invalid DEV_SSH_TARGET");
+      native("exec", ["dev-ui", stopViewer ? "stop" : "start", viewer], true);
+      if (!stopViewer) {
+        const published = match[1];
+        const quoted = "'" + target.replaceAll("'", "'\\''") + "'";
+        console.log(`${viewer}: http://127.0.0.1:${published}/${viewer === "desktop" ? "vnc.html?autoconnect=1&resize=remote" : ""}`);
+        console.log(`On your computer: ssh -N -L ${published}:127.0.0.1:${published} ${quoted}`);
+      }
+    }, true);
   }
 
   if (command === "shell") {

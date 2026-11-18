@@ -65,15 +65,15 @@ def rollback_dispatch(project_dir, snapshots, previous, current):
             if (not stat.S_ISREG(held.st_mode) or (held.st_dev, held.st_ino) != (linked.st_dev, linked.st_ino)):
                 raise RuntimeError("Rollback needs attention: project lock changed")
         if current is not None:
-            execs = current.get("ExecIDs", True)
-            for _ in range(3):
-                if not isinstance(execs, list) or not execs or not current.get("Id"):
-                    break
-                # A short-lived health probe may have been running in the snapshot.
-                time.sleep(.2)
+            if not current.get("Id"):
+                raise RuntimeError("Rollback needs attention: unverified container ID")
+            for attempt in range(4):
                 execs = json.loads(run("docker", "inspect", current["Id"], "--format", "{{json .ExecIDs}}"))
-            if execs not in (None, []):
-                raise RuntimeError("Rollback needs attention: container exec active or unknown")
+                if execs is None or execs == []:
+                    break
+                if not isinstance(execs, list) or attempt == 3:
+                    raise RuntimeError("Rollback needs attention: container exec active or unknown")
+                time.sleep(.2)
         yield
 
 

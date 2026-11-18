@@ -228,6 +228,11 @@ test("view validates arguments, initialized/running state and loopback mappings"
   expect(f.cli(["view", "app"]).err).toContain("not initialized");
   expect(f.cli(["start", "app", "--no-agent"]).code).toBe(0);
   expect(f.cli(["view", "app"]).err).toContain("not running");
+  withProjectLock(join(f.state, "projects/app/home"), ".dev-shell.lock", () => {
+    f.clear();
+    expect(f.cli(["view", "app"], { FAKE_RUNNING: "1" }).code).toBe(1);
+    expect(f.calls().some(c => c.args.includes("port") || c.args.includes("dev-ui"))).toBe(false);
+  });
   for (const port of ["0.0.0.0:43219", "[::]:43219", "127.0.0.1:0", "127.0.0.1:65536", "127.0.0.1:1\n0.0.0.0:1"]) {
     f.clear();
     expect(f.cli(["view", "app"], { FAKE_RUNNING: "1", FAKE_PORT: port }).code).toBe(1);
@@ -621,7 +626,7 @@ test("warm starts reconcile sidecars without replacing the running development c
   expect(f.calls().some(c => c.name === "devcontainer" && c.args[0] === "up")).toBe(false);
   const sidecars = f.calls().find(c => c.name === "docker" && c.args.includes("up"));
   expect(sidecars.args.at(-1)).toBe("db");
-  expect(sidecars.args).toContain("--no-deps"); expect(sidecars.args).toContain("--wait");
+  expect(sidecars.args).toContain("--no-deps"); expect(sidecars.args).toContain("--wait"); expect(sidecars.args).toContain("--no-recreate");
 });
 
 test("concurrent startup fails promptly while process-owned lock is held", async () => {

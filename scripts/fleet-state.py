@@ -243,6 +243,7 @@ def guard(directory):
             for repository, pidfd in listeners:
                 runner.stop_idle(repository, pidfd)
             for container in manifest["dev"].values():
+                check_execs(container)
                 run("docker", "stop", "--time", "30", container)
             for container in manifest["sidecars"]:
                 run("docker", "stop", "--time", "30", container)
