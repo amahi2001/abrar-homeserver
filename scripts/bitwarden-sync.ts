@@ -1,431 +1,269 @@
 #!/usr/bin/env bun
-// Vaultwarden to Bitwarden synchronization script
-
+// Synchronize the owner's personal Vaultwarden items to Bitwarden.
 import { spawn } from "node:child_process";
-import { mkdir } from "node:fs/promises";
+import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
-import process from "node:process";
+import { setTimeout as delay } from "node:timers/promises";
+import { isDeepStrictEqual } from "node:util";
 
-// Tests use a temporary state directory and a fake bw executable.
-const STATE_DIR = process.env.BITWARDEN_SYNC_STATE_DIR || "/var/lib/bitwarden-sync";
-const SRC_DIR = join(STATE_DIR, "src");
-const DST_DIR = join(STATE_DIR, "dst");
+const state = process.env.BITWARDEN_SYNC_STATE_DIR || "/var/lib/bitwarden-sync";
+class SyncError extends Error {}
+class RetryableEdit extends SyncError {}
+class MissingItem extends SyncError {}
+function requireState(condition: unknown, message: string): asserts condition {
+  if (!condition) throw new SyncError(message);
+}
 
-// Helper to run a command
-async function runCommand(cmd: string, args: string[], stdinValue?: string, env: Record<string, string> = {}): Promise<string> {
-  const displayArgs = args
-    .map((arg, index) => args[index - 1] === "--session" ? "[REDACTED]" : arg)
-    .join(" ");
-
-  return await new Promise<string>((resolve, reject) => {
-    const child = spawn(cmd, args, {
-      stdio: [stdinValue === undefined ? "inherit" : "pipe", "pipe", "pipe"],
-      env: { ...process.env, ...env },
+async function bw(profile: string, args: string[], env: Record<string, string> = {}, payload?: unknown): Promise<string> {
+  const child = spawn("bw", args, {
+    env: { ...process.env, BITWARDENCLI_APPDATA_DIR: profile, BW_NOINTERACTION: "true", ...env },
+    stdio: ["pipe", "pipe", "pipe"],
+  });
+  const output: Buffer[] = [];
+  const errors: Buffer[] = [];
+  child.stdout.on("data", (b: Buffer) => output.push(b));
+  child.stderr.on("data", (b: Buffer) => errors.push(b));
+  return new Promise((resolve, reject) => {
+    child.once("error", (e: NodeJS.ErrnoException) =>
+      reject(new SyncError(e.code === "ENOENT" ? "bw executable missing (ENOENT)" : "bw could not start")));
+    child.stdin.on("error", () => {}); // CLI rejection is reported by close.
+    child.on("close", code => {
+      if (code === 0) return resolve(Buffer.concat(output).toString().trim());
+      const detail = Buffer.concat(errors).toString().trim();
+      if (code === 1 && args[0] === "get" && args[1] === "item" && detail === "Not found.") return reject(new MissingItem("Source item absent"));
+      const transient = /FetchError|network|ECONNRESET|ECONNREFUSED|ETIMEDOUT|EAI_AGAIN|ENOTFOUND|socket hang up|\b(?:429|500|502|503|504)\b/i.test(detail);
+      const ErrorType = args[0] === "edit" && transient ? RetryableEdit : SyncError;
+      reject(new ErrorType(`bw ${args[0]} failed`)); // Neither CLI output nor item metadata belongs in the journal.
     });
-    let stdout = "";
-    let stderr = "";
-    child.stdout!.setEncoding("utf8");
-    child.stderr!.setEncoding("utf8");
-    child.stdout!.on("data", (chunk: string) => { stdout += chunk; });
-    child.stderr!.on("data", (chunk: string) => { stderr += chunk; });
-    child.once("error", reject);
-    child.once("close", (code, signal) => {
-      if (code !== 0) {
-        reject(new Error(`Command ${cmd} ${displayArgs} failed with ${signal ? `signal ${signal}` : `code ${code}`}.\nError: ${stderr.trim()}\nOutput: ${stdout.trim()}`));
-      } else {
-        resolve(stdout.trim());
-      }
-    });
-    if (child.stdin) {
-      child.stdin.once("error", reject);
-      child.stdin.end(stdinValue);
-    }
+    child.stdin.end(payload === undefined ? undefined : Buffer.from(JSON.stringify(payload)).toString("base64"));
   });
 }
 
-async function runBw(appDataDir: string, args: string[], stdinValue?: string, env: Record<string, string> = {}): Promise<string> {
-  return await runCommand("bw", args, stdinValue, {
-    BITWARDENCLI_APPDATA_DIR: appDataDir,
-    ...env,
-  });
+async function openVault(profile: string, url: string, passwordVariable: string, id?: string, secret?: string, email?: string) {
+  url = new URL(url.includes("://") ? url : `https://${url}`).href.replace(/\/$/, "");
+  await mkdir(profile, { recursive: true, mode: 0o700 });
+  await bw(profile, ["logout"]).catch(() => {}); // Locked and logged-out profiles can both occur.
+  await bw(profile, ["config", "server", url]);
+  if (id && secret) await bw(profile, ["login", "--apikey"], { BW_CLIENTID: id, BW_CLIENTSECRET: secret });
+  else {
+    try { await bw(profile, ["login", email!, "--passwordenv", passwordVariable]); }
+    catch { throw new SyncError("Email login failed. If device verification is enabled, configure the source API credentials for unattended sync and preview."); }
+  }
+  const session = await bw(profile, ["unlock", "--passwordenv", passwordVariable, "--raw"]);
+  requireState(session && !/\s/.test(session), "Could not unlock vault");
+  const command = (args: string[], payload?: unknown) => bw(profile, args, { BW_SESSION: session }, payload);
+  const info = JSON.parse(await command(["status"]));
+  const server = info.serverUrl || "https://bitwarden.com";
+  requireState(info.status === "unlocked" && server.replace(/\/$/, "") === url.replace(/\/$/, "") &&
+    (id && secret ? id === `user.${info.userId}` : typeof info.userEmail === "string" && info.userEmail.toLowerCase() === email?.toLowerCase()),
+    "Vault identity or server mismatch");
+  await command(["sync"]);
+  return command;
 }
 
-function isTransientBitwardenError(error: unknown): boolean {
-  const message = error instanceof Error ? error.message : String(error);
-  return /FetchError|network|ECONNRESET|ECONNREFUSED|ETIMEDOUT|EAI_AGAIN|ENOTFOUND|socket hang up|\b(?:429|500|502|503|504)\b/i.test(message);
+type Entry = Record<string, any>;
+const kinds: Record<number, string> = { 1: "login", 2: "secureNote", 3: "card", 4: "identity" };
+function inventory(entries: unknown, folders = false): Entry[] {
+  requireState(Array.isArray(entries), "Invalid vault inventory");
+  // bw list folders includes a synthetic "No Folder" entry with an empty ID.
+  const real = folders ? entries.filter(e => !(e?.name === "No Folder" && (e.id === "" || e.id === null))) : entries;
+  const ids = new Set<string>();
+  for (const e of real) {
+    requireState(e && typeof e.id === "string" && e.id && !ids.has(e.id) && typeof e.name === "string" && (folders || e.name !== "[error: cannot decrypt]") &&
+      (folders || !e.decryptionFailure && Number.isInteger(e.type) && (e.fields == null || Array.isArray(e.fields))), "Invalid or duplicate inventory entry");
+    ids.add(e.id);
+  }
+  return real;
 }
-
-async function editItemWithRetry(appDataDir: string, itemId: string, session: string, encodedItem: string): Promise<void> {
-  const maxAttempts = 4;
-  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-    try {
-      await runBw(appDataDir, ["edit", "item", itemId, "--session", session], encodedItem);
-      return;
-    } catch (error) {
-      if (!isTransientBitwardenError(error) || attempt === maxAttempts) {
-        throw error;
-      }
-      const delayMs = 1000 * 2 ** (attempt - 1);
-      console.warn(`Transient Bitwarden API failure updating ${itemId}; retrying in ${delayMs}ms (attempt ${attempt + 1}/${maxAttempts}).`);
-      await new Promise((resolve) => setTimeout(resolve, delayMs));
+function supported(e: Entry): boolean {
+  // Cross-account copies of attachments, passkeys and SSH keys need a verified round trip.
+  return !!kinds[e.type] && !!e[kinds[e.type]] && !e.organizationId && !e.collectionIds?.length &&
+    !e.attachments?.length && !e.login?.fido2Credentials?.length && !e.deletedDate && !e.archivedDate && !e.archived;
+}
+function owned(e: Entry, folderId: string | null, fields: Entry[]) {
+  return { name: e.name, type: e.type, notes: e.notes ?? null, favorite: e.favorite ?? false,
+    reprompt: e.reprompt ?? 0, folderId, fields, [kinds[e.type]]: e[kinds[e.type]] };
+}
+function comparable(payload: Entry) {
+  // The SDK removes empty optional strings on write. Canonicalize only the
+  // comparison, retaining the original payload and custom fields for writes.
+  const optionalStrings = (values: Entry) => Object.fromEntries(
+    Object.entries(values).filter(([,value]) => value !== "" && value != null));
+  if (payload.type === 4) return {...payload, identity: optionalStrings(payload.identity)};
+  if (payload.type !== 1) return payload;
+  const { passwordRevisionDate, fido2Credentials, ...login } = payload.login;
+  return { ...payload, login: optionalStrings(login) };
+}
+function key(e: Entry) { return JSON.stringify([e.type, e.name, e.type === 1 ? e.login?.username || "" : ""]); }
+function plan(src: Entry[], dst: Entry[], srcFolders: Entry[], dstFolders: Entry[]) {
+  const folders = new Map<string, string>();
+  const targetNames = new Map<string, string | null>();
+  for (const folder of dstFolders) {
+    const name = folder.name.toLowerCase();
+    targetNames.set(name, targetNames.has(name) ? null : folder.id);
+  }
+  const folderCreates = new Map<string, string>();
+  const sourceNames = new Set<string>();
+  for (const folder of srcFolders) {
+    const name = folder.name.toLowerCase();
+    requireState(!sourceNames.has(name), "Ambiguous source folder");
+    sourceNames.add(name);
+    const target = targetNames.get(name);
+    requireState(target !== null, "Ambiguous destination folder");
+    if (target) folders.set(folder.id, target);
+    else folderCreates.set(folder.id, folder.name);
+  }
+  // Validate all folders and all ownership claims before creating anything.
+  const tracked = new Map<string, Entry>();
+  const manual = new Map<string, Entry[]>();
+  for (const item of dst) {
+    if (item.deletedDate) continue;
+    const fields = (item.fields ?? []).filter((f: Entry) => f.name === "bw_id");
+    if (fields.length) {
+      const id = fields[0].value;
+      requireState(fields.length === 1 && typeof id === "string" && id && !tracked.has(id), "Ambiguous destination tracking ID");
+      tracked.set(id, item);
+    } else if (!item.organizationId) {
+      const k = key(item);
+      if (!manual.has(k)) manual.set(k, []);
+      manual.get(k)!.push(item);
     }
   }
-}
-
-// `bw config server` refuses to run while the profile is still logged in,
-// even when it is locked and the configured URL has not changed. The sync
-// service is non-interactive and reuses persistent app-data directories, so
-// make this setup step idempotent by logging out before reconfiguring.
-async function configureBwServer(appDataDir: string, serverUrl: string): Promise<void> {
-  try {
-    await runBw(appDataDir, ["logout"]);
-  } catch (_) {
-    // No active login is fine; continue with server configuration.
-  }
-  await runBw(appDataDir, ["config", "server", serverUrl]);
-}
-
-function encodeBase64(str: string): string {
-  const bytes = new TextEncoder().encode(str);
-  let binary = "";
-  const len = bytes.byteLength;
-  for (let i = 0; i < len; i++) {
-    binary += String.fromCharCode(bytes[i]);
-  }
-  return btoa(binary);
-}
-
-function normalizeForComparison(item: any) {
-  // Compare only fields this synchronizer owns. Bitwarden adds server metadata
-  // (object, timestamps, password history, attachments) to fetched items; that
-  // metadata must not turn a no-op sync into hundreds of edits.
-  const normalizeFields = (fields: any[] = []) => fields
-    .map((field: any) => ({ name: field.name || "", value: field.value ?? null, type: field.type ?? 0 }))
-    .sort((a: any, b: any) => a.name.localeCompare(b.name));
-  const normalizeUris = (uris: any[] = []) => uris
-    .map((uri: any) => ({ uri: uri.uri || "", match: uri.match ?? null }))
-    .sort((a: any, b: any) => a.uri.localeCompare(b.uri));
-
-  const normalized: any = {
-    name: item.name || "",
-    type: item.type,
-    notes: item.notes || null,
-    favorite: item.favorite || false,
-    reprompt: item.reprompt || 0,
-    folderId: item.folderId || null,
-    fields: normalizeFields(item.fields),
-  };
-
-  if (item.type === 1 && item.login) {
-    normalized.login = {
-      username: item.login.username || null,
-      password: item.login.password || null,
-      totp: item.login.totp || null,
-      uris: normalizeUris(item.login.uris),
-    };
-  } else if (item.type === 2 && item.secureNote) {
-    normalized.secureNote = { type: item.secureNote.type || 0 };
-  } else if (item.type === 3 && item.card) {
-    normalized.card = {
-      cardholderName: item.card.cardholderName || null,
-      brand: item.card.brand || null,
-      number: item.card.number || null,
-      expMonth: item.card.expMonth || null,
-      expYear: item.card.expYear || null,
-      code: item.card.code || null,
-    };
-  } else if (item.type === 4 && item.identity) {
-    normalized.identity = {
-      title: item.identity.title || null,
-      firstName: item.identity.firstName || null,
-      middleName: item.identity.middleName || null,
-      lastName: item.identity.lastName || null,
-      address1: item.identity.address1 || null,
-      address2: item.identity.address2 || null,
-      address3: item.identity.address3 || null,
-      city: item.identity.city || null,
-      state: item.identity.state || null,
-      postalCode: item.identity.postalCode || null,
-      country: item.identity.country || null,
-      company: item.identity.company || null,
-      email: item.identity.email || null,
-      phone: item.identity.phone || null,
-      ssn: item.identity.ssn || null,
-      username: item.identity.username || null,
-    };
-  }
-
-  return normalized;
-}
-
-function cleanItemForBw(item: any, targetId: string | null, targetFolderId: string | null, srcItemId: string) {
-  const cleaned: any = {
-    name: item.name || "",
-    type: item.type,
-    notes: item.notes || null,
-    favorite: item.favorite || false,
-    reprompt: item.reprompt || 0,
-    fields: item.fields || [],
-  };
-
-  if (targetId) {
-    cleaned.id = targetId;
-  }
-  if (targetFolderId) {
-    cleaned.folderId = targetFolderId;
-  }
-
-  // Ensure the custom field bw_id is present and has the correct source item ID
-  cleaned.fields = (cleaned.fields || []).filter((f: any) => f.name !== "bw_id");
-  cleaned.fields.push({
-    name: "bw_id",
-    value: srcItemId,
-    type: 0 // Text
-  });
-
-  if (item.type === 1 && item.login) {
-    cleaned.login = {
-      username: item.login.username || null,
-      password: item.login.password || null,
-      totp: item.login.totp || null,
-      uris: (item.login.uris || []).map((u: any) => ({ uri: u.uri || "", match: u.match ?? null })),
-    };
-  } else if (item.type === 2 && item.secureNote) {
-    cleaned.secureNote = {
-      type: item.secureNote.type || 0,
-    };
-  } else if (item.type === 3 && item.card) {
-    cleaned.card = {
-      cardholderName: item.card.cardholderName || null,
-      brand: item.card.brand || null,
-      number: item.card.number || null,
-      expMonth: item.card.expMonth || null,
-      expYear: item.card.expYear || null,
-      code: item.card.code || null,
-    };
-  } else if (item.type === 4 && item.identity) {
-    cleaned.identity = {
-      title: item.identity.title || null,
-      firstName: item.identity.firstName || null,
-      middleName: item.identity.middleName || null,
-      lastName: item.identity.lastName || null,
-      address1: item.identity.address1 || null,
-      address2: item.identity.address2 || null,
-      address3: item.identity.address3 || null,
-      city: item.identity.city || null,
-      state: item.identity.state || null,
-      postalCode: item.identity.postalCode || null,
-      country: item.identity.country || null,
-      company: item.identity.company || null,
-      email: item.identity.email || null,
-      phone: item.identity.phone || null,
-      ssn: item.identity.ssn || null,
-      username: item.identity.username || null,
-    };
-  }
-
-  return cleaned;
-}
-
-function findMatchingDstItem(srcItem: any, dstItems: any[], dstBwIdMap: Record<string, any>) {
-  // First, check by tracking custom field
-  const byBwId = dstBwIdMap[srcItem.id];
-  if (byBwId) {
-    return byBwId;
-  }
-
-  // Next, check by name, type, and login username for adoption (first sync match)
-  const matches = dstItems.filter((di: any) => {
-    // If the target item already has a bw_id mapped to something else, don't match it
-    const bwIdField = di.fields?.find((f: any) => f.name === "bw_id");
-    if (bwIdField && bwIdField.value) {
-      return false;
+  const sourceCounts = new Map<string, number>();
+  const present = new Map(src.map(e => [e.id, e]));
+  for (const item of src) if (!tracked.has(item.id) && !item.organizationId) sourceCounts.set(key(item), (sourceCounts.get(key(item)) ?? 0) + 1);
+  const writes: { source: Entry; target?: Entry; adopted: boolean; fields: Entry[] }[] = [];
+  let skipped = 0;
+  for (const item of src) {
+    requireState(!item.folderId || folders.has(item.folderId) || folderCreates.has(item.folderId), "Missing source folder");
+    if (!supported(item)) { skipped++; continue; }
+    let target = tracked.get(item.id);
+    let adopted = false;
+    if (!target) {
+      const matches = manual.get(key(item)) ?? [];
+      requireState(matches.length <= 1 && (!matches.length || sourceCounts.get(key(item)) === 1), "Ambiguous manual adoption");
+      target = matches[0];
+      adopted = !!target;
     }
-
-    if (di.name !== srcItem.name || di.type !== srcItem.type) {
-      return false;
+    if (target && (!supported(target) || target.type !== item.type)) { skipped++; continue; }
+    const fields = [...(item.fields ?? []).filter((f: Entry) => f.name !== "bw_id"), { name: "bw_id", value: item.id, type: 0 }];
+    if (!target || (item.folderId && !folders.has(item.folderId)) ||
+        !isDeepStrictEqual(comparable(owned(item, folders.get(item.folderId) ?? null, fields)), comparable(owned(target, target.folderId ?? null, target.fields ?? [])))) {
+      writes.push({ source: item, target, adopted, fields });
     }
-
-    if (srcItem.type === 1 && di.login && srcItem.login) {
-      return (di.login.username || "") === (srcItem.login.username || "");
-    }
-
-    return true;
-  });
-
-  return matches.length > 0 ? matches[0] : null;
+  }
+  const deletes: { id: string; target: Entry }[] = [];
+  for (const [id, target] of tracked) if (!present.has(id)) {
+    if (supported(target)) deletes.push({id, target}); else skipped++;
+  }
+  const eligible = [...tracked].filter(([id, target]) => {
+    const source = present.get(id);
+    return supported(target) && (!source || (supported(source) && source.type === target.type));
+  }).length;
+  const blocked = deletes.length > 0 && (!src.some(supported) ||
+    deletes.length > Math.min(10, Math.max(1, Math.floor(eligible * 0.05))));
+  return { folders, folderCreates, writes, deletes, skipped, blocked };
 }
 
 async function main() {
-  console.log(`[${new Date().toISOString()}] Starting Vaultwarden -> Bitwarden Sync...`);
-
-  // Ensure directories exist
-  await mkdir(SRC_DIR, { recursive: true });
-  await mkdir(DST_DIR, { recursive: true });
-
-  // Get credentials
-  const BW_CLIENTID = process.env.BW_CLIENTID;
-  const BW_CLIENTSECRET = process.env.BW_CLIENTSECRET;
-  const BW_PASSWORD = process.env.BW_PASSWORD;
-  const VW_CLIENTID = process.env.VW_CLIENTID;
-  const VW_CLIENTSECRET = process.env.VW_CLIENTSECRET;
-  const VW_EMAIL = process.env.VW_EMAIL;
-  const VW_PASSWORD = process.env.VW_PASSWORD;
-  const VW_SERVER_URL = process.env.VW_SERVER_URL || "https://vault.amahi.dev";
-
-  if (!BW_CLIENTID || !BW_CLIENTSECRET || !BW_PASSWORD || !VW_PASSWORD || (!VW_CLIENTID && !VW_EMAIL)) {
-    console.error("Missing required environment variables!");
-    process.exit(1);
-  }
-
-  // Configure servers
-  console.log("Configuring servers...");
-  // Source is local Vaultwarden
-  await configureBwServer(SRC_DIR, VW_SERVER_URL);
-  // Target is cloud Bitwarden
-  await configureBwServer(DST_DIR, "https://bitwarden.com");
-
-  // Unlock source (Vaultwarden)
-  console.log("Logging into source (Vaultwarden)...");
+  const args = process.argv.slice(2);
+  requireState(args.length === 0 || args.length === 1 && args[0] === "--preview", "Usage: bitwarden-sync [--preview]");
+  const { BW_CLIENTID, BW_CLIENTSECRET, BW_PASSWORD, VW_CLIENTID, VW_CLIENTSECRET, VW_EMAIL, VW_PASSWORD } = process.env;
+  requireState(BW_CLIENTID && BW_CLIENTSECRET && BW_PASSWORD && VW_PASSWORD && ((VW_CLIENTID && VW_CLIENTSECRET) || VW_EMAIL), "Missing required environment variables");
+  const preview = args.length === 1;
+  const profile = preview ? await mkdtemp(join(tmpdir(), "bitwarden-preview-")) : state;
   try {
-    if (VW_CLIENTID && VW_CLIENTSECRET) {
-      await runBw(SRC_DIR, ["login", "--apikey"], undefined, { BW_CLIENTID: VW_CLIENTID, BW_CLIENTSECRET: VW_CLIENTSECRET });
-    } else {
-      await runBw(SRC_DIR, ["login", VW_EMAIL!, "--passwordenv", "VW_PASSWORD"], undefined, { VW_PASSWORD });
+    await synchronize(profile, preview);
+  } finally {
+    if (preview) await rm(profile, { recursive: true, force: true });
+  }
+}
+
+async function synchronize(profile: string, preview: boolean) {
+  const { BW_CLIENTID, BW_CLIENTSECRET, VW_CLIENTID, VW_CLIENTSECRET, VW_EMAIL, VW_SERVER_URL } = process.env;
+  const source = await openVault(join(profile, "src"), VW_SERVER_URL || "https://vault.amahi.dev", "VW_PASSWORD", VW_CLIENTID, VW_CLIENTSECRET, VW_EMAIL);
+  const dest = await openVault(join(profile, "dst"), "https://bitwarden.com", "BW_PASSWORD", BW_CLIENTID, BW_CLIENTSECRET);
+  async function loadInventory(read: typeof source) {
+    const active = inventory(JSON.parse(await read(["list", "items"])));
+    const archived = inventory(JSON.parse(await read(["list", "items", "--archived"])));
+    // The CLI returns the active list again when archive filtering is unavailable.
+    const byId = new Map(active.map(item => [item.id, item]));
+    for (const item of archived) {
+      const previous = byId.get(item.id);
+      if (previous) requireState(!item.archivedDate && isDeepStrictEqual(previous, item), "Inconsistent archive inventory");
+      else byId.set(item.id, {...item, archived: true});
     }
-  } catch (e) {
-    // Already logged in or other non-fatal login issue
-  }
-
-  console.log("Unlocking source...");
-  const srcSessionRaw = await runBw(SRC_DIR, ["unlock", "--passwordenv", "VW_PASSWORD"], undefined, { VW_PASSWORD });
-  const srcSessionMatch = srcSessionRaw.match(/export BW_SESSION="([^"]+)"/);
-  if (!srcSessionMatch) {
-    throw new Error("Failed to extract source session token");
-  }
-  const srcSession = srcSessionMatch[1];
-
-  console.log("Syncing source database...");
-  await runBw(SRC_DIR, ["sync", "--session", srcSession]);
-
-  // Unlock target (Bitwarden)
-  console.log("Logging into target (Bitwarden)...");
-  try {
-    await runBw(DST_DIR, ["login", "--apikey"], undefined, { BW_CLIENTID, BW_CLIENTSECRET });
-  } catch (e) {
-    // Already logged in
-  }
-
-  console.log("Unlocking target...");
-  const dstSessionRaw = await runBw(DST_DIR, ["unlock", "--passwordenv", "BW_PASSWORD"], undefined, { BW_PASSWORD });
-  const dstSessionMatch = dstSessionRaw.match(/export BW_SESSION="([^"]+)"/);
-  if (!dstSessionMatch) {
-    throw new Error("Failed to extract target session token");
-  }
-  const dstSession = dstSessionMatch[1];
-
-  console.log("Syncing target database...");
-  await runBw(DST_DIR, ["sync", "--session", dstSession]);
-
-  // Fetch items and folders
-  console.log("Fetching items and folders...");
-  const srcItems = JSON.parse(await runBw(SRC_DIR, ["list", "items", "--session", srcSession]));
-  const srcFolders = JSON.parse(await runBw(SRC_DIR, ["list", "folders", "--session", srcSession]));
-  const dstItems = JSON.parse(await runBw(DST_DIR, ["list", "items", "--session", dstSession]));
-  const dstFolders = JSON.parse(await runBw(DST_DIR, ["list", "folders", "--session", dstSession]));
-
-  console.log(`Source: ${srcItems.length} items, ${srcFolders.length} folders`);
-  console.log(`Target: ${dstItems.length} items, ${dstFolders.length} folders`);
-
-  // Map Folders
-  const folderIdMap: Record<string, string> = {};
-  for (const srcFolder of srcFolders) {
-    const matchingDst = dstFolders.find((df: any) => df.name.toLowerCase() === srcFolder.name.toLowerCase());
-    if (matchingDst) {
-      folderIdMap[srcFolder.id] = matchingDst.id;
-    } else {
-      console.log(`Creating folder '${srcFolder.name}' in target...`);
-      const b64Data = encodeBase64(JSON.stringify({ name: srcFolder.name }));
-      const createdRaw = await runBw(DST_DIR, ["create", "folder", "--session", dstSession], b64Data);
-      const created = JSON.parse(createdRaw);
-      folderIdMap[srcFolder.id] = created.id;
-    }
-  }
-
-  // Create target tracking lookup by bw_id custom field
-  const dstBwIdMap: Record<string, any> = {};
-  for (const item of dstItems) {
-    const bwIdField = item.fields?.find((f: any) => f.name === "bw_id");
-    if (bwIdField && bwIdField.value) {
-      dstBwIdMap[bwIdField.value] = item;
-    }
-  }
-
-  // Sync Items
-  console.log("Syncing items...");
-  let createdCount = 0;
-  let updatedCount = 0;
-  let adoptedCount = 0;
-
-  for (const srcItem of srcItems) {
-    const existingDstItem = findMatchingDstItem(srcItem, dstItems, dstBwIdMap);
-    const targetFolderId = srcItem.folderId ? folderIdMap[srcItem.folderId] || null : null;
-    const preparedItem = cleanItemForBw(srcItem, existingDstItem?.id || null, targetFolderId, srcItem.id);
-
-    if (!existingDstItem) {
-      // Create new item
-      console.log(`Creating item [${srcItem.name}] (${srcItem.id}) in target...`);
-      const b64Data = encodeBase64(JSON.stringify(preparedItem));
-      await runBw(DST_DIR, ["create", "item", "--session", dstSession], b64Data);
-      createdCount++;
-    } else {
-      // Check if we need to update
-      const normPrepared = normalizeForComparison(preparedItem);
-      const normExisting = normalizeForComparison(existingDstItem);
-
-      const dstHasBwId = existingDstItem.fields?.some((f: any) => f.name === "bw_id");
-
-      if (JSON.stringify(normPrepared) !== JSON.stringify(normExisting)) {
-        if (!dstHasBwId) {
-          console.log(`Adopting and updating manually imported item [${srcItem.name}] (${existingDstItem.id}) with tracking ID...`);
-          adoptedCount++;
-        } else {
-          console.log(`Updating item [${srcItem.name}] (${existingDstItem.id}) in target...`);
-          updatedCount++;
-        }
-        const b64Data = encodeBase64(JSON.stringify(preparedItem));
-        await editItemWithRetry(DST_DIR, existingDstItem.id, dstSession, b64Data);
-      } else if (!dstHasBwId) {
-        console.log(`Adopting manually imported item [${srcItem.name}] (${existingDstItem.id}) with tracking ID...`);
-        const b64Data = encodeBase64(JSON.stringify(preparedItem));
-        await editItemWithRetry(DST_DIR, existingDstItem.id, dstSession, b64Data);
-        adoptedCount++;
+    // The account-encrypted export enumerates encrypted personal ciphers
+    // directly. It includes IDs suppressed from the decrypted or archive list.
+    const encrypted = JSON.parse(await read(["export", "--format", "encrypted_json", "--raw"]));
+    requireState(encrypted.encrypted === true && Array.isArray(encrypted.items), "Invalid encrypted inventory");
+    const personal = new Set<string>();
+    for (const row of encrypted.items) {
+      requireState(typeof row?.id === "string" && row.id && !personal.has(row.id), "Invalid encrypted inventory ID");
+      personal.add(row.id);
+      const visible = byId.get(row.id);
+      if (visible) {
+        requireState(!visible.organizationId && !!row.archivedDate === !!(visible.archived || visible.archivedDate), "Inconsistent personal inventory");
+        continue;
       }
-      // Reserve the adopted destination before matching the next source item.
-      existingDstItem.fields = preparedItem.fields;
+      requireState(row.archivedDate && /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(row.id),
+        "Personal source or destination inventory is incomplete");
+      const [hidden] = inventory([JSON.parse(await read(["get", "item", row.id]))]);
+      requireState(hidden.id === row.id && !hidden.organizationId && hidden.archivedDate, "Archived identity could not be confirmed");
+      byId.set(row.id, {...hidden, archived: true});
+    }
+    for (const row of byId.values()) requireState(row.organizationId || personal.has(row.id), "Personal inventory changed during preflight");
+    const folders = inventory(JSON.parse(await read(["list", "folders"])), true);
+    requireState(Array.isArray(encrypted.folders), "Invalid encrypted folder inventory");
+    const folderIds = new Set(folders.map(folder => folder.id));
+    for (const folder of encrypted.folders) requireState(folderIds.delete(folder?.id), "Inconsistent folder inventory");
+    requireState(!folderIds.size, "Inconsistent folder inventory");
+    return {items: [...byId.values()], folders};
+  }
+  const local = await loadInventory(source);
+  const cloud = await loadInventory(dest);
+  const changes = plan(local.items, cloud.items, local.folders, cloud.folders);
+  const created = changes.writes.filter(w => !w.target).length;
+  const adopted = changes.writes.filter(w => w.adopted).length;
+  console.log(`Plan: ${created} created, ${changes.writes.length-created-adopted} updated, ${adopted} adopted, ${changes.deletes.length} deleted, ${changes.folderCreates.size} source folders to map, ${changes.skipped} skipped.`);
+  requireState(!changes.blocked, "Deletion guard held the entire sync; reconcile source and destination before retrying");
+  // bw list can omit an undecryptable or archived item. A UUID get uses the
+  // encrypted local inventory directly instead of the CLI's text search.
+  for (const {id} of changes.deletes) {
+    requireState(/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(id), "Invalid tracked source UUID");
+    try {
+      const item = JSON.parse(await source(["get", "item", id]));
+      requireState(item.id === id && !item.decryptionFailure && typeof item.deletedDate === "string" &&
+        Number.isFinite(Date.parse(item.deletedDate)), "Source absence could not be confirmed");
+    } catch (error) {
+      if (!(error instanceof MissingItem)) throw error;
     }
   }
-
-  // Delete items in target that are no longer in source
-  let deletedCount = 0;
-  const srcItemIdSet = new Set(srcItems.map((item: any) => item.id));
-  for (const item of dstItems) {
-    const bwIdField = item.fields?.find((f: any) => f.name === "bw_id");
-    if (bwIdField && bwIdField.value && !srcItemIdSet.has(bwIdField.value)) {
-      console.log(`Deleting item [${item.name}] (${item.id}) from target since it was deleted in source...`);
-      await runBw(DST_DIR, ["delete", "item", item.id, "--session", dstSession]);
-      deletedCount++;
+  if (preview) return;
+  for (const [id, name] of changes.folderCreates) {
+    const folder = JSON.parse(await dest(["create", "folder"], { name }));
+    requireState(typeof folder.id === "string" && folder.id, "Could not verify created folder");
+    changes.folders.set(id, folder.id);
+  }
+  for (const {source: item, target, fields} of changes.writes) {
+    const data = owned(item, changes.folders.get(item.folderId) ?? null, fields);
+    if (!target) { await dest(["create", "item"], data); continue; }
+    for (let attempt = 0; ; attempt++) {
+      try {
+        await dest(["edit", "item", target.id], { ...target, ...data });
+        break;
+      } catch (e) {
+        if (!(e instanceof RetryableEdit) || attempt >= 3) throw e;
+        console.warn("Transient edit failure; retrying");
+        await delay(1000 * 2 ** attempt);
+      }
     }
   }
-
-  console.log(`[${new Date().toISOString()}] Sync finished: ${createdCount} created, ${updatedCount} updated, ${adoptedCount} adopted, ${deletedCount} deleted.`);
+  for (const {target} of changes.deletes) await dest(["delete", "item", target.id]);
+  console.log("Sync finished.");
 }
-
-if (import.meta.main) {
-  try {
-    await main();
-  } catch (err) {
-    console.error("Fatal sync error:", err);
-    process.exit(1);
-  }
-}
+if (import.meta.main) main().catch(error => {
+  console.error(error instanceof SyncError ? error.message : "Invalid vault response or local failure");
+  process.exitCode = 1;
+});
