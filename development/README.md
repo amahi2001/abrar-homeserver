@@ -214,16 +214,11 @@ reserved through observation. This example uses a 24-hour soak.
   flock -n 9
   exec 8>>/run/lock/host-deployment.lock
   flock -xn 8
-  # Accept the sandbox's port-only override. A project build, image, mount,
-  # sidecar or custom healthcheck needs its own effective-image smoke.
-  if [[ -e "$source_dir/.dev/compose.yaml" ]]; then
-    docker compose -f "$source_dir/.dev/compose.yaml" config --no-consistency --format json |
-      python3 -c 'import json,sys; s=json.load(sys.stdin)["services"]; assert set(s)=={"dev"} and set(s["dev"]) <= {"ports","networks","command","entrypoint"} and not s["dev"].get("command") and not s["dev"].get("entrypoint")'
-  fi
   [[ $(git -C "$source_dir" branch --show-current) == agent/* ]]
   running() { docker ps -q --filter label=dev.managed=true --filter "label=dev.project=$project"; }
   previous=$(running)
   [[ -n $previous && $previous != *$'\n'* ]]
+  python3 development/check-project-canary.py ports "$previous" "$project" "$source_dir" "$image"
   saved=$(mktemp -d "$state/canary-XXXXXXXX")
   cp "$state"/{project.json,compose.json,devcontainer.json} "$saved/"
   docker inspect -f '{{.Image}} {{.Config.Image}}' "$previous" > "$saved/previous-image"
@@ -240,7 +235,7 @@ reserved through observation. This example uses a 24-hour soak.
   test "$(docker inspect -f '{{.Image}} {{.State.Health.Status}}' "$current")" = "$tested healthy"
   "$candidate/bin/dev" shell "$project" -- bun --version
   flock -u 8
-  sleep 86400
+  python3 development/check-project-canary.py watch "$current" "$tested" 86400
   test "$(running)" = "$current"
   test "$(docker inspect -f '{{.Image}} {{.State.Health.Status}}' "$current")" = "$tested healthy"
 )
