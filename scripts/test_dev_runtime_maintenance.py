@@ -49,6 +49,12 @@ class DevMaintenanceTests(unittest.TestCase):
                     self.assertIsNone(maintenance.refresh("dev", "app", "old", Path(directory), {}))
                     run.assert_not_called()
 
+    def test_live_exec_from_legacy_launcher_defers_before_entering_container(self):
+        with patch.object(maintenance, "run", return_value='["proxy-exec"]'), \
+                patch.object(maintenance.subprocess, "run") as command:
+            self.assertFalse(maintenance.idle("existing"))
+            command.assert_not_called()
+
     def test_failed_or_interrupted_rebuild_restores_image_and_configuration_without_source_or_volume_changes(self):
         with tempfile.TemporaryDirectory() as directory:
             state = Path(directory)
@@ -66,6 +72,8 @@ class DevMaintenanceTests(unittest.TestCase):
 
             failure = RuntimeError("unhealthy replacement")
             def commands(*args, **kwargs):
+                if args[:2] == ("docker", "inspect"):
+                    return "null"
                 if args[:2] == ("dev", "rebuild"):
                     self.assertEqual(kwargs["env"]["DEV_HOST_LOCK_HELD"], "app")
                     self.assertEqual(subprocess.run(["flock", "-n", str(agent_lock), "true"]).returncode, 0)
@@ -76,7 +84,7 @@ class DevMaintenanceTests(unittest.TestCase):
                     self.assertNotEqual(subprocess.run(["flock", "-n", str(agent_lock), "true"]).returncode, 0)
                 return ""
 
-            prior = {"Image": "sha256:previous", "Config": {"Labels": {"com.docker.compose.project": "dev-app"}},
+            prior = {"Id": "old", "ExecIDs": None, "Image": "sha256:previous", "Config": {"Labels": {"com.docker.compose.project": "dev-app"}},
                      "Mounts": [{"Type": "bind", "Source": str(home), "Destination": "/home/node"}]}
             with patch.object(maintenance, "running_projects", side_effect=[{"app": "old"}, {"app": "new"}]), patch.object(maintenance, "idle", return_value=True), patch.object(maintenance, "inspect", return_value=prior), patch.object(maintenance, "run", side_effect=commands) as run:
                 with self.assertRaisesRegex(RuntimeError, "previous image and project configuration restored"):
@@ -88,6 +96,12 @@ class DevMaintenanceTests(unittest.TestCase):
                 self.assertEqual((state / name).read_text(), data)
             self.assertEqual(subprocess.run(["flock", "-n", str(agent_lock), "true"]).returncode, 0)
             self.assertEqual((source / "work.txt").read_text(), "uncommitted work")
+            def became_busy(*args, **kwargs):
+                if args[:2] == ("dev", "rebuild"):
+                    raise maintenance.ProjectBusy
+            with patch.object(maintenance, "running_projects", return_value={"app": "old"}), patch.object(maintenance, "idle", return_value=True), patch.object(maintenance, "inspect", return_value=prior), patch.object(maintenance, "run", side_effect=became_busy), patch.object(maintenance, "rollback_dispatch") as rollback:
+                self.assertIsNone(maintenance.refresh("dev", "app", "old", state, {"id": "new"}))
+                rollback.assert_not_called()
             failure = KeyboardInterrupt("interrupted")
             with patch.object(maintenance, "running_projects", side_effect=[{"app": "old"}, {"app": "new"}]), patch.object(maintenance, "idle", return_value=True), patch.object(maintenance, "inspect", return_value=prior), patch.object(maintenance, "run", side_effect=commands) as run:
                 with self.assertRaisesRegex(KeyboardInterrupt, "interrupted"):
@@ -97,7 +111,7 @@ class DevMaintenanceTests(unittest.TestCase):
                 self.assertEqual((state / name).read_text(), data)
 
     def test_rollback_admission_gate_preserves_new_work_and_unknown_mounts(self):
-        for reason in ("busy", "unknown-mount"):
+        for reason in ("busy", "busy-shell", "legacy-exec", "unknown-mount"):
             with self.subTest(reason=reason), tempfile.TemporaryDirectory() as directory:
                 state = Path(directory)
                 home = state / "home"
@@ -107,18 +121,23 @@ class DevMaintenanceTests(unittest.TestCase):
                 originals = {"project.json": json.dumps(metadata), "compose.json": json.dumps(compose), "devcontainer.json": "original"}
                 for name, data in originals.items():
                     (state / name).write_text(data)
-                prior = {"Image": "old", "Config": {"Labels": {"com.docker.compose.project": "dev-app"}},
+                prior = {"Id": "old", "ExecIDs": None, "Image": "old", "Config": {"Labels": {"com.docker.compose.project": "dev-app"}},
                          "Mounts": [{"Type": "bind", "Source": str(home), "Destination": "/home/node"}]}
-                current = {**prior, "Image": "new"}
+                current = {**prior, "Id": "new", "Image": "new"}
                 if reason == "unknown-mount":
                     current["Mounts"] = [{"Type": "bind", "Source": "/unknown/home", "Destination": "/home/node"}]
-                with (home / ".agent-session.lock").open("a") as admitted:
+                name = ".dev-shell.lock" if reason == "busy-shell" else ".agent-session.lock"
+                with (home / name).open("a") as admitted:
                     def commands(*args, **kwargs):
+                        if args[:2] == ("docker", "inspect"):
+                            return '["late-proxy"]' if reason == "legacy-exec" else "null"
                         if args[:2] == ("dev", "rebuild"):
                             for name in originals:
                                 (state / name).write_text("new state and active work")
                             if reason == "busy":
                                 fcntl.flock(admitted, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                            if reason == "busy-shell":
+                                fcntl.flock(admitted, fcntl.LOCK_SH | fcntl.LOCK_NB)
                             raise RuntimeError("partial resume failed")
                         return ""
                     with patch.object(maintenance, "running_projects", side_effect=[{"app": "old"}, {"app": "new"}]), patch.object(maintenance, "idle", return_value=True), patch.object(maintenance, "inspect", side_effect=[prior, current]), patch.object(maintenance, "run", side_effect=commands) as run:
@@ -129,15 +148,28 @@ class DevMaintenanceTests(unittest.TestCase):
                     for name in originals:
                         self.assertEqual((state / name).read_text(), "new state and active work")
 
+    def test_transient_health_exec_finishes_before_rollback(self):
+        with tempfile.TemporaryDirectory() as directory:
+            state = Path(directory)
+            home = state / "home"
+            home.mkdir()
+            volumes = [{"type": "bind", "source": str(home), "target": "/home/node"}]
+            snapshots = {"compose.json": json.dumps({"services": {"dev": {"volumes": volumes}}}).encode()}
+            current = {"Id": "new", "ExecIDs": ["healthcheck"],
+                       "Mounts": [{"Type": "bind", "Source": str(home), "Destination": "/home/node"}]}
+            with patch.object(maintenance, "run", return_value="null") as inspect, patch.object(maintenance.time, "sleep"):
+                with maintenance.rollback_dispatch(state, snapshots, current, current):
+                    inspect.assert_called_once_with("docker", "inspect", "new", "--format", "{{json .ExecIDs}}")
+
     def test_rollback_dispatch_lock_releases_after_recovery_failure(self):
         with tempfile.TemporaryDirectory() as directory:
             state = Path(directory)
             home = state / "home"
             home.mkdir()
             snapshots = {"compose.json": json.dumps({"services": {"dev": {"volumes": [{"type": "bind", "source": str(home), "target": "/home/node"}]}}}).encode()}
-            runtime = {"Mounts": [{"Type": "bind", "Source": str(home), "Destination": "/home/node"}]}
+            runtime = {"Id": "current", "ExecIDs": None, "Mounts": [{"Type": "bind", "Source": str(home), "Destination": "/home/node"}]}
             path = home / ".agent-session.lock"
-            with self.assertRaisesRegex(RuntimeError, "recovery failed"):
+            with patch.object(maintenance, "run", return_value="null"), self.assertRaisesRegex(RuntimeError, "recovery failed"):
                 with maintenance.rollback_dispatch(state, snapshots, runtime, runtime):
                     self.assertNotEqual(subprocess.run(["flock", "-n", str(path), "true"]).returncode, 0)
                     raise RuntimeError("recovery failed")

@@ -35,9 +35,10 @@ services:
       dev.project: ${DEV_PROJECT}
     healthcheck:
       test: ["CMD", "test", "-f", "/tmp/dev-ready"]
-      interval: 1s
+      interval: 30s
+      start_interval: 1s
       timeout: 1s
-      retries: 30
+      retries: 2
       # Initial graph construction can take minutes on large source trees.
       start_period: 10m
     shm_size: 1gb

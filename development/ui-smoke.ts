@@ -123,15 +123,15 @@ try {
       const window = xdo("search", "--name", "DEV-UI-SMOKE").out.trim();
       xdo("windowactivate", "--sync", window);
       xdo("type", "--clearmodifiers", "printf desktop-ok > /tmp/dev-ui-typed"); xdo("key", "Return");
-      await until(() => existsSync("/tmp/dev-ui-typed"), "xdotool input failed");
-      assert.equal(readFileSync("/tmp/dev-ui-typed", "utf8"), "desktop-ok");
+      await until(() => existsSync("/tmp/dev-ui-typed") &&
+        readFileSync("/tmp/dev-ui-typed", "utf8") === "desktop-ok", "xdotool input failed");
       const desktop = await observer.newPage({ viewport: { width: 1600, height: 1100 } });
       await desktop.goto("http://127.0.0.1:6080/vnc.html?autoconnect=1&resize=remote");
       await desktop.waitForFunction(() => document.querySelector("canvas")?.width === 1440);
       await desktop.locator("canvas").click({ position: { x: 200, y: 180 } });
       await desktop.keyboard.type("printf viewer-ok > /tmp/dev-ui-viewer-typed"); await desktop.keyboard.press("Enter");
-      await until(() => existsSync("/tmp/dev-ui-viewer-typed"), "noVNC keyboard input failed");
-      assert.equal(readFileSync("/tmp/dev-ui-viewer-typed", "utf8"), "viewer-ok");
+      await until(() => existsSync("/tmp/dev-ui-viewer-typed") &&
+        readFileSync("/tmp/dev-ui-viewer-typed", "utf8") === "viewer-ok", "noVNC keyboard input failed");
       const screenshot = ui("screenshot").trim();
       assert(readFileSync(screenshot).subarray(1, 4).equals(Buffer.from("PNG")));
       await desktop.screenshot({ path: join(artifacts, "novnc.png") });

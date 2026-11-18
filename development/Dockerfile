@@ -10,7 +10,7 @@ RUN test -n "$APT_REFRESH" && apt-get update && apt-get upgrade -y && apt-get in
     bash ca-certificates curl git gh ripgrep fd-find jq less unzip \
     python3 python3-venv python3-pip build-essential pkg-config openssh-client \
     procps util-linux sudo && rm -rf /var/lib/apt/lists/*
-RUN npm install -g @openai/codex@${CODEX_VERSION} @anthropic-ai/claude-code@${CLAUDE_VERSION} bun@${BUN_VERSION} skills@${SKILLS_VERSION} \
+RUN --mount=type=cache,target=/root/.npm,sharing=locked npm install -g @openai/codex@${CODEX_VERSION} @anthropic-ai/claude-code@${CLAUDE_VERSION} bun@${BUN_VERSION} skills@${SKILLS_VERSION} \
     && python3 -m venv /opt/uv && /opt/uv/bin/pip install --no-cache-dir uv==${UV_VERSION} \
     && ln -s /opt/uv/bin/uv /usr/local/bin/uv \
     && ln -s /opt/uv/bin/uvx /usr/local/bin/uvx \
@@ -24,7 +24,7 @@ RUN curl -fsSL "$RTK_INSTALLER" -o /tmp/rtk-install.sh \
     && rm /tmp/rtk-install.sh
 ARG PLAYWRIGHT_CLI_VERSION=0.1.22
 ENV PLAYWRIGHT_BROWSERS_PATH=/opt/playwright-browsers
-RUN npm install -g @playwright/cli@${PLAYWRIGHT_CLI_VERSION} \
+RUN --mount=type=cache,target=/root/.npm,sharing=locked npm install -g @playwright/cli@${PLAYWRIGHT_CLI_VERSION} \
     && playwright-cli install-browser --with-deps chromium \
     && chmod -R a+rX /opt/playwright-browsers \
     && apt-get update && apt-get install -y --no-install-recommends \
@@ -40,14 +40,12 @@ RUN curl -fsSL "$CODEBASE_MEMORY_INSTALLER" -o /tmp/cbm-install.sh \
     && test "$(/opt/codebase-memory-mcp/codebase-memory-mcp --version)" = "codebase-memory-mcp ${CODEBASE_MEMORY_VERSION}" \
     && ln -s /opt/codebase-memory-mcp/codebase-memory-mcp /usr/local/bin/codebase-memory-mcp \
     && rm /tmp/cbm-install.sh
-COPY instructions.md ui.md codebase-memory.ts /opt/dev/
-COPY browser-state.cjs /opt/dev/
-COPY playwright-cli.sh /opt/dev/bin/playwright-cli
-COPY dev-ui.sh /usr/local/lib/dev/dev-ui.sh
-COPY entrypoint.sh agent-session.sh dev-finish.sh gh.sh /usr/local/lib/dev/
-RUN chmod +x /usr/local/lib/dev/*.sh \
-    && chmod +x /opt/dev/bin/playwright-cli \
-    && chmod +x /opt/dev/codebase-memory.ts \
+COPY --chmod=0644 instructions.md ui.md browser-state.cjs /opt/dev/
+COPY --chmod=0755 codebase-memory.ts /opt/dev/
+COPY --chmod=0755 playwright-cli.sh /opt/dev/bin/playwright-cli
+COPY --chmod=0755 dev-ui.sh /usr/local/lib/dev/dev-ui.sh
+COPY --chmod=0755 entrypoint.sh agent-session.sh dev-finish.sh gh.sh /usr/local/lib/dev/
+RUN chmod 0755 /opt/dev \
     && ln -s /opt/dev/codebase-memory.ts /usr/local/bin/dev-memory \
     && echo 'export PATH="/opt/dev/bin:$PATH"' > /etc/profile.d/dev-ui.sh \
     && ln -s /usr/local/lib/dev/dev-finish.sh /usr/local/bin/dev-finish \

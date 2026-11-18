@@ -329,6 +329,32 @@ class FleetTests(unittest.TestCase):
                 self.assertFalse((Path(directory) / "paused").exists())
                 resume.assert_not_called()
 
+    def test_legacy_exec_defers_maintenance_before_taking_container_locks(self):
+        with patch.object(fleet, "run", return_value='["proxy-exec"]'), patch.object(fleet.time, "sleep"), \
+                patch.object(fleet.subprocess, "Popen") as command:
+            with self.assertRaisesRegex(RuntimeError, "active or unknown exec"):
+                with fleet.agent_lock("app", Path("/unused"), 1000, 1000):
+                    self.fail("maintenance admitted with a running exec")
+            command.assert_not_called()
+
+    def test_fleet_rechecks_a_short_lived_health_exec(self):
+        with patch.object(fleet, "run", side_effect=['["healthcheck"]', "null"]), patch.object(fleet.time, "sleep"):
+            fleet.check_execs("app")
+
+    def test_host_activity_locks_survive_container_shutdown_until_recovery(self):
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            mounts = [{"Type": "bind", "Source": str(home), "Destination": "/home/node"}]
+            with patch.object(fleet, "run", side_effect=["null", json.dumps(mounts)]) as docker:
+                with fleet.agent_lock("app", home, fleet.os.getuid(), fleet.os.getgid()):
+                    docker.side_effect = RuntimeError("daemon stopped")
+                    for name in (".agent-session.lock", ".dev-shell.lock"):
+                        with (home / name).open("a") as other:
+                            with self.assertRaises(BlockingIOError):
+                                fcntl.flock(other, fcntl.LOCK_SH | fcntl.LOCK_NB)
+                with (home / ".dev-shell.lock").open("a") as other:
+                    fcntl.flock(other, fcntl.LOCK_SH | fcntl.LOCK_NB)
+
     def test_dev_startup_lock_is_held_through_switch_and_released_after_recovery(self):
         @contextlib.contextmanager
         def agent(*args):
@@ -341,7 +367,7 @@ class FleetTests(unittest.TestCase):
             credentials = root / "credentials"
             credentials.mkdir()
             (credentials / "github-token").write_text("test-credential")
-            with patch.dict(fleet.os.environ, {"RUNNER_REPOSITORIES": "[]", "CREDENTIALS_DIRECTORY": str(credentials)}), patch.object(fleet, "PROJECTS", root / "projects"), patch.object(fleet, "runners", return_value=Mock()), patch.object(fleet, "agent_lock", side_effect=agent) as agent_lock, patch.object(fleet, "dev_containers", return_value={"app": "running-id"}), patch.object(fleet, "compose_sidecars", return_value=[]), patch.object(fleet, "run", return_value="") as run, patch.object(fleet, "resume") as resume:
+            with patch.dict(fleet.os.environ, {"RUNNER_REPOSITORIES": "[]", "CREDENTIALS_DIRECTORY": str(credentials)}), patch.object(fleet, "PROJECTS", root / "projects"), patch.object(fleet, "runners", return_value=Mock()), patch.object(fleet, "agent_lock", side_effect=agent) as agent_lock, patch.object(fleet, "check_execs") as late_execs, patch.object(fleet, "dev_containers", return_value={"app": "running-id"}), patch.object(fleet, "compose_sidecars", return_value=[]), patch.object(fleet, "run", return_value="") as run, patch.object(fleet, "resume") as resume:
                 with fleet.guard(root / "fleet"):
                     with (project / "startup.lock").open("a") as other:
                         with self.assertRaises(BlockingIOError):
@@ -349,7 +375,8 @@ class FleetTests(unittest.TestCase):
                 run.assert_any_call("docker", "stop", "--time", "30", "running-id")
                 self.assertEqual(resume.call_args.args[0]["dev"], {"app": "running-id"})
                 self.owner_lookup.assert_called_once_with("amahi")
-                agent_lock.assert_called_once_with("running-id", self.owner.pw_uid, self.owner.pw_gid)
+                agent_lock.assert_called_once_with("running-id", project / "home", self.owner.pw_uid, self.owner.pw_gid)
+                self.assertEqual([call.args for call in late_execs.call_args_list], [("running-id",), ("running-id",)])
             with (project / "startup.lock").open("a") as released:
                 fcntl.flock(released, fcntl.LOCK_EX | fcntl.LOCK_NB)
 

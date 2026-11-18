@@ -49,7 +49,8 @@ done
 start "$one" one home-one
 start "$two" two home-two
 if [ "${DEV_UI_SMOKE:-0}" = 1 ]; then
-  docker cp "$(dirname "$0")/ui-smoke.ts" "$one:/tmp/ui-smoke.ts"
+  install -m 644 "$(dirname "$0")/ui-smoke.ts" "$work/ui-smoke.ts"
+  docker cp "$work/ui-smoke.ts" "$one:/tmp/ui-smoke.ts"
   inside bun /tmp/ui-smoke.ts
 fi
 inside bash -ec '
@@ -79,16 +80,39 @@ inside bash -ec '
   rtk ls .
 '
 if [ -n "$config" ]; then
-  inside bash -ec '
-    test -f "$HOME/.agents/skills/caveman-help/SKILL.md"
-    test -f "$HOME/.agents/skills/ponytail/SKILL.md"
-    test -f "$CLAUDE_CONFIG_DIR/skills/caveman/SKILL.md"
-    rg -q "rtk hook claude" "$CLAUDE_CONFIG_DIR/settings.json"
-    rg -q "rtk hook codex" "$CODEX_HOME/hooks.json"
-    rg -q "agent-config:start" "$CODEX_HOME/AGENTS.md" "$CLAUDE_CONFIG_DIR/CLAUDE.md"
-    rg -q "gpt-6.1-sol" "$CODEX_HOME/config.toml"
-    test ! -w /opt/agent-config/instructions.md
-  '
+  docker exec -i --user "$(id -u):$(id -g)" "$one" python3 - <<'CHECK_CONFIG'
+import json
+import os
+from pathlib import Path
+import tomllib
+
+root = Path("/opt/agent-config")
+codex = Path(os.environ["CODEX_HOME"])
+claude = Path(os.environ["CLAUDE_CONFIG_DIR"])
+selected = set(json.loads((root / "skills-lock.json").read_text())["skills"])
+exported = {skill.parent.name for skill in (root / "skills").glob("*/SKILL.md")}
+assert selected <= exported, "A locked skill is missing from the selected export"
+for name in exported:
+    installed = Path.home() / ".agents/skills" / name / "SKILL.md"
+    assert installed.is_file() and installed.samefile(claude / "skills" / name / "SKILL.md")
+
+def includes(actual, expected):
+    if isinstance(expected, dict):
+        return isinstance(actual, dict) and all(k in actual and includes(actual[k], v) for k, v in expected.items())
+    if isinstance(expected, list):
+        return isinstance(actual, list) and all(any(includes(item, wanted) for item in actual) for wanted in expected)
+    return actual == expected
+
+for name, target, decode in (("codex.toml", codex / "config.toml", tomllib.loads),
+                             ("claude.json", claude / "settings.json", json.loads),
+                             ("codex-hooks.json", codex / "hooks.json", json.loads)):
+    assert includes(decode(target.read_text()), decode((root / "configs" / name).read_text())), name
+if json.loads((root / "tools.lock.json").read_text()).get("rtk"):
+    assert "rtk hook claude" in (claude / "settings.json").read_text()
+    assert "rtk hook codex" in (codex / "hooks.json").read_text()
+assert not os.access(root / "instructions.md", os.W_OK)
+CHECK_CONFIG
+  inside bash -ec 'rg -q "agent-config:start" "$CODEX_HOME/AGENTS.md" "$CLAUDE_CONFIG_DIR/CLAUDE.md"'
 fi
 docker exec --user "$(id -u):$(id -g)" "$two" bash -ec '
   test ! -e /workspace/one
@@ -131,10 +155,10 @@ start "$one" one home-one
 inside bash -ec 'test -s source-marker; test -s "$HOME/.cache/cache-marker"; test -s "$CLAUDE_CONFIG_DIR/persistence-marker"'
 inside bash -ec 'test "$(stat -c %Y "$HOME/.local/state/dev-playwright-version")" = "$(cat "$HOME/.cache/playwright-install-time")"; test "$(grep -Fc /opt/dev/ui.md "$CODEX_HOME/AGENTS.md")" = 1'
 if [ "${DEV_UI_SMOKE:-0}" = 1 ]; then
-  docker cp "$(dirname "$0")/ui-smoke.ts" "$one:/tmp/ui-smoke.ts"
+  docker cp "$work/ui-smoke.ts" "$one:/tmp/ui-smoke.ts"
   inside bun /tmp/ui-smoke.ts persisted
   inside grep -Fq '"width":1200' .playwright/cli.config.json
-  docker cp "$(dirname "$0")/ui-smoke.ts" "$two:/tmp/ui-smoke.ts"
+  docker cp "$work/ui-smoke.ts" "$two:/tmp/ui-smoke.ts"
   docker exec --user "$(id -u):$(id -g)" "$two" bun /tmp/ui-smoke.ts isolated
 fi
 if [ -n "$config" ]; then docker logs "$one" | rg -q 'Synced Codex \+ Claude \(0 files changed\)'; fi

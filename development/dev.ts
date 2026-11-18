@@ -1,8 +1,8 @@
 #!/usr/bin/env bun
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync, chmodSync, copyFileSync, readdirSync, lstatSync, unlinkSync, realpathSync, readlinkSync, symlinkSync, openSync, closeSync, fstatSync, constants } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, readFileSync, writeFileSync, renameSync, chmodSync, copyFileSync, readdirSync, lstatSync, unlinkSync, realpathSync, readlinkSync, symlinkSync, openSync, closeSync, fstatSync, constants } from "node:fs";
 import { homedir, hostname, userInfo } from "node:os";
-import { join, resolve, dirname } from "node:path";
+import { join, resolve, dirname, basename } from "node:path";
 
 const help = `Usage:
   dev start PROJECT [--agent codex|claude] [--repo OWNER/REPO] [--task NAME] [--no-agent] [-- agent arguments]
@@ -11,6 +11,7 @@ const help = `Usage:
   dev view PROJECT [browser|desktop] [--stop]
   dev list
   dev setup [--refresh-runtime]
+  dev image
   dev build
   dev rebuild PROJECT
 
@@ -112,18 +113,21 @@ export function applySharedTokenEyeRuntime(config: any, nativeConfig: any, home 
   return true;
 }
 
-export function withAgentDispatchLock<T>(home: string, action: () => T): T {
+class ProjectBusy extends Error {}
+
+export function withProjectLock<T>(home: string, file: ".agent-session.lock" | ".dev-shell.lock", action: () => T, shared = false): T {
   if (!lstatSync(home).isDirectory()) throw Error("Cannot verify the shared project home directory.");
-  const path = join(home, ".agent-session.lock");
+  const path = join(home, file);
   const fd = openSync(path, constants.O_CREAT | constants.O_RDWR | constants.O_NOFOLLOW, 0o600);
   try {
-    if (!fstatSync(fd).isFile()) throw Error("Invalid project agent lock.");
+    if (!fstatSync(fd).isFile()) throw Error("Invalid project lock.");
     // flock locks the shared open-file description: the parent's FD keeps it
     // held after this helper exits, even while the container is replaced.
-    const lock = Bun.spawnSync(["flock", "-n", "0"], { stdin: fd, stdout: "pipe", stderr: "pipe" });
-    if (lock.exitCode !== 0) throw Error("Agent active or dispatch lock unavailable; preserving the running container.");
+    const lock = Bun.spawnSync(["flock", "-n", "-E", "75", shared ? "-s" : "-x", "0"], { stdin: fd, stdout: "pipe", stderr: "pipe" });
+    if (lock.exitCode === 75) throw new ProjectBusy(file === ".agent-session.lock" ? "Agent active or dispatch lock unavailable; preserving the running container." : "Shell or container change active; retry when idle.");
+    if (lock.exitCode !== 0) throw Error("Unable to inspect the project activity lock.");
     const current = lstatSync(path), held = fstatSync(fd);
-    if (current.dev !== held.dev || current.ino !== held.ino) throw Error("Project agent lock changed; retry when idle.");
+    if (current.dev !== held.dev || current.ino !== held.ino) throw Error("Project lock changed; retry when idle.");
     return action();
   } finally { closeSync(fd); }
 }
@@ -223,6 +227,8 @@ export function main(argv = process.argv.slice(2)) {
   if (existsSync(join(assets, "skills"))) hashFiles(join(assets, "skills"));
   const image = `buildfleet-dev:${fingerprint.digest("hex").slice(0, 16)}`;
 
+  if (command === "image") { console.log(image); return; }
+
   function build() {
     const args = ["docker", "build", "--tag", image, "--pull", "--build-arg", `APT_REFRESH=${Math.floor(Date.now() / (7 * 86400000))}`, "--build-arg", `PLAYWRIGHT_CLI_VERSION=${playwrightVersion}`];
     args.push("--build-arg", `CODEBASE_MEMORY_VERSION=${codebaseMemory.version}`, "--build-arg", `CODEBASE_MEMORY_INSTALLER=${codebaseMemory.installer}`, "--build-arg", `CODEBASE_MEMORY_INSTALLER_SHA256=${codebaseMemory.installerSha256}`);
@@ -296,15 +302,15 @@ export function main(argv = process.argv.slice(2)) {
     workspaceFolder: `/workspace/${project}`, remoteUser: "node", updateRemoteUserUID: false,
     overrideCommand: false, userEnvProbe: "none", shutdownAction: "none",
   };
-  function configure(config: any) {
+  function configure(config: any, dir = projectState) {
     applySharedTokenEyeRuntime(config, nativeConfig);
-    atomic(join(projectState, "compose.json"), JSON.stringify(config, null, 2) + "\n");
-    atomic(configPath, JSON.stringify(nativeConfig, null, 2) + "\n");
+    atomic(join(dir, "compose.json"), JSON.stringify(config, null, 2) + "\n");
+    atomic(join(dir, "devcontainer.json"), JSON.stringify(nativeConfig, null, 2) + "\n");
   }
-  function native(command: string, args: string[] = [], inherit = false, allowFailure = false) {
-    if (!existsSync(configPath)) configure(JSON.parse(compose(["config", "--format", "json"]).stdout));
+  function native(command: string, args: string[] = [], inherit = false, allowFailure = false, file = configPath) {
+    if (!existsSync(file)) configure(JSON.parse(compose(["config", "--format", "json"]).stdout));
     const identity = command === "build" ? [] : ["--id-label", `com.docker.compose.project=${composeProject}`, "--id-label", "com.docker.compose.service=dev"];
-    return run([nativeCli, command, "--workspace-folder", source, "--config", configPath, "--user-data-folder", join(projectState, "devcontainers"), ...identity, ...args], { env: environment(), inherit, allowFailure });
+    return run([nativeCli, command, "--workspace-folder", source, "--config", file, "--user-data-folder", join(projectState, "devcontainers"), ...identity, ...args], { env: environment(), inherit, allowFailure });
   }
   function container() {
     const ids = run(["docker", "ps", "-q", "--filter", `label=com.docker.compose.project=${composeProject}`, "--filter", "label=com.docker.compose.service=dev"]).stdout.split("\n").filter(Boolean);
@@ -312,9 +318,23 @@ export function main(argv = process.argv.slice(2)) {
     return ids[0];
   }
   function checkpointBrowser() {
-    if (!metadata || !container()) return;
-    // Old images have no browser tooling; transport/checkpoint errors must fail.
-    native("exec", ["bash", "-ec", "if [ -x /usr/local/bin/dev-ui ]; then dev-ui _checkpoint; fi"]);
+    const id = metadata && container();
+    if (!id) return;
+    // Checkpoint the live box directly, including legacy boxes with no saved native config.
+    run(["docker", "exec", "--user", `${process.getuid!()}:${process.getgid!()}`, "--workdir", nativeConfig.workspaceFolder, id, "bash", "-ec",
+      "if [ -x /usr/local/bin/dev-ui ]; then dev-ui _checkpoint; fi"]);
+  }
+  function checkExecs(id: string | undefined) {
+    // Older launchers' shells, including the shared forwarder, have no shell lock.
+    if (!id) return;
+    for (let attempt = 0; attempt < 4; attempt++) {
+      const result = run(["docker", "inspect", id, "--format", "{{json .ExecIDs}}"]).stdout;
+      if (result === "null" || result === "[]") return;
+      if (!Array.isArray(JSON.parse(result))) throw Error("Cannot verify existing container exec sessions.");
+      if (attempt === 3) break;
+      Bun.sleepSync(200);
+    }
+    throw new ProjectBusy("Container exec active or unknown; retry when idle.");
   }
   function startContainer(force = false) {
     const config = JSON.parse(compose(["config", "--format", "json"]).stdout);
@@ -327,26 +347,57 @@ export function main(argv = process.argv.slice(2)) {
       const mounted = JSON.parse(run(["docker", "inspect", existing, "--format", "{{json .Mounts}}"]).stdout).filter((mount: any) => mount.Destination === "/home/node");
       if (mounted.length !== 1 || mounted[0].Type !== "bind" || mounted[0].Source !== home) throw Error("Running container has an unknown project home mount; preserving it.");
     }
-    return withAgentDispatchLock(home, () => {
-      const configHash = createHash("sha256").update(JSON.stringify(config)).update(JSON.stringify(nativeConfig)).digest("hex");
-      const recreate = force || metadata?.configHash !== configHash;
+    const configHash = createHash("sha256").update(JSON.stringify(config)).update(JSON.stringify(nativeConfig)).digest("hex");
+    const recreate = force || metadata?.configHash !== configHash;
+    const needsUp = recreate || !existing || run(["docker", "inspect", existing, "--format", "{{.State.Health.Status}}"]).stdout !== "healthy";
+    const tagBase = !config.services.dev.build && (force || run(["docker", "image", "inspect", workspaceImage], { allowFailure: true }).code !== 0);
+    const service = config.services.dev;
+    const buildProject = !!service.build && (force || run(["docker", "image", "inspect", service.image], { allowFailure: true }).code !== 0);
+    const needsAdmission = needsUp || tagBase || buildProject;
+    function stillIdle() {
+      if (needsAdmission) {
+        if (container() !== existing) throw Error("Project container changed during preparation; retry when idle.");
+        checkExecs(existing);
+      }
+    }
+    function prepare() {
+      if (needsAdmission) checkExecs(existing);
       if (recreate) checkpointBrowser();
-      if (config.services.dev.build && (force || run(["docker", "image", "inspect", config.services.dev.image], { allowFailure: true }).code)) {
-        configure(config);
-        native("build");
+      if (buildProject) {
+        // A legacy shell can arrive during a long build. Publish the live
+        // configuration and tags only after the last admission check passes.
+        const dir = mkdtempSync(join(projectState, "build-"));
+        const stagedImage = `buildfleet-dev:stage-${process.pid}-${basename(dir)}`;
+        try {
+          const staged = structuredClone(config);
+          staged.services.dev.image = stagedImage;
+          delete staged.services.dev.build.tags;
+          configure(staged, dir);
+          native("build", [], false, false, join(dir, "devcontainer.json"));
+          stillIdle();
+          for (const tag of new Set<string>([service.image, ...(service.build.tags || [])])) {
+            run(["docker", "image", "tag", stagedImage, tag]);
+          }
+        } finally {
+          run(["docker", "image", "rm", stagedImage], { allowFailure: true });
+          rmSync(dir, { recursive: true, force: true });
+        }
+      } else {
+        stillIdle();
+        if (tagBase) run(["docker", "image", "tag", image, workspaceImage]);
       }
       // The project image was prepared once; ordinary starts must never rebuild it.
       delete config.services.dev.build;
       configure(config);
-      let id = container();
-      if (recreate || !id || run(["docker", "inspect", id, "--format", "{{.State.Health.Status}}"]).stdout !== "healthy") {
+      let id = existing;
+      if (needsUp) {
         const result = native("up", recreate ? ["--remove-existing-container"] : []);
         id = JSON.parse(result.stdout).containerId;
         if (typeof id !== "string" || !id) throw Error("Dev Containers CLI returned no container ID");
       }
       // Native up skips Compose when dev is running; keep its sidecars running too.
       const sidecars = Object.keys(config.services).filter(service => service !== "dev");
-      if (sidecars.length) run(["docker", "compose", "--project-directory", source, "-p", composeProject, "-f", join(projectState, "compose.json"), "up", "-d", "--no-build", "--no-deps", "--wait", ...sidecars], { env: environment() });
+      if (sidecars.length) run(["docker", "compose", "--project-directory", source, "-p", composeProject, "-f", join(projectState, "compose.json"), "up", "-d", "--no-build", "--no-deps", ...(needsAdmission ? [] : ["--no-recreate"]), "--wait", ...sidecars], { env: environment() });
       // Give first-time indexing a bounded window; healthy warm boxes return immediately.
       for (let i = 0; i < 1200; i++) {
         const state = JSON.parse(run(["docker", "inspect", id, "--format", "{{json .State}}"]).stdout);
@@ -356,34 +407,37 @@ export function main(argv = process.argv.slice(2)) {
       }
       const logs = run(["docker", "logs", "--tail", "80", id], { allowFailure: true });
       throw Error(`Container did not become healthy.\n${logs.stdout}\n${logs.stderr}`);
-    });
+    }
+    return withProjectLock(home, ".agent-session.lock", () => needsAdmission ? withProjectLock(home, ".dev-shell.lock", prepare) : prepare());
   }
 
   if (command === "view") {
     if (!metadata) throw Error("Project not initialized. Run dev start PROJECT --no-agent first.");
-    const id = container();
-    if (!id) throw Error("Project is not running. Run dev start PROJECT --no-agent first.");
-    nativeReady();
-    const port = viewer === "browser" ? "8931" : "6080";
-    const mapping = run(["docker", "port", id, `${port}/tcp`]).stdout;
-    const match = /^127\.0\.0\.1:(\d+)$/.exec(mapping);
-    if (!match || Number(match[1]) < 1 || Number(match[1]) > 65535) throw Error(`Expected one host-loopback mapping for ${port}; found ${mapping || "none"}. Rebuild an idle box if viewer ports are missing.`);
-    const target = process.env.DEV_SSH_TARGET || `${userInfo().username}@${hostname()}`;
-    if (/[\r\n]/.test(target) || target.startsWith("-") || !target) throw Error("Invalid DEV_SSH_TARGET");
-    native("exec", ["dev-ui", stopViewer ? "stop" : "start", viewer], true);
-    if (!stopViewer) {
-      const published = match[1];
-      const quoted = "'" + target.replaceAll("'", "'\\''") + "'";
-      console.log(`${viewer}: http://127.0.0.1:${published}/${viewer === "desktop" ? "vnc.html?autoconnect=1&resize=remote" : ""}`);
-      console.log(`On your computer: ssh -N -L ${published}:127.0.0.1:${published} ${quoted}`);
-    }
-    return;
+    return withProjectLock(join(projectState, "home"), ".dev-shell.lock", () => {
+      const id = container();
+      if (!id) throw Error("Project is not running. Run dev start PROJECT --no-agent first.");
+      nativeReady();
+      const port = viewer === "browser" ? "8931" : "6080";
+      const mapping = run(["docker", "port", id, `${port}/tcp`]).stdout;
+      const match = /^127\.0\.0\.1:(\d+)$/.exec(mapping);
+      if (!match || Number(match[1]) < 1 || Number(match[1]) > 65535) throw Error(`Expected one host-loopback mapping for ${port}; found ${mapping || "none"}. Rebuild an idle box if viewer ports are missing.`);
+      const target = process.env.DEV_SSH_TARGET || `${userInfo().username}@${hostname()}`;
+      if (/[\r\n]/.test(target) || target.startsWith("-") || !target) throw Error("Invalid DEV_SSH_TARGET");
+      native("exec", ["dev-ui", stopViewer ? "stop" : "start", viewer], true);
+      if (!stopViewer) {
+        const published = match[1];
+        const quoted = "'" + target.replaceAll("'", "'\\''") + "'";
+        console.log(`${viewer}: http://127.0.0.1:${published}/${viewer === "desktop" ? "vnc.html?autoconnect=1&resize=remote" : ""}`);
+        console.log(`On your computer: ssh -N -L ${published}:127.0.0.1:${published} ${quoted}`);
+      }
+    }, true);
   }
 
   if (command === "shell") {
     if (!metadata) throw Error("Project not initialized. Run dev start PROJECT first.");
     nativeReady();
-    const result = native("exec", agentArgs.length ? agentArgs : ["bash"], true, true);
+    const result = withProjectLock(join(projectState, "home"), ".dev-shell.lock",
+      () => native("exec", agentArgs.length ? agentArgs : ["bash"], true, true), true);
     process.exitCode = result.code; return;
   }
   if (command === "stop") {
@@ -413,7 +467,12 @@ export function main(argv = process.argv.slice(2)) {
     nativeReady();
     if (metadata) {
       const id = container();
-      if (id && run(["docker", "exec", "--user", `${process.getuid!()}:${process.getgid!()}`, id, "flock", "-n", "/home/node/.agent-session.lock", "true"], { allowFailure: true }).code) throw Error("Agent active; finish its session before starting or rebuilding.");
+      if (id) {
+        const probe = run(["docker", "exec", "--user", `${process.getuid!()}:${process.getgid!()}`, id,
+          "flock", "-n", "-E", "75", "/home/node/.agent-session.lock", "true"], { allowFailure: true });
+        if (probe.code === 75) throw new ProjectBusy("Agent active; finish its session before starting or rebuilding.");
+        if (probe.code !== 0) throw Error("Could not verify the running container’s agent lock.");
+      }
     }
     if (command === "rebuild") {
       if (!metadata) throw Error("Project not initialized.");
@@ -422,8 +481,6 @@ export function main(argv = process.argv.slice(2)) {
       metadata.image = workspaceImage;
       metadata.baseImage = image;
       try {
-        const config = JSON.parse(compose(["config", "--format", "json"]).stdout);
-        if (!config.services.dev.build) run(["docker", "image", "tag", image, workspaceImage]);
         metadata.configHash = startContainer(true);
       } catch (error) { metadata = previous; throw error; }
       atomic(metadataPath, JSON.stringify(metadata, null, 2) + "\n");
@@ -500,15 +557,16 @@ export function main(argv = process.argv.slice(2)) {
     if (task || !branch.startsWith("agent/")) {
       if (task && git("status", "--porcelain")) throw Error("Uncommitted changes present. Resume without --task or finish them first.");
       const name = `agent/${task || "work"}-${new Date().toISOString().replace(/[-:.TZ]/g, "")}-${process.pid}`;
-      git("switch", "-c", name);
+      withProjectLock(join(projectState, "home"), ".dev-shell.lock", () => {
+        checkExecs(container());
+        git("switch", "-c", name);
+      });
     }
     const excludes = resolve(source, git("rev-parse", "--git-path", "info/exclude"));
     const existingExcludes = existsSync(excludes) ? readFileSync(excludes, "utf8") : "";
     if (!existingExcludes.includes("# dev runtime")) atomic(excludes, existingExcludes + "\n# dev runtime\n.env\n.env.*\n!.env.example\n.codex/\n.claude/\n.claude.json\nauth.json\nnode_modules/\n.venv/\n", 0o644);
     if (run(["docker", "image", "inspect", image], { allowFailure: true }).code) build();
-    const workspaceExists = run(["docker", "image", "inspect", workspaceImage], { allowFailure: true }).code === 0;
     metadata = { ...metadata, repo, privateDefault, source, composeProject, image: workspaceImage, baseImage: image };
-    if (!workspaceExists && !JSON.parse(compose(["config", "--format", "json"]).stdout).services.dev.build) run(["docker", "image", "tag", image, workspaceImage]);
     // Retain repository identity on failed first startup; readiness is committed below.
     if (!existsSync(metadataPath)) atomic(metadataPath, JSON.stringify(metadata, null, 2) + "\n");
     metadata.configHash = startContainer();
@@ -524,5 +582,9 @@ export function main(argv = process.argv.slice(2)) {
 
 if (import.meta.main) {
   try { main(); }
-  catch (error) { console.error(`dev: ${error instanceof Error ? error.message : error}`); process.exitCode = 1; }
+  catch (error) {
+    console.error(`dev: ${error instanceof Error ? error.message : error}`);
+    const maintenanceRebuild = process.argv[2] === "rebuild" && process.env.DEV_MAINTENANCE === process.argv[3];
+    process.exitCode = maintenanceRebuild && error instanceof ProjectBusy ? 75 : 1;
+  }
 }

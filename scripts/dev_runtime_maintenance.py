@@ -1,7 +1,7 @@
 """Build current dev assets weekly, then refresh only idle running projects."""
 
 import argparse
-from contextlib import contextmanager
+from contextlib import contextmanager, ExitStack
 import fcntl
 import json
 import os
@@ -17,8 +17,14 @@ def log(message):
     print(f"[dev-runtime-maintenance] {message}", flush=True)
 
 
+class ProjectBusy(RuntimeError):
+    pass
+
+
 def run(*args, env=None, timeout=120):
     result = subprocess.run(args, capture_output=True, text=True, timeout=timeout, env=env)
+    if result.returncode == 75 and len(args) == 3 and args[1] == "rebuild" and env and env.get("DEV_MAINTENANCE") == args[2]:
+        raise ProjectBusy
     if result.returncode:
         raise RuntimeError(f"{Path(args[0]).name} {args[1]} failed ({result.returncode})")
     return result.stdout.strip()
@@ -52,16 +58,28 @@ def rollback_dispatch(project_dir, snapshots, previous, current):
         if (len(mounted) != 1 or mounted[0].get("Type") != "bind"
                 or mounted[0].get("Source") != str(home)):
             raise RuntimeError("Rollback needs attention: unknown running project home mount")
-    path = home / ".agent-session.lock"
-    descriptor = os.open(path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
-    with os.fdopen(descriptor, "a") as lock:
-        try:
-            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
-            raise RuntimeError("Rollback needs attention: active agent work was left intact") from None
-        held, linked = os.fstat(lock.fileno()), path.lstat()
-        if (not stat.S_ISREG(held.st_mode) or (held.st_dev, held.st_ino) != (linked.st_dev, linked.st_ino)):
-            raise RuntimeError("Rollback needs attention: project agent lock changed")
+    with ExitStack() as locks:
+        for name in (".agent-session.lock", ".dev-shell.lock"):
+            path = home / name
+            descriptor = os.open(path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+            lock = locks.enter_context(os.fdopen(descriptor, "a"))
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                raise RuntimeError("Rollback needs attention: active work was left intact") from None
+            held, linked = os.fstat(lock.fileno()), path.lstat()
+            if (not stat.S_ISREG(held.st_mode) or (held.st_dev, held.st_ino) != (linked.st_dev, linked.st_ino)):
+                raise RuntimeError("Rollback needs attention: project lock changed")
+        if current is not None:
+            if not current.get("Id"):
+                raise RuntimeError("Rollback needs attention: unverified container ID")
+            for attempt in range(4):
+                execs = json.loads(run("docker", "inspect", current["Id"], "--format", "{{json .ExecIDs}}"))
+                if execs is None or execs == []:
+                    break
+                if not isinstance(execs, list) or attempt == 3:
+                    raise RuntimeError("Rollback needs attention: container exec active or unknown")
+                time.sleep(.2)
         yield
 
 
@@ -77,8 +95,11 @@ def running_projects():
 
 
 def idle(container):
+    if run("docker", "inspect", container, "--format", "{{json .ExecIDs}}") not in ("null", "[]"):
+        return False
     result = subprocess.run(["docker", "exec", "--user", f"{os.getuid()}:{os.getgid()}", container,
-                             "flock", "-n", "/home/node/.agent-session.lock", "true"],
+                             "flock", "-n", "/home/node/.agent-session.lock",
+                             "flock", "-n", "/home/node/.dev-shell.lock", "true"],
                             capture_output=True, timeout=30)
     return result.returncode == 0
 
@@ -137,12 +158,15 @@ def refresh(dev, project, container, project_dir, desired):
         run("docker", "image", "tag", previous["Image"], f"{metadata['image']}-previous")
         try:
             run(dev, "rebuild", project, env={**os.environ, "DEV_LOCK_HELD": project,
-                                            "DEV_HOST_LOCK_HELD": project}, timeout=1200)
+                                            "DEV_HOST_LOCK_HELD": project, "DEV_MAINTENANCE": project}, timeout=1200)
             current = running_projects()[project]
             health = inspect(current)
             if health["State"].get("Health", {}).get("Status") != "healthy":
                 raise RuntimeError(f"{project}: rebuilt container is not healthy")
             return {"candidate": desired["id"], "image": health["Image"]}
+        except ProjectBusy:
+            log(f"{project}: new work admitted before publication; retrying next hour")
+            return None
         except BaseException as error:
             current = running_projects().get(project)
             with rollback_dispatch(project_dir, snapshots, previous, inspect(current) if current else None):
