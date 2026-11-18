@@ -123,8 +123,9 @@ export function withProjectLock<T>(home: string, file: ".agent-session.lock" | "
     if (!fstatSync(fd).isFile()) throw Error("Invalid project lock.");
     // flock locks the shared open-file description: the parent's FD keeps it
     // held after this helper exits, even while the container is replaced.
-    const lock = Bun.spawnSync(["flock", "-n", shared ? "-s" : "-x", "0"], { stdin: fd, stdout: "pipe", stderr: "pipe" });
-    if (lock.exitCode !== 0) throw new ProjectBusy(file === ".agent-session.lock" ? "Agent active or dispatch lock unavailable; preserving the running container." : "Shell or container change active; retry when idle.");
+    const lock = Bun.spawnSync(["flock", "-n", "-E", "75", shared ? "-s" : "-x", "0"], { stdin: fd, stdout: "pipe", stderr: "pipe" });
+    if (lock.exitCode === 75) throw new ProjectBusy(file === ".agent-session.lock" ? "Agent active or dispatch lock unavailable; preserving the running container." : "Shell or container change active; retry when idle.");
+    if (lock.exitCode !== 0) throw Error("Unable to inspect the project activity lock.");
     const current = lstatSync(path), held = fstatSync(fd);
     if (current.dev !== held.dev || current.ino !== held.ino) throw Error("Project lock changed; retry when idle.");
     return action();
@@ -317,9 +318,11 @@ export function main(argv = process.argv.slice(2)) {
     return ids[0];
   }
   function checkpointBrowser() {
-    if (!metadata || !container()) return;
-    // Old images have no browser tooling; transport/checkpoint errors must fail.
-    native("exec", ["bash", "-ec", "if [ -x /usr/local/bin/dev-ui ]; then dev-ui _checkpoint; fi"]);
+    const id = metadata && container();
+    if (!id) return;
+    // Checkpoint the live box directly, including legacy boxes with no saved native config.
+    run(["docker", "exec", "--user", `${process.getuid!()}:${process.getgid!()}`, id, "bash", "-ec",
+      "if [ -x /usr/local/bin/dev-ui ]; then dev-ui _checkpoint; fi"]);
   }
   function checkExecs(id: string | undefined) {
     // Older launchers' shells, including the shared forwarder, have no shell lock.
@@ -327,7 +330,8 @@ export function main(argv = process.argv.slice(2)) {
     for (let attempt = 0; attempt < 4; attempt++) {
       const result = run(["docker", "inspect", id, "--format", "{{json .ExecIDs}}"]).stdout;
       if (result === "null" || result === "[]") return;
-      if (!Array.isArray(JSON.parse(result)) || attempt === 3) break;
+      if (!Array.isArray(JSON.parse(result))) throw Error("Cannot verify existing container exec sessions.");
+      if (attempt === 3) break;
       Bun.sleepSync(200);
     }
     throw new ProjectBusy("Container exec active or unknown; retry when idle.");
@@ -463,7 +467,12 @@ export function main(argv = process.argv.slice(2)) {
     nativeReady();
     if (metadata) {
       const id = container();
-      if (id && run(["docker", "exec", "--user", `${process.getuid!()}:${process.getgid!()}`, id, "flock", "-n", "/home/node/.agent-session.lock", "true"], { allowFailure: true }).code) throw new ProjectBusy("Agent active; finish its session before starting or rebuilding.");
+      if (id) {
+        const probe = run(["docker", "exec", "--user", `${process.getuid!()}:${process.getgid!()}`, id,
+          "flock", "-n", "-E", "75", "/home/node/.agent-session.lock", "true"], { allowFailure: true });
+        if (probe.code === 75) throw new ProjectBusy("Agent active; finish its session before starting or rebuilding.");
+        if (probe.code !== 0) throw Error("Could not verify the running container’s agent lock.");
+      }
     }
     if (command === "rebuild") {
       if (!metadata) throw Error("Project not initialized.");

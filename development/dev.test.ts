@@ -45,6 +45,8 @@ if(name==='gh') {
 }
 if(name==='docker') {
  if(a[0]==='info')console.log('29.8.1');
+ if(a.some(value=>value.includes('dev-ui _checkpoint'))&&process.env.FAKE_UI_FAIL)fail('viewer failed');
+ if(a.includes('flock')&&process.env.FAKE_DOCKER_TRANSPORT)process.exit(125);
  if(a.includes('config'))console.log(JSON.stringify({services:{dev:{image:process.env.DEV_IMAGE,build:process.env.FAKE_CUSTOM_BUILD?{context:process.env.DEV_SOURCE}:undefined,environment:{snapshot:process.env.DEV_AGENT_CONFIG},volumes:[{type:'bind',source:process.env.DEV_PROJECT_STATE+'/home',target:'/home/node'}]},...(process.env.FAKE_SIDECAR?{db:{image:'cached-db'}}:{})}}));
  if(a[0]==='inspect'&&a.includes('{{json .ExecIDs}}')) {console.log(process.env.FAKE_EXEC_IDS || (process.env.FAKE_LATE_EXEC && existsSync(process.env.FAKE_LATE_EXEC) ? '["late-exec"]' : 'null'));process.exit(0)}
  if(a[0]==='inspect'&&a.includes('{{json .Mounts}}')) {console.log(JSON.stringify([{Type:'bind',Source:process.env.FAKE_HOME_UNKNOWN||process.env.DEV_STATE_ROOT+'/projects/app/home',Destination:'/home/node'}]));process.exit(0)}
@@ -53,7 +55,7 @@ if(name==='docker') {
  if(a.includes('inspect')&&process.env.FAKE_WORKSPACE_MISSING&&a.at(-1).includes('-dev-'))fail('workspace image absent');
  if(a.includes('ps')&&a.includes('-q')&&process.env.FAKE_RUNNING)console.log('container-id');
  if(a.includes('port'))console.log(process.env.FAKE_PORT || '127.0.0.1:43219');
- if(a.includes('flock')&&process.env.FAKE_AGENT_ACTIVE)fail('locked');
+ if(a.includes('flock')&&process.env.FAKE_AGENT_ACTIVE)process.exit(a.includes('-E')?75:1);
  if(a[0]==='build'&&process.env.FAKE_CHECK_BUILD_LOCK&&Bun.spawnSync(['flock','-n',process.env.DEV_DEPLOYMENT_LOCK,'true']).exitCode===0)fail('image build did not hold host deployment lock');
  if(a[0]==='build'&&process.env.FAKE_AGENT_DURING_BUILD) {
   const marker=process.env.FAKE_AGENT_DURING_BUILD, lock=process.env.DEV_STATE_ROOT+'/projects/app/home/.agent-session.lock';
@@ -466,6 +468,7 @@ test("stop retains source and metadata; active agent blocks rebuild", () => {
   const meta = join(f.state, "projects/app/project.json"), before = readFileSync(meta, "utf8");
   expect(f.cli(["stop", "app"]).code).toBe(0);
   expect(f.cli(["rebuild", "app"], { FAKE_RUNNING: "1", FAKE_AGENT_ACTIVE: "1" }).code).toBe(1);
+  expect(f.cli(["rebuild", "app"], { FAKE_RUNNING: "1", FAKE_DOCKER_TRANSPORT: "1", DEV_MAINTENANCE: "app" }).code).toBe(1);
   expect(readFileSync(meta, "utf8")).toBe(before);
   expect(existsSync(join(f.source, "README.md"))).toBe(true);
 });
@@ -769,10 +772,12 @@ test("a shell permits other shells but protects its checkout and container until
   expect(f.cli(["rebuild", "app"], { FAKE_RUNNING: "1", FAKE_EXEC_IDS: '["legacy-proxy"]' }).code).toBe(1);
   f.clear();
   const config = join(f.state, "projects/app/compose.json"), saved = readFileSync(config, "utf8");
+  const legacy = join(f.state, "projects/app/devcontainer.json"); unlinkSync(legacy);
   expect(f.cli(["rebuild", "app"], { FAKE_RUNNING: "1", FAKE_CUSTOM_BUILD: "1", FAKE_LATE_EXEC: marker + ".late" }).code).toBe(1);
   expect(f.calls().some(c => c.name === "devcontainer" && c.args[0] === "up")).toBe(false);
   expect(f.calls().some(c => c.name === "docker" && c.args[0] === "image" && c.args[1] === "tag")).toBe(false);
   expect(readFileSync(config, "utf8")).toBe(saved);
+  expect(existsSync(legacy)).toBe(false);
   expect(f.cli(["rebuild", "app"], { FAKE_RUNNING: "1" }).code).toBe(0);
 });
 
