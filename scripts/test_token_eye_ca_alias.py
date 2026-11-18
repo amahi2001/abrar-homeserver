@@ -195,6 +195,19 @@ class HomeAliasTests(unittest.TestCase):
                 self.run_repair("check")
         self.assertFalse(self.backup.exists())
 
+    def test_receipt_change_during_backup_preserves_edit_and_allows_retry(self):
+        changed = self.raw + b"\n"
+        def change_during_backup(path, data, **kwargs):
+            atomic(path, data, **kwargs)
+            if path == self.backup:
+                atomic(self.owner, changed)
+        with patch.object(alias, "atomic", side_effect=change_during_backup), self.assertRaises(ValueError):
+            self.run_repair("apply")
+        self.assertEqual(self.owner.read_bytes(), changed)
+        self.assertFalse(self.backup.exists())
+        self.assertEqual(self.run_repair("apply"), "applied")
+        self.assertEqual(self.backup.read_bytes(), changed)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -177,12 +177,26 @@ def reconcile(mode, updater, legacy, deployment_lock):
                 return "already_restored"
             require(proposal(preimage, home, legacy) == raw and raw == candidate)
             replacement = preimage
-        check_box(container, home, data, True)
-        require(proposal(raw, home, legacy) == candidate)
-        require(contents(owner, 16 << 20, private=True) == raw)
-        if mode == "apply" and not backup_exists:
-            atomic(backup, raw)
-        atomic(owner, replacement)
+        def unchanged():
+            require(proposal(raw, home, legacy) == candidate)
+            require(contents(owner, 16 << 20, private=True) == raw)
+
+        def before_replace():
+            check_box(container, home, data, True)
+            unchanged()
+            if mode == "apply" and not backup_exists:
+                atomic(backup, raw)
+                created = backup.lstat()
+                try:
+                    unchanged()
+                except Exception:
+                    if (os.path.samestat(created, backup.lstat())
+                            and contents(backup, 16 << 20, private=True) == raw):
+                        backup.unlink()
+                    raise
+
+        # Stage and sync the replacement before the final checks and rename.
+        atomic(owner, replacement, before_replace=before_replace)
         return "applied" if mode == "apply" else "restored"
 
 

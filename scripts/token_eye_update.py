@@ -29,7 +29,7 @@ def digest(path):
         return hashlib.file_digest(source, "sha256").hexdigest()
 
 
-def atomic(path, data, mode=0o600):
+def atomic(path, data, mode=0o600, before_replace=None):
     with tempfile.NamedTemporaryFile(dir=path.parent, delete=False) as output:
         temporary = Path(output.name)
         try:
@@ -37,6 +37,8 @@ def atomic(path, data, mode=0o600):
             output.flush()
             os.fsync(output.fileno())
             os.fchmod(output.fileno(), mode)
+            if before_replace is not None:
+                before_replace()
             os.replace(temporary, path)
         finally:
             temporary.unlink(missing_ok=True)
