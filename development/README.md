@@ -295,7 +295,7 @@ default current user/hostname. On your computer run the printed tunnel command,
 then open the printed URL. Ports 8931 (browser) and 6080 (desktop) map to random
 host-loopback ports; VNC port 5900 is never published.
 
-The cached image includes Playwright CLI 0.1.22 (overridden by
+The cached image includes Playwright CLI 0.1.25 (overridden by
 `tools.lock.json`'s `playwrightCli.version`), matching Chromium and its dependencies,
 and Xvfb/Openbox/D-Bus/x11vnc/noVNC/xdotool/scrot/xterm. Installation follows
 [upstream](https://github.com/microsoft/playwright-cli): npm plus

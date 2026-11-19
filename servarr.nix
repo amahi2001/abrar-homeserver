@@ -5,6 +5,7 @@
   config,
   lib,
   pkgs,
+  securityPackages,
   ...
 }:
 {
@@ -13,6 +14,8 @@
   # Tailscale, LAN, or the public internet.
   services.flaresolverr = {
     enable = true;
+    # The service embeds paths to both Chromium and its matching driver.
+    package = lib.mkIf (lib.versionOlder pkgs.chromium.version "158.0.8127.36") securityPackages.flaresolverr;
     openFirewall = false;
     port = 8191;
   };

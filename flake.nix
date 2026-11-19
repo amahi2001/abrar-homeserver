@@ -3,6 +3,8 @@
 
   inputs = {
     nixpkgs.url = "github:nixos/nixpkgs/nixos-26.05";
+    # Supplies stable security fixes before the full channel advances.
+    security-nixpkgs.url = "github:NixOS/nixpkgs/nixos-26.05-small";
     hermes-agent.url = "github:NousResearch/hermes-agent/v0.22.5";
     cloakbrowser.url = "github:CloakHQ/CloakBrowser";
     # Tracks OpenAI Codex CLI releases independently of stable nixpkgs.
@@ -20,6 +22,7 @@
     {
       self,
       nixpkgs,
+      security-nixpkgs,
       hermes-agent,
       cloakbrowser,
       codex-cli,
@@ -32,6 +35,7 @@
         system = "x86_64-linux";
         specialArgs = {
           inherit cloakbrowser caveman;
+          securityPackages = security-nixpkgs.legacyPackages.${system};
           codexCli = codex-cli;
           runtimePackages = runtime-nixpkgs.legacyPackages.${system};
           hermesAgent = hermes-agent;

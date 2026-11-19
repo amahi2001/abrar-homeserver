@@ -22,7 +22,7 @@ RUN curl -fsSL "$RTK_INSTALLER" -o /tmp/rtk-install.sh \
     && if [ -n "$RTK_INSTALLER_SHA256" ]; then echo "$RTK_INSTALLER_SHA256  /tmp/rtk-install.sh" | sha256sum -c -; fi \
     && RTK_INSTALL_DIR=/usr/local/bin sh /tmp/rtk-install.sh \
     && rm /tmp/rtk-install.sh
-ARG PLAYWRIGHT_CLI_VERSION=0.1.22
+ARG PLAYWRIGHT_CLI_VERSION=0.1.25
 ENV PLAYWRIGHT_BROWSERS_PATH=/opt/playwright-browsers
 RUN --mount=type=cache,target=/root/.npm,sharing=locked npm install -g @playwright/cli@${PLAYWRIGHT_CLI_VERSION} \
     && playwright-cli install-browser --with-deps chromium \

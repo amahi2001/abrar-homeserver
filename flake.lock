@@ -281,7 +281,8 @@
         "codex-cli": "codex-cli",
         "hermes-agent": "hermes-agent",
         "nixpkgs": "nixpkgs_4",
-        "runtime-nixpkgs": "runtime-nixpkgs"
+        "runtime-nixpkgs": "runtime-nixpkgs",
+        "security-nixpkgs": "security-nixpkgs"
       }
     },
     "runtime-nixpkgs": {
@@ -296,6 +297,22 @@
       "original": {
         "owner": "NixOS",
         "ref": "nixpkgs-unstable",
+        "repo": "nixpkgs",
+        "type": "github"
+      }
+    },
+    "security-nixpkgs": {
+      "locked": {
+        "lastModified": 1795098939,
+        "narHash": "sha256-zmAhBnYUn1isWKdRr5T+qnQNJ4iwRvpMtnsbQfSh3Pg=",
+        "owner": "NixOS",
+        "repo": "nixpkgs",
+        "rev": "69467f449339164b3f036b1dfa27b1b0c5e38925",
+        "type": "github"
+      },
+      "original": {
+        "owner": "NixOS",
+        "ref": "nixos-26.05-small",
         "repo": "nixpkgs",
         "type": "github"
       }
