@@ -269,7 +269,7 @@ test("Playwright lock versions change the image and missing fields retain the pi
   f.clear();
   expect(f.cli(["image"], { DEV_AGENT_CONFIG: snapshot }).out.trim()).toBe(first[first.indexOf("--tag") + 1]);
   expect(f.calls().some(c => c.name === "docker")).toBe(false);
-  expect(first).toContain("PLAYWRIGHT_CLI_VERSION=0.1.22");
+  expect(first).toContain("PLAYWRIGHT_CLI_VERSION=0.1.25");
   f.clear(); writeFileSync(lock, JSON.stringify({ playwrightCli: { version: "0.1.23" } }));
   expect(f.cli(["build"], { DEV_AGENT_CONFIG: snapshot }).code).toBe(0);
   const second = f.calls().find(c => c.args[0] === "build").args;

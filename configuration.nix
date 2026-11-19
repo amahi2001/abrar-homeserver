@@ -5,6 +5,7 @@
   cloakbrowser,
   codexCli,
   runtimePackages,
+  securityPackages,
   ...
 }:
 let
@@ -35,6 +36,11 @@ in
   boot.loader.grub.enable = true;
   boot.loader.grub.device = "/dev/sda";
   boot.loader.grub.useOSProber = true;
+
+  # SCTP is unused here. Block loading it while the NGINX2ROOT kernel fix is pending.
+  boot.extraModprobeConfig = ''
+    install sctp ${pkgs.coreutils}/bin/false
+  '';
 
   # Hostname
   networking.hostName = "buildfleet-server";
@@ -125,6 +131,11 @@ in
           if lib.versionOlder package.version version then package.overrideAttrs override else package;
       in
       {
+        nginxStable =
+          if lib.versionOlder prev.nginxStable.version "1.30.7" then
+            securityPackages.nginxStable
+          else
+            prev.nginxStable;
         # Keep host tools independent of the daily Codex input refresh.
         bitwarden-cli =
           let

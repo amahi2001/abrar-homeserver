@@ -199,7 +199,7 @@ export function main(argv = process.argv.slice(2)) {
     return;
   }
   const rtk = toolVersions.rtk;
-  const playwrightVersion = toolVersions.playwrightCli?.version ?? "0.1.22";
+  const playwrightVersion = toolVersions.playwrightCli?.version ?? "0.1.25";
   if (typeof playwrightVersion !== "string" || !/^\d+\.\d+\.\d+$/.test(playwrightVersion)) throw Error("Invalid locked Playwright CLI version");
   const codebaseMemory = toolVersions.codebaseMemory ?? {
     version: "0.12.1",
