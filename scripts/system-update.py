@@ -157,12 +157,15 @@ def host_deployment_lock(path):
 def command(args, log):
     log("$ " + " ".join(map(str, args)))
     result = subprocess.run(args, text=True, stdout=subprocess.PIPE,
-                            stderr=subprocess.STDOUT, timeout=4 * 60 * 60)
+                            stderr=subprocess.PIPE, timeout=4 * 60 * 60)
     if result.stdout:
         log(result.stdout.rstrip(), console=False)
+    if result.stderr:
+        log(result.stderr.rstrip(), console=False)
     if result.returncode:
+        output = result.stdout + result.stderr
         raise RuntimeError(f"Command failed ({result.returncode}): {args[0]}\n"
-                           + result.stdout[-8000:])
+                           + output[-8000:])
     return result.stdout
 
 
