@@ -502,5 +502,6 @@ in
     "z /var/lib/hermes/.hermes/skills/devops/nixos-hermes-setup/SKILL.md 0644 hermes hermes -"
     "z /var/lib/hermes/.hermes/skills/devops/nixos-hermes-setup/references/* 0644 hermes hermes -"
     "z /var/lib/hermes/.hermes/skills/devops/nixos-hermes-setup/templates/* 0755 hermes hermes -"
+    "C+ /var/lib/hermes/.hermes/scripts/service_log_review.py 0750 hermes hermes - ${./scripts/service_log_review.py}"
   ];
 }
