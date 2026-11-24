@@ -37,8 +37,8 @@ in
     "d /var/lib/youtube-queue                  0700 root             root  -"
     "d /srv/data/media/.youtube-incomplete     2770 youtube-download media -"
     "d /srv/data/media/library/youtube         2770 youtube-download media -"
-    "L+ /var/lib/hermes/.hermes/skills/media/youtube-queue - - - - /etc/nixos/skills/youtube-queue"
-    "C+ /var/lib/hermes/.hermes/scripts/youtube-queue-watch.sh 0755 hermes hermes - /etc/nixos/skills/youtube-queue/scripts/youtube-queue-watch.sh"
+    "L+ /var/lib/hermes/.hermes/skills/media/youtube-queue - - - - ${./skills/youtube-queue}"
+    "C+ /var/lib/hermes/.hermes/scripts/youtube-queue-watch.sh 0755 hermes hermes - ${./skills/youtube-queue/scripts/youtube-queue-watch.sh}"
   ];
 
   systemd.services.hermes-agent.serviceConfig.ReadWritePaths = lib.mkAfter [
