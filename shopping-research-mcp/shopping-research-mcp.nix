@@ -67,6 +67,8 @@ in
 
   systemd.services.shopping-research-mcp-backup = {
     description = "Online SQLite snapshots for shopping research and authentication";
+    # Keep live WAL readers present for the read-only snapshot worker.
+    requires = [ "shopping-research-mcp.service" ];
     after = [ "shopping-research-mcp.service" ];
     onFailure = [ "maintenance-alert@%n.service" ];
     serviceConfig = {

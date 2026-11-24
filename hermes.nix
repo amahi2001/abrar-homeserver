@@ -6,6 +6,7 @@
   cloakbrowser,
   caveman,
   hermesAgent,
+  securityPackages,
   ...
 }:
 
@@ -339,7 +340,7 @@ in
           set +a
           export BW_BIN=${pkgs.bitwarden-cli}/bin/bw
           exec ${pkgs.python3}/bin/python -P ${./scripts/warden-runtime.py} \
-            ${pkgs.nodejs_22}/bin/node ${pkgs.nodejs}/bin/node \
+            ${securityPackages.nodejs_22}/bin/node ${pkgs.nodejs}/bin/node \
             /var/lib/hermes/.hermes/warden-mcp/node_modules/@icoretech/warden-mcp/package.json \
             "$@"
         ''}";

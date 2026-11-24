@@ -12,6 +12,12 @@
   # To restore the desktop locally: sudo systemctl isolate graphical.target
   systemd.defaultUnit = lib.mkForce "multi-user.target";
 
+  # The GTK portal needs a display in the user manager, including D-Bus activation.
+  systemd.user.services.xdg-desktop-portal-gtk = {
+    overrideStrategy = "asDropin";
+    unitConfig.ConditionEnvironment = [ "|DISPLAY" "|WAYLAND_DISPLAY" ];
+  };
+
   # XFCE desktop
   services.xserver = {
     enable = true;
