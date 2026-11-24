@@ -161,6 +161,11 @@ in
                 // {
                   overrideScope = overlay: result.overrideScope (lib.composeExtensions overlay hermesPythonSecurity);
                 }
+              else if args ? hermesNpmLib && result ? pnpmDeps then
+                # Use the immutable offline index restored by pnpmConfigHook.
+                result.overrideAttrs (old: {
+                  pnpmInstallFlags = (old.pnpmInstallFlags or [ ]) ++ [ "--frozen-store" ];
+                })
               else
                 result;
           in
@@ -503,6 +508,7 @@ in
     "z /var/lib/hermes/.hermes/skills/devops/nixos-hermes-setup/SKILL.md 0644 hermes hermes -"
     "z /var/lib/hermes/.hermes/skills/devops/nixos-hermes-setup/references/* 0644 hermes hermes -"
     "z /var/lib/hermes/.hermes/skills/devops/nixos-hermes-setup/templates/* 0755 hermes hermes -"
-    "C+ /var/lib/hermes/.hermes/scripts/service_log_review.py 0750 hermes hermes - ${./scripts/service_log_review.py}"
+    # A regular Hermes preflight launcher follows the active generation.
+    "f+ /var/lib/hermes/.hermes/scripts/service_log_review.py 0750 hermes hermes - #!/usr/bin/env python3\\nimport runpy\\nrunpy.run_path('/etc/nixos-deployed/scripts/service_log_review.py', run_name='__main__')\\n"
   ];
 }
