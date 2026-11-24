@@ -97,6 +97,18 @@ def properties(text):
             for block in text.strip().split("\n\n") if block.strip()]
 
 
+def inventory_units(collector, systemctl, names):
+    # Explicitly naming an unloaded vendor unit makes systemd load it. Initrd-only
+    # services can then claim the same bus name as their running host counterpart.
+    fields = "Id,Names,LoadState,ActiveState,SubState,Result,ExecMainStatus,ExecMainExitTimestamp"
+    observed = collector.command(*systemctl, "show", "--all", "--no-pager", "--property=" + fields, "*.service")
+    rows = properties(observed)
+    known = {name for row in rows for name in [row["Id"], *row.get("Names", "").split()]}
+    for name in sorted(set(names) - known):
+        rows.append({"Id": name, "LoadState": "not-loaded" if observed else "unknown"})
+    return rows
+
+
 def main():
     os.umask(0o077)
     ROOT.mkdir(parents=True, exist_ok=True)
@@ -118,14 +130,12 @@ def main():
                                      "--no-legend", "--no-pager")
         names = sorted(set(names) | {line.split()[0] for line in packaged.splitlines()
                                     if line.split() and not line.split()[0].endswith('@.service')})
-        fields = "Id,LoadState,ActiveState,SubState,Result,ExecMainStatus,ExecMainExitTimestamp"
-        system = properties(collector.command(SYSTEM + "systemctl", "show", "--no-pager", "--property=" + fields, *names)) if names else []
+        system = inventory_units(collector, [SYSTEM + "systemctl"], names)
         user_names = collector.command(*USER_BUS, SYSTEM + "systemctl", "--user", "list-unit-files",
                                        "--type=service", "--no-legend", "--no-pager")
         user_names = [line.split()[0] for line in user_names.splitlines()
                       if line.split() and "@" not in line.split()[0]]
-        user = properties(collector.command(*USER_BUS, SYSTEM + "systemctl", "--user", "show", "--no-pager",
-                                           "--property=" + fields, *user_names)) if user_names else []
+        user = inventory_units(collector, [*USER_BUS, SYSTEM + "systemctl", "--user"], user_names)
         collector.scan_journal([SUDO, "-n", SYSTEM + "journalctl", "--since", start.isoformat(),
                                 "--until", end.isoformat(), "--no-pager", "-o", "json"])
         containers = collector.command(SUDO, "-n", SYSTEM + "docker", "ps", "-a", "--format", "{{.Names}}")

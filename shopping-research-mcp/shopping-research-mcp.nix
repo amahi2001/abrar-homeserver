@@ -29,9 +29,31 @@ in
       Type = "oneshot";
       RemainAfterExit = true;
       ExecStart = "${compose} up -d --no-build --wait --wait-timeout 90";
-      ExecStop = "${compose} stop --timeout 30";
+      ExecStop = pkgs.writeShellScript "shopping-research-mcp-stop" ''
+        set -eu
+        # Compose can still be waiting on its stop request after the app exits.
+        if ${pkgs.coreutils}/bin/timeout -k 3s 40s ${compose} stop --timeout 30; then
+          exit 0
+        fi
+
+        # Accept a lost stop acknowledgement only for a verified clean exit.
+        containers=$(${pkgs.coreutils}/bin/timeout 10s ${compose} ps --all --quiet)
+        mapfile -t ids <<< "$containers"
+        for id in "''${ids[@]}"; do
+          [[ "$id" =~ ^[a-f0-9]{12,64}$ ]] || exit 1
+        done
+        states=$(${pkgs.coreutils}/bin/timeout 10s ${pkgs.docker}/bin/docker inspect \
+          --format '{{.State.Status}} {{.State.ExitCode}} {{.State.OOMKilled}}' "''${ids[@]}")
+        while IFS= read -r state; do
+          if [[ "$state" != "exited 0 false" ]]; then
+            echo "Shopping MCP stop was not confirmed: $state" >&2
+            exit 1
+          fi
+        done <<< "$states"
+        echo "Docker confirmed the app exited cleanly after the stop request."
+      '';
       TimeoutStartSec = "2min";
-      TimeoutStopSec = "45s";
+      TimeoutStopSec = "75s";
       UMask = "0077";
     };
   };

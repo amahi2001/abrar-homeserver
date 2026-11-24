@@ -23,8 +23,10 @@ class ReviewTests(unittest.TestCase):
             if 'list-unit-files' in args and '--user' not in args:
                 return 'cockpit.service static -\n'
             if 'show' in args:
-                return '\n\n'.join('Id=' + name + '\nActiveState=inactive'
-                                    for name in args if name.endswith('.service'))
+                self.assertIn('*.service', args)
+                self.assertNotIn('cockpit.service', args)
+                if '--user' not in args:
+                    return 'Id=custom.service\nNames=custom.service\nLoadState=loaded\nActiveState=active'
             return ''
 
         previous_mask = os.umask(0o077)
@@ -36,6 +38,10 @@ class ReviewTests(unittest.TestCase):
             result = review.main()
         self.assertEqual({row['source'] for row in result['configured_units']},
                          {'system:custom.service', 'system:cockpit.service'})
+
+        rows = {row['Id']: row for row in result['configured_units']}
+        self.assertEqual(rows['cockpit.service']['LoadState'], 'not-loaded')
+        self.assertEqual(rows['custom.service']['ActiveState'], 'active')
 
     def test_overlapping_runs_keep_matched_independent_evidence(self):
         barrier = threading.Barrier(2)
