@@ -208,6 +208,10 @@ in
     ];
     environment.etc."account_rename_samba.py".source = ../scripts/account_rename_samba.py;
     environment.etc."account-rename-rehearsal.py".source = rehearsal;
+    environment.etc."token-eye-tests".source = lib.sourceByRegex ../scripts [
+      "(test_)?token_eye_ca_alias[.]py"
+      "token_eye_update[.]py"
+    ];
     specialisation.renamed.configuration = {
       users.users.${old} = {
         name = lib.mkForce new;
@@ -236,6 +240,7 @@ in
         machine.succeed("systemd-run --wait --pipe --collect --unit=rename-rehearsal python3 /etc/account-rename-rehearsal.py forward")
         machine.succeed("/run/current-system/specialisation/renamed/bin/switch-to-configuration test")
         machine.succeed("python3 /etc/account-rename-rehearsal.py verify")
+        machine.succeed("sudo -u amahi env PYTHONPATH=/etc/token-eye-tests python3 -B -m unittest -v test_token_eye_ca_alias")
         machine.succeed("ssh -o StrictHostKeyChecking=no -i /root/client amahi@127.0.0.1 'test $(id -u) = 1000 && test $HOME = /home/amahi && test $(sudo -n id -u) = 0'")
         machine.fail("getent passwd buildfleet")
         machine.succeed("smbclient //127.0.0.1/Media -U amahi%smb-test-password -c 'ls sentinel'")

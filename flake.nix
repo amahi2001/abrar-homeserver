@@ -31,6 +31,11 @@
     }:
     let
       system = "x86_64-linux";
+      # The account-rename VM runs the receipt tests that need Linux user xattrs.
+      maintenanceScripts = nixpkgs.lib.cleanSourceWith {
+        src = ./scripts;
+        filter = path: _: baseNameOf path != "test_token_eye_ca_alias.py";
+      };
       buildfleet-server = nixpkgs.lib.nixosSystem {
         system = "x86_64-linux";
         specialArgs = {
@@ -76,7 +81,7 @@
             }
             ''
               export PYTHONDONTWRITEBYTECODE=1
-              python -m unittest discover -s ${./scripts} -p 'test_*.py' -v
+              python -m unittest discover -s ${maintenanceScripts} -p 'test_*.py' -v
               python -m unittest discover -s ${./shopping-research-mcp} -p 'test_*.py' -v
               touch "$out"
             '';
