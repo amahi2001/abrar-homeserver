@@ -8,6 +8,7 @@ import io
 import json
 from pathlib import Path
 import signal
+import sys
 import tempfile
 from types import SimpleNamespace
 import unittest
@@ -24,6 +25,28 @@ FLAKE = '''{
   };
 }
 '''
+
+
+class CommandTests(unittest.TestCase):
+    def test_json_stdout_is_not_contaminated_by_stderr_diagnostics(self):
+        messages = []
+        def log(message, **kwargs):
+            messages.append(message)
+
+        output = update.command([sys.executable, "-c",
+                                 'import sys; print("warning: nix", file=sys.stderr); print(\'{"version": "1"}\')'], log)
+        self.assertEqual(json.loads(output), {"version": "1"})
+        self.assertTrue(any("warning: nix" in message for message in messages))
+
+    def test_failure_includes_stderr_diagnostics(self):
+        messages = []
+        def log(message, **kwargs):
+            messages.append(message)
+
+        with self.assertRaisesRegex(RuntimeError, "failure diagnostic"):
+            update.command([sys.executable, "-c",
+                            'import sys; print("failure diagnostic", file=sys.stderr); sys.exit(7)'], log)
+        self.assertTrue(any("failure diagnostic" in message for message in messages))
 
 
 class UpdateTests(unittest.TestCase):
