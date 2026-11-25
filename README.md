@@ -41,16 +41,22 @@ the `INITIAL_PASSWORD` entry in the root-only `/var/lib/secrets/9router.env`.
 That file also holds the generated JWT and API key secrets and machine ID salt.
 Restore it together with `/var/lib/9router` when moving the service.
 
-Add OpenAI, OpenRouter, and Kilo Gateway keys under Providers. Give each
-client a 9Router key from Endpoint. For Claude Mem, set
-`CLAUDE_MEM_PROVIDER=openai-compatible`, `CLAUDE_MEM_OPENAI_COMPAT_BASE_URL`
-to the gateway base URL, and `CLAUDE_MEM_OPENAI_COMPAT_MODEL` to a connected
-model ID from `/v1/models` in its settings. Store the client key as
-`OPENAI_COMPAT_API_KEY` in its private `~/.claude-mem/.env`.
+Claude Mem uses `CLAUDE_MEM_PROVIDER=openai-compatible`,
+`CLAUDE_MEM_OPENAI_COMPAT_BASE_URL=https://router.amahi.dev/v1`, and
+`CLAUDE_MEM_OPENAI_COMPAT_MODEL=claude-mem`. Store its gateway key as
+`OPENAI_COMPAT_API_KEY` in the client's private `~/.claude-mem/.env`.
+
+The `claude-mem` fallback combo tries `luna/gpt-6-luna`, then
+`openrouter/openrouter/free`, then `kgw/kilo-auto/free`. Restrict client
+keys to the combo in Endpoint. Rotate upstream keys under Providers. The
+OpenAI Luna chat connection uses prefix `luna` and base URL
+`http://127.0.0.1:20130/v1` inside the gateway container. Its loopback
+adapter translates Claude Mem's token limit and omits sampling fields
+that Luna rejects. 9Router handles provider failures and quota responses.
 
 To upgrade, pull the desired official `ghcr.io/decolua/9router` release,
 update the image digest and version comment in `containers.nix`, and rebuild.
-To uninstall, remove the container, its tmpfiles rule, both Nginx routes, the
+To uninstall, remove both containers and their unit dependencies, the gateway's tmpfiles rule, both Nginx routes, the
 router certificate configuration, and its DNS record. Then rebuild. The host
 data and secrets survive removal.
 

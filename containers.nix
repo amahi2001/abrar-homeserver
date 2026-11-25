@@ -64,6 +64,24 @@ in
     };
   };
 
+  # Share only the gateway's network namespace. This adapter has no stored keys.
+  virtualisation.oci-containers.containers."9router-luna" = {
+    image = config.virtualisation.oci-containers.containers."9router".image;
+    dependsOn = [ "9router" ];
+    entrypoint = "node";
+    cmd = [ "/luna.cjs" ];
+    user = "node";
+    volumes = [ "${./scripts/9router-luna.cjs}:/luna.cjs:ro" ];
+    extraOptions = [
+      "--network=container:9router"
+      "--read-only"
+      "--cap-drop=ALL"
+      "--security-opt=no-new-privileges"
+    ];
+  };
+  systemd.services.docker-9router-luna.partOf = [ "docker-9router.service" ];
+  systemd.services.docker-9router.wants = [ "docker-9router-luna.service" ];
+
   # AdGuard Home — network-wide DNS ad blocking
   virtualisation.oci-containers.containers.adguardhome = {
     image = "adguard/adguardhome:latest";
