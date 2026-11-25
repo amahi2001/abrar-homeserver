@@ -7,6 +7,7 @@ let
 in
 {
   environment.systemPackages = [ dev ];
+  environment.etc."claude-code/managed-settings.json".text = builtins.toJSON { attribution = false; };
   # The unprivileged dev updater shares the host deployment mutex with root's
   # system/container updaters. Docker group members already administer containers.
   systemd.tmpfiles.rules = [ "f /run/lock/host-deployment.lock 0660 root docker -" ];
