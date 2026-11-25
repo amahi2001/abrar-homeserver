@@ -110,6 +110,13 @@ in
       group = "nginx";
       dnsPropagationCheck = true;
     };
+    certs."amahi.dev" = {
+      extraDomainNames = [ "www.amahi.dev" ];
+      dnsProvider = "cloudflare";
+      credentialFiles."CF_DNS_API_TOKEN_FILE" = "/var/lib/secrets/cloudflare-ddns-token";
+      webroot = null;
+      reloadServices = [ "nginx" ];
+    };
     certs."buildfleet.duckdns.org" = {
       domain = "buildfleet.duckdns.org";
       extraDomainNames = [ ];
@@ -207,6 +214,28 @@ in
       locations."/" = {
         extraConfig = "return 308 https://cloud.amahi.dev$request_uri;";
       };
+    };
+
+    # The public portfolio serves only a validated static release. Private
+    # applications keep their own listeners and access policies.
+    virtualHosts."amahi.dev" = {
+      forceSSL = true;
+      enableACME = true;
+      root = "/srv/www/portfolio/current";
+      locations."/".tryFiles = "$uri $uri/ =404";
+      locations."= /index.md".extraConfig = "types { } default_type text/markdown;";
+      extraConfig = ''
+        autoindex off;
+        add_header X-Content-Type-Options nosniff always;
+        add_header Referrer-Policy strict-origin-when-cross-origin always;
+        add_header Content-Security-Policy "default-src 'none'; img-src 'self'; style-src 'self'; font-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'" always;
+      '';
+    };
+
+    virtualHosts."www.amahi.dev" = {
+      forceSSL = true;
+      useACMEHost = "amahi.dev";
+      locations."/".return = "308 https://amahi.dev$request_uri";
     };
 
     virtualHosts."cloud.amahi.dev" = {
