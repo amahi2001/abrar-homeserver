@@ -86,6 +86,13 @@ class HomeAliasTests(unittest.TestCase):
         self.assertEqual(self.run_repair("rollback"), "already_restored")
         self.assertEqual((self.host / "settings.json").read_bytes(), settings)
 
+    def test_current_receipt_after_retiring_alias(self):
+        self.run_repair("apply")
+        self.legacy.unlink()
+        self.assertEqual(self.run_repair("check"), f"current {self.key}")
+        with self.assertRaises(ValueError):
+            self.run_repair("rollback")
+
     def test_retargeted_alias_is_rejected_even_with_identical_certificates(self):
         other = self.home.parent / "unrelated"
         (other / ".claude").mkdir(parents=True)

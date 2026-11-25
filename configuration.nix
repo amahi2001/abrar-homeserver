@@ -237,8 +237,6 @@ in
   # tracked source file executable on each rebuild.
   systemd.tmpfiles.rules = [
     "d /etc/nixos 0775 root nixconfig -"
-    # Existing chats and worktrees retain their original paths.
-    "L /home/buildfleet - root root - /home/amahi"
   ];
 
   # Nix

@@ -41,6 +41,9 @@ named links in `token-eye.nix`. Routing and the separate dogfood timer keep runn
 
 ## One-time host Claude home rename
 
+After the old home link is retired, `check` still validates the canonical
+receipt. Rolling back to a retired path is rejected.
+
 From the server configuration checkout, run `python3 scripts/token_eye_ca_alias.py check`
 as the runtime owner. Save the SHA-256 from the `eligible <sha256>` result.
 Eligibility means both home names resolve to the

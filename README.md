@@ -4,8 +4,7 @@ Declarative NixOS configuration for the BuildFleet home server. The repository
 root is the live flake: `/etc/nixos#buildfleet-server`.
 
 The host login is `amahi` (UID 1000), with home `/home/amahi` and the original
-groups and credentials. `/home/buildfleet` remains a compatibility symlink for
-saved project and chat paths. See [ACCOUNT_RENAME.md](ACCOUNT_RENAME.md) for the
+groups and credentials. Use `/home/amahi` for saved project and chat paths. See [ACCOUNT_RENAME.md](ACCOUNT_RENAME.md) for the
 controlled cutover, verification, and rollback procedure.
 
 ## Services

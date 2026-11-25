@@ -118,11 +118,13 @@ def contents(path, limit, private=False):
 def proposal(raw, home, legacy):
     old, new = legacy / ".claude", home / ".claude"
     box = home / ".local/state/dev/accounts/claude"
-    require(home == home.resolve() and old.samefile(new) and legacy.samefile(home))
+    require(home == home.resolve())
+    alias_present = os.path.lexists(legacy)
+    if alias_present:
+        require(legacy.samefile(home) and old.samefile(new) and (old / CA).samefile(new / CA))
     require(new == new.resolve() and box == box.resolve())
     require(all(d.stat().st_uid == os.getuid() and not d.stat().st_mode & 0o022
                 for d in (home, new, box)))
-    require((old / CA).samefile(new / CA))
     record = decode(raw)
     require(isinstance(record, dict) and set(record) == {"version", "enabled", "accounts"}
             and type(record["version"]) is int and record["version"] == 1
@@ -144,7 +146,8 @@ def proposal(raw, home, legacy):
         require(isinstance(settings, dict))
         actual = {k: settings.get(k) for k in KEYS}
         if name == HOST:
-            require(entry["account"]["clientRoot"] in (str(old), str(new)))
+            client_root = entry["account"]["clientRoot"]
+            require(client_root == str(new) or (alias_present and client_root == str(old)))
             require(installed[KEY] == str(Path(entry["account"]["clientRoot"]) / CA))
             require(actual == {**installed, KEY: str(new / CA)})
         else:

@@ -1,5 +1,9 @@
 # Account migration: buildfleet to amahi
 
+The November 12 cutover used a temporary compatibility link. On November 25
+the host retired that link and migrated saved paths to `/home/amahi`. The
+procedure below records the original cutover and its rollback window.
+
 The login becomes `amahi`, with home `/home/amahi`, UID 1000, primary GID
 100, and the original supplementary groups. `/home/buildfleet` remains a
 compatibility symlink for existing chats and worktrees. The server hostname,
