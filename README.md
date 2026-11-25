@@ -14,7 +14,7 @@ controlled cutover, verification, and rollback procedure.
 | --- | --- | --- |
 | Hermes Agent | Telegram/CLI automation and media workflow | Outbound only |
 | Hermes Dashboard | Hermes Desktop web/TUI endpoint | Tailscale `:9119` |
-| 9Router | OpenAI-compatible gateway for Claude Mem and other clients | Tailnet HTTPS at `https://nix-server.tailcb7cdb.ts.net/9router/v1` |
+| 9Router | OpenAI-compatible gateway for Claude Mem and other clients | Public HTTPS at `https://router.amahi.dev/v1` with a 9Router bearer key |
 | Cockpit | Server administration | Tailscale `:9090` |
 | Nextcloud | File storage, sync, sharing, and WebDAV | Public HTTPS `cloud.amahi.dev` |
 | Vaultwarden | Password manager | Public HTTPS `vault.amahi.dev` |
@@ -30,7 +30,11 @@ controlled cutover, verification, and rollback procedure.
 
 ### 9Router
 
-The boot service is `docker-9router.service`. On the server the base URL is
+The boot service is `docker-9router.service`. Clients use
+`https://router.amahi.dev/v1` with `Authorization: Bearer <9router-key>`.
+The public hostname is a DNS-only CNAME to the dynamically updated
+`ssh.amahi.dev`. The existing tailnet API is also available at
+`https://nix-server.tailcb7cdb.ts.net/9router/v1`. On the server the base URL is
 `http://127.0.0.1:20128/v1`. For dashboard access from another machine, run
 `ssh -N -L 20128:127.0.0.1:20128 amahi@nix-server.tailcb7cdb.ts.net`, then
 open `http://127.0.0.1:20128/dashboard`. The initial dashboard password is
@@ -47,8 +51,9 @@ model ID from `/v1/models` in its settings. Store the client key as
 
 To upgrade, pull the desired official `ghcr.io/decolua/9router` release,
 update the image digest and version comment in `containers.nix`, and rebuild.
-To uninstall, remove the container, its tmpfiles rule, and its Nginx location,
-then rebuild. The host data and secrets survive removal.
+To uninstall, remove the container, its tmpfiles rule, both Nginx routes, the
+router certificate configuration, and its DNS record. Then rebuild. The host
+data and secrets survive removal.
 
 Cloudflare DNS-only CNAMEs for `vault.amahi.dev`, `cloud.amahi.dev`, and
 `jellyfin.amahi.dev` point to `buildfleet.duckdns.org`. DuckDNS continues updating

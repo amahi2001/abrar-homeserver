@@ -117,6 +117,12 @@ in
       webroot = null;
       reloadServices = [ "nginx" ];
     };
+    certs."router.amahi.dev" = {
+      dnsProvider = "cloudflare";
+      credentialFiles."CF_DNS_API_TOKEN_FILE" = "/var/lib/secrets/cloudflare-ddns-token";
+      webroot = null;
+      reloadServices = [ "nginx" ];
+    };
     certs."buildfleet.duckdns.org" = {
       domain = "buildfleet.duckdns.org";
       extraDomainNames = [ ];
@@ -252,6 +258,26 @@ in
       forceSSL = true;
       useACMEHost = "amahi.dev";
       locations."/".return = "308 https://amahi.dev$request_uri";
+    };
+
+    virtualHosts."router.amahi.dev" = {
+      enableACME = true;
+      forceSSL = true;
+      locations."/".return = "404";
+      locations."/v1/" = {
+        proxyPass = "http://127.0.0.1:20128/v1/";
+        extraConfig = ''
+          # The public API accepts bearer credentials. 9Router validates the key.
+          if ($http_authorization !~* "^Bearer [^ ]+$") { return 401; }
+          proxy_pass_request_headers off;
+          proxy_set_header Authorization $http_authorization;
+          proxy_set_header Content-Type $http_content_type;
+          proxy_set_header Accept $http_accept;
+          proxy_buffering off;
+          proxy_read_timeout 600s;
+          access_log off;
+        '';
+      };
     };
 
     virtualHosts."cloud.amahi.dev" = {
