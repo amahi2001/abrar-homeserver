@@ -224,6 +224,10 @@ in
       root = "/srv/www/portfolio/current";
       locations."/".tryFiles = "$uri $uri/ =404";
       locations."= /index.md".extraConfig = "types { } default_type text/markdown;";
+      # `expires` sets Cache-Control without add_header, so the server-level
+      # security headers below still apply inside these locations.
+      locations."/_astro/".extraConfig = "expires 1y;";
+      locations."/assets/".extraConfig = "expires 1d;";
       extraConfig = ''
         autoindex off;
         add_header X-Content-Type-Options nosniff always;
