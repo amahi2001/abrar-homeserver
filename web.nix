@@ -223,7 +223,10 @@ in
       enableACME = true;
       root = "/srv/www/portfolio/current";
       locations."/".tryFiles = "$uri $uri/ =404";
-      locations."= /index.md".extraConfig = "types { } default_type text/markdown;";
+      # Pages and text files revalidate on every visit (cheap with ETags), so
+      # a new release and its headers reach returning visitors at once.
+      locations."/".extraConfig = "expires -1;";
+      locations."= /index.md".extraConfig = "types { } default_type text/markdown; expires -1;";
       # `expires` sets Cache-Control without add_header, so the server-level
       # security headers below still apply inside these locations.
       locations."/_astro/".extraConfig = "expires 1y;";
