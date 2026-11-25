@@ -203,6 +203,15 @@ in
         proxyPass = "http://127.0.0.1:9091";
         proxyWebsockets = true;
       };
+      # Share the tailnet certificate for inference. Administration uses SSH forwarding.
+      locations."/9router/v1/" = {
+        proxyPass = "http://127.0.0.1:20128/v1/";
+        extraConfig = ''
+          proxy_buffering off;
+          proxy_read_timeout 600s;
+          access_log off;
+        '';
+      };
     };
 
     virtualHosts."buildfleet.duckdns.org" = {

@@ -49,6 +49,21 @@ in
   };
   virtualisation.oci-containers.backend = "docker";
 
+  # 9Router 0.5.123. Pin the published multi-platform manifest on upgrades.
+  virtualisation.oci-containers.containers."9router" = {
+    image = "ghcr.io/decolua/9router@sha256:b5f68a9d0f89a805f574b32ed00103a7f205ae0ddaa4e508ad6440e58a9bd07b";
+    autoStart = true;
+    ports = [ "127.0.0.1:20128:20128" ];
+    volumes = [ "/var/lib/9router:/app/data" ];
+    environmentFiles = [ "/var/lib/secrets/9router.env" ];
+    environment = {
+      DATA_DIR = "/app/data";
+      REQUIRE_API_KEY = "true";
+      ENABLE_REQUEST_LOGS = "false";
+      OBSERVABILITY_ENABLED = "false";
+    };
+  };
+
   # AdGuard Home — network-wide DNS ad blocking
   virtualisation.oci-containers.containers.adguardhome = {
     image = "adguard/adguardhome:latest";
@@ -74,6 +89,7 @@ in
 
   # AdGuard Home data directories
   systemd.tmpfiles.rules = [
+    "d /var/lib/9router 0700 - - -"
     "d /var/lib/adguardhome      0750 amahi docker -"
     "d /var/lib/adguardhome/conf 0750 amahi docker -"
     "d /var/lib/adguardhome/work 0750 amahi docker -"

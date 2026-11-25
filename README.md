@@ -14,6 +14,7 @@ controlled cutover, verification, and rollback procedure.
 | --- | --- | --- |
 | Hermes Agent | Telegram/CLI automation and media workflow | Outbound only |
 | Hermes Dashboard | Hermes Desktop web/TUI endpoint | Tailscale `:9119` |
+| 9Router | OpenAI-compatible gateway for Claude Mem and other clients | Tailnet HTTPS at `https://nix-server.tailcb7cdb.ts.net/9router/v1` |
 | Cockpit | Server administration | Tailscale `:9090` |
 | Nextcloud | File storage, sync, sharing, and WebDAV | Public HTTPS `cloud.amahi.dev` |
 | Vaultwarden | Password manager | Public HTTPS `vault.amahi.dev` |
@@ -26,6 +27,28 @@ controlled cutover, verification, and rollback procedure.
 | Samba + WSD | Read-only media and writable inbox shares | Home Wi-Fi and Tailscale `:445` |
 | Tailscale | Remote administration and exit-node routing | Tailnet |
 | XFCE + Bluetooth | Local recovery console | Starts only when requested |
+
+### 9Router
+
+The boot service is `docker-9router.service`. On the server the base URL is
+`http://127.0.0.1:20128/v1`. For dashboard access from another machine, run
+`ssh -N -L 20128:127.0.0.1:20128 amahi@nix-server.tailcb7cdb.ts.net`, then
+open `http://127.0.0.1:20128/dashboard`. The initial dashboard password is
+the `INITIAL_PASSWORD` entry in the root-only `/var/lib/secrets/9router.env`.
+That file also holds the generated JWT and API key secrets and machine ID salt.
+Restore it together with `/var/lib/9router` when moving the service.
+
+Add OpenAI, OpenRouter, and Kilo Gateway keys under Providers. Give each
+client a 9Router key from Endpoint. For Claude Mem, set
+`CLAUDE_MEM_PROVIDER=openai-compatible`, `CLAUDE_MEM_OPENAI_COMPAT_BASE_URL`
+to the gateway base URL, and `CLAUDE_MEM_OPENAI_COMPAT_MODEL` to a connected
+model ID from `/v1/models` in its settings. Store the client key as
+`OPENAI_COMPAT_API_KEY` in its private `~/.claude-mem/.env`.
+
+To upgrade, pull the desired official `ghcr.io/decolua/9router` release,
+update the image digest and version comment in `containers.nix`, and rebuild.
+To uninstall, remove the container, its tmpfiles rule, and its Nginx location,
+then rebuild. The host data and secrets survive removal.
 
 Cloudflare DNS-only CNAMEs for `vault.amahi.dev`, `cloud.amahi.dev`, and
 `jellyfin.amahi.dev` point to `buildfleet.duckdns.org`. DuckDNS continues updating
