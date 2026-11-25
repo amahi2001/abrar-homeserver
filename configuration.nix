@@ -19,6 +19,7 @@ in
     ./desktop.nix
     ./web.nix
     ./containers.nix
+    ./claude-mem.nix
     ./github-actions.nix
     ./development.nix
     ./token-eye.nix

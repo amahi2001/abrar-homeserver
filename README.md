@@ -14,6 +14,7 @@ controlled cutover, verification, and rollback procedure.
 | Hermes Agent | Telegram/CLI automation and media workflow | Outbound only |
 | Hermes Dashboard | Hermes Desktop web/TUI endpoint | Tailscale `:9119` |
 | 9Router | OpenAI-compatible gateway for Claude Mem and other clients | Public HTTPS at `https://router.amahi.dev/v1` with a 9Router bearer key |
+| Claude Mem | Persistent memory for Amahi's host Claude Code and Codex sessions | Token-authenticated worker on `127.0.0.1:37777` |
 | Cockpit | Server administration | Tailscale `:9090` |
 | Nextcloud | File storage, sync, sharing, and WebDAV | Public HTTPS `cloud.amahi.dev` |
 | Vaultwarden | Password manager | Public HTTPS `vault.amahi.dev` |
@@ -41,7 +42,7 @@ the `INITIAL_PASSWORD` entry in the root-only `/var/lib/secrets/9router.env`.
 That file also holds the generated JWT and API key secrets and machine ID salt.
 Restore it together with `/var/lib/9router` when moving the service.
 
-Claude Mem uses `CLAUDE_MEM_PROVIDER=openai-compatible`,
+Remote Claude Mem clients use `CLAUDE_MEM_PROVIDER=openai-compatible`,
 `CLAUDE_MEM_OPENAI_COMPAT_BASE_URL=https://router.amahi.dev/v1`, and
 `CLAUDE_MEM_OPENAI_COMPAT_MODEL=claude-mem`. Store its gateway key as
 `OPENAI_COMPAT_API_KEY` in the client's private `~/.claude-mem/.env`.
@@ -59,6 +60,30 @@ update the image digest and version comment in `containers.nix`, and rebuild.
 To uninstall, remove both containers and their unit dependencies, the gateway's tmpfiles rule, both Nginx routes, the
 router certificate configuration, and its DNS record. Then rebuild. The host
 data and secrets survive removal.
+
+### Claude Mem on this host
+
+`claude-mem.service` starts at boot as `amahi`. Its first start uses the
+upstream installer through Bun to register Claude Code's marketplace plugin, the
+Codex plugin, and the Codex user hooks. The observer calls the host's
+9Router endpoint at `http://127.0.0.1:20128/v1` with model `claude-mem`.
+9Router owns provider fallback. The worker loads the gateway credential
+from `/var/lib/secrets/9router-claude-mem.key` into private user settings.
+Back up `~/.claude-mem` for memory, settings, and the local API token.
+Review and trust the Claude Mem entries in Codex's `/hooks` after a fresh
+install or a hook definition change. Then start new client sessions.
+
+`claude-mem-update.timer` checks the upstream promoted release daily.
+The systemd job checks npm publication metadata and runs the versioned upstream
+installer with explicit Codex registration. During restart it saves the stopped
+worker's database to `~/.claude-mem/nixos-pre-upgrade.db` before the new worker
+opens it. An authenticated readiness check confirms the running version.
+Inspect it with `systemctl list-timers claude-mem-update.timer`
+and `journalctl -u claude-mem-update`. The installed version is in
+`~/.claude-mem/nixos-version`. Run
+`bun ~/.claude/plugins/marketplaces/thedotmack/dist/npx-cli/index.js doctor` as Amahi for
+runtime diagnostics. To uninstall, remove the Nix module import and rebuild,
+then run `bunx claude-mem@latest uninstall` as Amahi after backing up the data.
 
 Cloudflare DNS-only CNAMEs for `vault.amahi.dev`, `cloud.amahi.dev`, and
 `jellyfin.amahi.dev` point to `buildfleet.duckdns.org`. DuckDNS continues updating
