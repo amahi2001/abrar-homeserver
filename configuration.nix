@@ -26,6 +26,7 @@ in
     ./youtube.nix
     ./servarr.nix
     ./hermes.nix
+    ./codex-assistant.nix
     ./tailscale.nix
     ./update.nix
     ./mcp-updates.nix

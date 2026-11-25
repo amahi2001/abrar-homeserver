@@ -10,6 +10,7 @@ This directory contains the declarative NixOS configuration for buildfleet-serve
 - `files.nix` - Nextcloud, Samba, Gluetun, and Transmission
 - `servarr.nix` - Prowlarr, FlareSolverr, and on-demand Sonarr/Radarr
 - `hermes.nix` - Hermes Agent + Dashboard service configuration (imported by configuration.nix)
+- `codex-assistant.nix` - Host Codex MCP defaults, assistant skill symlinks, and health reporting
 - `tailscale.nix` - Tailnet and exit-node configuration
 - `update.nix` - Guarded flake updates, system upgrades, and garbage collection
 - `web.nix` - DuckDNS, ACME, Nginx, and Vaultwarden
@@ -198,6 +199,16 @@ The same four links are declared under `.agents/skills/`, the repository-scoped
 skill location used by Codex. Codex also reads this `AGENTS.md` whenever it works
 inside `/etc/nixos`, so the operational context and the linked skills travel
 together. Both sets of links are managed by `tmpfiles.rules` in `hermes.nix`.
+
+`codex-assistant.nix` links the assistant skills into Amahi's
+`~/.agents/skills` and supplies `/etc/codex/config.toml`. New host Codex
+sessions can use CloakBrowser and PinchTab through MCP. Use
+`systemctl --user status codex-pinchtab.service` for PinchTab's local service,
+and `codex-server-health` for on-demand host checks. The weekly health timer
+writes to `journalctl -u codex-server-health.service`.
+
+Warden is opt-in. Use the `vaultwarden` skill to provision a dedicated,
+collection-scoped account and enable its read-only, redacted tools.
 
 ## Current Configuration
 
